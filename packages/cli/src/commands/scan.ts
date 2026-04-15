@@ -1,6 +1,6 @@
 import { SecretScanner } from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
-import { scanFiles, displayScanResults } from '../utils/scan-utils';
+import { scanFilesAsync, displayScanResults } from '../utils/scan-utils';
 
 export async function scanCommand(targetPath: string): Promise<number> {
   const scanner = new SecretScanner();
@@ -8,10 +8,11 @@ export async function scanCommand(targetPath: string): Promise<number> {
   console.log(chalk.blue('🔍 Scanning'), chalk.cyan(targetPath));
 
   try {
-    // Use shared scanning logic with all safeguards
-    const results = scanFiles([targetPath], scanner, {
+    // Use async scanning logic for better performance
+    const results = await scanFilesAsync([targetPath], scanner, {
       verbose: true,
-      skipBinary: true
+      skipBinary: true,
+      progress: true // Show progress for large scans
     });
 
     // Display results using shared formatter

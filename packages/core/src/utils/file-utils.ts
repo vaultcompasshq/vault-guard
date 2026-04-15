@@ -1,8 +1,9 @@
 import fs from 'fs';
 import path from 'path';
+import { promises as fsPromises } from 'fs';
 
 // Cache for .gitignore patterns to avoid re-reading files
-const gitignoreCache = new Map<string, { ignore: string[]; negate: string[] }>();
+const gitignoreCache = new Map<string, { ignore: GitignorePattern[]; negate: GitignorePattern[] }>();
 
 /**
  * Gitignore pattern interface
@@ -15,7 +16,58 @@ interface GitignorePattern {
 }
 
 /**
- * Get all files in directory recursively
+ * Get all files in directory recursively (async version)
+ */
+export async function getAllFilesAsync(dirPath: string, visited = new Set<string>()): Promise<string[]> {
+  const files: string[] = [];
+
+  try {
+    try {
+      await fsPromises.access(dirPath);
+    } catch {
+      return files;
+    }
+
+    // Prevent infinite recursion from circular symlinks
+    const realPath = fs.realpathSync(dirPath);
+    if (visited.has(realPath)) {
+      return files;
+    }
+    visited.add(realPath);
+
+    const items = await fsPromises.readdir(dirPath);
+
+    for (const item of items) {
+      try {
+        const fullPath = path.join(dirPath, item);
+        const lstat = await fsPromises.lstat(fullPath);
+
+        // Skip symlinks to prevent infinite recursion
+        if (lstat.isSymbolicLink()) {
+          continue;
+        }
+
+        if (lstat.isDirectory() && !shouldIgnoreDirectory(item)) {
+          const subFiles = await getAllFilesAsync(fullPath, visited);
+          files.push(...subFiles);
+        } else if (lstat.isFile() && !shouldIgnoreFile(fullPath)) {
+          files.push(fullPath);
+        }
+      } catch (error) {
+        // Skip files/directories we can't read (permission errors, etc.)
+        // Silently continue to avoid crashing on inaccessible files
+      }
+    }
+  } catch (error) {
+    // If we can't read the directory at all, return empty array
+    // This handles permission errors on the directory itself
+  }
+
+  return files;
+}
+
+/**
+ * Get all files in directory recursively (sync version for backwards compatibility)
  */
 export function getAllFiles(dirPath: string, visited = new Set<string>()): string[] {
   const files: string[] = [];
@@ -63,7 +115,16 @@ export function getAllFiles(dirPath: string, visited = new Set<string>()): strin
 }
 
 /**
- * Get files to scan (filters out ignored directories/files)
+ * Get files to scan (filters out ignored directories/files) - async version
+ */
+export async function getFilesToScanAsync(targetPath: string): Promise<string[]> {
+  const allFiles = await getAllFilesAsync(targetPath);
+  const gitignorePatterns = loadGitignorePatterns(targetPath);
+  return allFiles.filter(file => !shouldIgnoreFile(file, gitignorePatterns));
+}
+
+/**
+ * Get files to scan (filters out ignored directories/files) - sync version
  */
 export function getFilesToScan(targetPath: string): string[] {
   const allFiles = getAllFiles(targetPath);
@@ -225,43 +286,6 @@ function compileGitignorePattern(line: string): GitignorePattern {
     isDirectory,
     regex
   };
-}
-
-/**
- * Check if a file path matches a .gitignore pattern
- * @deprecated Use shouldIgnoreFile instead which handles negation properly
- */
-function matchesGitignorePattern(filePath: string, pattern: string): boolean {
-  // Remove leading slashes for matching
-  let gitignorePattern = pattern.replace(/^\//, '');
-
-  // Handle directory patterns (ending with /)
-  const isDirectoryPattern = gitignorePattern.endsWith('/');
-  if (isDirectoryPattern) {
-    gitignorePattern = gitignorePattern.slice(0, -1);
-  }
-
-  // Handle negation patterns (starting with !)
-  if (gitignorePattern.startsWith('!')) {
-    return false; // Negation not implemented for simplicity
-  }
-
-  // Convert glob pattern to regex
-  let regexPattern = gitignorePattern
-    .replace(/\./g, '\\.')
-    .replace(/\*/g, '.*')
-    .replace(/\?/g, '.');
-
-  // Match anywhere in path if pattern doesn't start with /
-  if (!pattern.startsWith('/')) {
-    regexPattern = `.*${regexPattern}`;
-  }
-
-  // Match end of path
-  regexPattern = `${regexPattern}.*`;
-
-  const regex = new RegExp(regexPattern);
-  return regex.test(filePath);
 }
 
 /**

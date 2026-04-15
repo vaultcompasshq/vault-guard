@@ -28,11 +28,38 @@ export class TokenCounter {
   }
 
   /**
-   * Estimate token count from text
-   * Rough approximation: ~4 characters per token for English text
+   * Estimate token count from text with improved accuracy
+   * Accounts for code density, symbols, and whitespace
    */
   estimateTokens(text: string): number {
-    return Math.ceil(text.length / 4);
+    if (!text || text.length === 0) {
+      return 0;
+    }
+
+    // Count whitespace-separated words
+    const words = text.split(/\s+/).filter(w => w.length > 0);
+    const wordCount = words.length;
+
+    // Count symbols and operators (more common in code)
+    const symbolMatches = text.match(/[{}[\]();,:.<>+\-*/%=|^&!~?]/g);
+    const symbolCount = symbolMatches ? symbolMatches.length : 0;
+
+    // Base estimate: words + symbols (rough approximation)
+    let tokenEstimate = wordCount + symbolCount;
+
+    // Adjust for code density (code typically has higher token/word ratio)
+    // If text has many symbols relative to words, it's likely code
+    const symbolToWordRatio = wordCount > 0 ? symbolCount / wordCount : 0;
+    if (symbolToWordRatio > 0.5) {
+      // Code-like content: increase estimate
+      tokenEstimate = Math.floor(tokenEstimate * 1.3);
+    } else if (symbolToWordRatio < 0.1) {
+      // Natural language: decrease slightly (words are better tokens)
+      tokenEstimate = Math.floor(tokenEstimate * 0.9);
+    }
+
+    // Ensure minimum estimate
+    return Math.max(tokenEstimate, Math.ceil(text.length / 8));
   }
 
   /**

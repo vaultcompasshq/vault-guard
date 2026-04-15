@@ -1,6 +1,6 @@
 import path from 'path';
 import fs from 'fs';
-import { SecretScanner, getFilesToScan } from '@vaultcompass/vault-guard-core';
+import { SecretScanner, getFilesToScan, getFilesToScanAsync } from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -19,6 +19,7 @@ export interface ScanOptions {
   verbose?: boolean;
   maxSize?: number;
   skipBinary?: boolean;
+  progress?: boolean;
 }
 
 /**
@@ -30,7 +31,104 @@ export function isBinaryFile(filePath: string): boolean {
 }
 
 /**
- * Scan files with proper filtering and error handling
+ * Scan files with proper filtering and error handling (async version)
+ * This is the shared scanning logic used by both scan and check commands
+ */
+export async function scanFilesAsync(
+  targetPaths: string[],
+  scanner: SecretScanner,
+  options: ScanOptions = {}
+): Promise<ScanResult[]> {
+  const {
+    verbose = false,
+    maxSize = MAX_FILE_SIZE,
+    skipBinary = true,
+    progress = false
+  } = options;
+
+  const results: ScanResult[] = [];
+
+  for (const targetPath of targetPaths) {
+    try {
+      await fs.promises.access(targetPath);
+    } catch {
+      if (verbose) {
+        console.error(chalk.red('❌ Error:'), chalk.white(`Path not found: ${targetPath}`));
+      }
+      continue;
+    }
+
+    const stat = await fs.promises.stat(targetPath);
+    let filesToScan: string[];
+
+    if (stat.isFile()) {
+      filesToScan = [targetPath];
+    } else if (stat.isDirectory()) {
+      // Use async getFilesToScan to get proper .gitignore filtering
+      filesToScan = await getFilesToScanAsync(targetPath);
+    } else {
+      if (verbose) {
+        console.error(chalk.red('❌ Error:'), chalk.white(`Invalid path: ${targetPath}`));
+      }
+      continue;
+    }
+
+    // Scan each file with proper safeguards
+    for (let i = 0; i < filesToScan.length; i++) {
+      const file = filesToScan[i];
+
+      try {
+        // Skip binary files
+        if (skipBinary && isBinaryFile(file)) {
+          continue;
+        }
+
+        // Check file size
+        const fileStat = await fs.promises.stat(file);
+        if (fileStat.size > maxSize) {
+          if (verbose) {
+            console.warn(
+              chalk.yellow(`⚠️  Skipping large file:`),
+              chalk.white(path.relative(process.cwd(), file)),
+              chalk.gray(`(${(fileStat.size / 1024 / 1024).toFixed(2)}MB)`)
+            );
+          }
+          continue;
+        }
+
+        // Scan the file
+        const matches = scanner.scan(file);
+        if (matches.length > 0) {
+          results.push({ file, matches });
+        }
+
+        // Show progress for large scans
+        if (progress && filesToScan.length > 10 && i % 10 === 0) {
+          process.stderr.write(`\r${chalk.gray(`Scanning... ${Math.round((i / filesToScan.length) * 100)}%`)}`);
+        }
+      } catch (error) {
+        if (verbose) {
+          console.error(
+            chalk.red('❌ Error scanning file:'),
+            chalk.white(path.relative(process.cwd(), file))
+          );
+          console.error(chalk.gray(String(error)));
+        }
+        // Continue scanning other files
+      }
+    }
+
+    // Clear progress line if used
+    if (progress && filesToScan.length > 10) {
+      process.stderr.write('\r');
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Scan files with proper filtering and error handling (sync version for backwards compatibility)
  * This is the shared scanning logic used by both scan and check commands
  */
 export function scanFiles(
