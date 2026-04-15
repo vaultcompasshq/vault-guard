@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 import { TokenReport } from '../types';
 
 export class TokenCounter {
@@ -77,7 +78,7 @@ export class TokenCounter {
     const items = fs.readdirSync(dirPath);
 
     for (const item of items) {
-      const fullPath = `${dirPath}/${item}`;
+      const fullPath = path.join(dirPath, item);
       const stat = fs.statSync(fullPath);
 
       if (stat.isDirectory() && !this.shouldIgnore(item)) {

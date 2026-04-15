@@ -4,7 +4,9 @@ import { SecretScanner } from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
 
 export async function fixCommand(files: string[]): Promise<void> {
-  console.log(chalk.blue.bold('🔧 Auto-fixing issues\n'));
+  console.log(chalk.blue.bold('🔧 Secret Fix Guide\n'));
+  console.log(chalk.gray('Note: This command identifies secrets but cannot auto-fix them.'));
+  console.log(chalk.gray('You must manually remove secrets from your code.\n'));
 
   if (files.length === 0) {
     console.log(chalk.yellow('⚠️  No files specified'));
@@ -13,30 +15,39 @@ export async function fixCommand(files: string[]): Promise<void> {
   }
 
   const scanner = new SecretScanner();
-  let fixedCount = 0;
-  let errorCount = 0;
+  let filesWithSecrets = 0;
 
   for (const file of files) {
     if (!fs.existsSync(file)) {
       console.error(chalk.red('❌ Error:'), chalk.white(`File not found: ${file}\n`));
-      errorCount++;
       continue;
     }
 
     const matches = scanner.scan(file);
     if (matches.length === 0) {
-      console.log(chalk.green('✅'), chalk.white(`${file}: No secrets to fix`));
+      console.log(chalk.green('✅'), chalk.white(`${file}: No secrets found`));
       continue;
     }
 
+    filesWithSecrets++;
     console.log(chalk.yellow('⚠️'), chalk.white(`${file}: ${matches.length} secret${matches.length > 1 ? 's' : ''} found`));
-    console.log(chalk.gray('💡 Hint: Remove secrets manually to fix\n'));
+    console.log(chalk.gray('   Actions needed:'));
+
+    for (const match of matches) {
+      const relativePath = path.relative(process.cwd(), file);
+      console.log(chalk.gray(`     • Line ${match.line}: Remove ${match.type} secret`));
+    }
+    console.log('');
   }
 
-  console.log(chalk.bold('Summary:'));
-  console.log(chalk.green(`  ✅ Fixed: ${fixedCount} files`));
-  if (errorCount > 0) {
-    console.log(chalk.red(`  ❌ Errors: ${errorCount} files`));
+  if (filesWithSecrets === 0) {
+    console.log(chalk.green.bold('✅ All files clean!\n'));
+  } else {
+    console.log(chalk.bold('Summary:'));
+    console.log(chalk.yellow(`  ⚠️  Files with secrets: ${filesWithSecrets}`));
+    console.log(chalk.gray('  💡 Remove secrets manually, then run: vault-guard check\n'));
+
+    // Exit with error code if secrets found
+    process.exit(1);
   }
-  console.log('');
 }

@@ -41,7 +41,7 @@ console.log(apiKey);
     it('should detect Stripe API key', () => {
       // Arrange
       const content = `
-const stripeKey = "sk_test_fake1234567890abcdefghijklmnop";
+const stripeKey = "sk_test_51AbCDEFGHIJKLMNOPQRSTUVWXYZ";
 `;
       fs.writeFileSync(testFilePath, content);
 
@@ -50,8 +50,8 @@ const stripeKey = "sk_test_fake1234567890abcdefghijklmnop";
 
       // Assert
       expect(matches).toHaveLength(1);
-      expect(matches[0].type).toBe('stripe');
-      expect(matches[0].severity).toBe('critical');
+      expect(matches[0].type).toBe('stripe-test');
+      expect(matches[0].severity).toBe('high');
     });
 
     it('should detect AWS access key', () => {
@@ -89,7 +89,7 @@ console.log(message);
       // Arrange
       const content = `
 const anthropicKey = "sk-ant-api03-verylongkeyhere12345";
-const stripeKey = "sk_test_fakekeyherefortesting123456";
+const stripeKey = "sk_test_51ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const awsKey = "AKIA1234567890123456";
 `;
       fs.writeFileSync(testFilePath, content);
@@ -100,7 +100,7 @@ const awsKey = "AKIA1234567890123456";
       // Assert
       expect(matches).toHaveLength(3);
       expect(matches[0].type).toBe('anthropic');
-      expect(matches[1].type).toBe('stripe');
+      expect(matches[1].type).toBe('stripe-test');
       expect(matches[2].type).toBe('aws-access');
     });
 

@@ -9,7 +9,7 @@ export class SecretScanner {
       // AI/ML API Keys
       ['anthropic', { regex: /sk-ant-[a-zA-Z0-9_-]{20,}/g, severity: 'critical' }],
       ['openai', { regex: /sk-[a-zA-Z0-9]{48}/g, severity: 'critical' }],
-      ['cohere', { regex: /[a-zA-Z0-9]{40}/g, severity: 'critical' }],
+      ['cohere', { regex: /[a-zA-Z0-9]{40}\b/g, severity: 'critical' }],
       ['huggingface', { regex: /hf_[a-zA-Z0-9]{34}/g, severity: 'critical' }],
       ['replicate', { regex: /r8_[a-zA-Z0-9]{32}/g, severity: 'critical' }],
 
@@ -20,7 +20,7 @@ export class SecretScanner {
 
       // Cloud Providers
       ['aws-access', { regex: /AKIA[0-9A-Z]{16}/g, severity: 'critical' }],
-      ['aws-secret', { regex: /[a-zA-Z0-9/+]{40}/g, severity: 'critical' }],
+      ['aws-secret', { regex: /[a-zA-Z0-9/+]{40}\b/g, severity: 'critical' }],
       ['gcp-service-account', { regex: /"type":\s*"service_account"/g, severity: 'critical' }],
       ['gcp-api-key', { regex: /AIza[a-zA-Z0-9_-]{35}/g, severity: 'critical' }],
       ['gcp-oauth', { regex: /[0-9]+-[a-zA-Z0-9_]{32}\.apps\.googleusercontent\.com/g, severity: 'critical' }],
@@ -81,6 +81,10 @@ export class SecretScanner {
     }
 
     const content = fs.readFileSync(filePath, 'utf-8');
+
+    // Build line index for O(log n) line number lookup
+    const lineIndex = this.buildLineIndex(content);
+
     const matches: SecretMatch[] = [];
 
     for (const [type, { regex, severity }] of this.patterns) {
@@ -89,7 +93,7 @@ export class SecretScanner {
       regex.lastIndex = 0;
 
       while ((match = regex.exec(content)) !== null) {
-        const line = this.getLineNumber(content, match.index);
+        const line = this.getLineNumberFromIndex(lineIndex, match.index);
         const masked = this.maskValue(match[0], type);
 
         matches.push({
@@ -105,9 +109,36 @@ export class SecretScanner {
     return matches;
   }
 
-  private getLineNumber(content: string, index: number): number {
-    const before = content.substring(0, index);
-    return before.split('\n').length;
+  /**
+   * Build an index of newline positions for efficient line number lookup
+   */
+  private buildLineIndex(content: string): number[] {
+    const lineIndex = [0]; // First line starts at position 0
+    for (let i = 0; i < content.length; i++) {
+      if (content[i] === '\n') {
+        lineIndex.push(i + 1); // Next line starts after newline
+      }
+    }
+    return lineIndex;
+  }
+
+  /**
+   * Get line number from position using binary search on line index
+   */
+  private getLineNumberFromIndex(lineIndex: number[], index: number): number {
+    let left = 0;
+    let right = lineIndex.length - 1;
+
+    while (left <= right) {
+      const mid = Math.floor((left + right) / 2);
+      if (lineIndex[mid] <= index) {
+        left = mid + 1;
+      } else {
+        right = mid - 1;
+      }
+    }
+
+    return left;
   }
 
   private maskValue(value: string, type: string): string {
