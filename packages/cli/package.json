@@ -1,0 +1,35 @@
+{
+  "name": "@vaultcompass/vault-guard",
+  "version": "1.0.0",
+  "description": "Security and optimization layer for AI-native coding",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "vault-guard": "./dist/cli-entry.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "start": "node dist/cli.js"
+  },
+  "keywords": [
+    "cli",
+    "security",
+    "secret-scanner",
+    "pre-commit-hook"
+  ],
+  "dependencies": {
+    "@vaultcompass/vault-guard-core": "workspace:*",
+    "chalk": "^4.1.2",
+    "commander": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.11.16",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "typescript": "^5.3.3"
+  }
+}

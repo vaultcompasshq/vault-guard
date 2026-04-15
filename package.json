@@ -1,0 +1,35 @@
+{
+  "name": "@vaultcompass/vault-guard",
+  "version": "1.0.0",
+  "description": "Security and optimization layer for AI-native coding",
+  "private": true,
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "lint": "eslint . --ext .ts",
+    "prepublishOnly": "pnpm build",
+    "release": "pnpm publish -r"
+  },
+  "keywords": [
+    "cli",
+    "security",
+    "ai-coding",
+    "guardrails",
+    "secret-scanner",
+    "token-optimization",
+    "pre-commit-hook"
+  ],
+  "author": "Vault & Compass LLC",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/jest": "^29.0.0",
+    "typescript": "^5.0.0",
+    "eslint": "^9.0.0",
+    "jest": "^29.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}
