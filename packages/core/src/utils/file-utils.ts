@@ -2,7 +2,17 @@ import fs from 'fs';
 import path from 'path';
 
 // Cache for .gitignore patterns to avoid re-reading files
-const gitignoreCache = new Map<string, string[]>();
+const gitignoreCache = new Map<string, { ignore: string[]; negate: string[] }>();
+
+/**
+ * Gitignore pattern interface
+ */
+interface GitignorePattern {
+  pattern: string;
+  isNegation: boolean;
+  isDirectory: boolean;
+  regex: RegExp;
+}
 
 /**
  * Get all files in directory recursively
@@ -66,7 +76,7 @@ function shouldIgnoreDirectory(name: string): boolean {
   return ignoreDirs.includes(name);
 }
 
-function shouldIgnoreFile(filePath: string, gitignorePatterns: string[] = []): boolean {
+function shouldIgnoreFile(filePath: string, gitignorePatterns: GitignorePattern[] = []): boolean {
   const ext = path.extname(filePath);
   const ignoreExts = [
     '.png',
@@ -91,13 +101,26 @@ function shouldIgnoreFile(filePath: string, gitignorePatterns: string[] = []): b
     return true;
   }
 
-  // Check against .gitignore patterns
+  // Check against .gitignore patterns with proper negation support
   if (gitignorePatterns.length > 0) {
     const relativePath = path.relative(process.cwd(), filePath);
-    for (const pattern of gitignorePatterns) {
-      if (matchesGitignorePattern(relativePath, pattern)) {
-        return true;
+    let isIgnored = false;
+
+    // First pass: check if file matches any ignore pattern
+    for (const { pattern, isNegation, regex } of gitignorePatterns) {
+      if (!isNegation && regex.test(relativePath)) {
+        isIgnored = true;
       }
+    }
+
+    // Second pass: check if file matches any negation pattern (only if already ignored)
+    if (isIgnored) {
+      for (const { pattern, isNegation, regex } of gitignorePatterns) {
+        if (isNegation && regex.test(relativePath)) {
+          return false; // File is re-included by negation pattern
+        }
+      }
+      return true; // File is ignored and no negation pattern applies
     }
   }
 
@@ -106,14 +129,16 @@ function shouldIgnoreFile(filePath: string, gitignorePatterns: string[] = []): b
 
 /**
  * Load .gitignore patterns from directory and parent directories
+ * Returns both ignore and negation patterns with proper regex compilation
  */
-function loadGitignorePatterns(dirPath: string): string[] {
+function loadGitignorePatterns(dirPath: string): GitignorePattern[] {
   const cacheKey = dirPath;
   if (gitignoreCache.has(cacheKey)) {
-    return gitignoreCache.get(cacheKey)!;
+    return gitignoreCache.get(cacheKey)!.ignore.concat(gitignoreCache.get(cacheKey)!.negate);
   }
 
-  const patterns: string[] = [];
+  const ignorePatterns: GitignorePattern[] = [];
+  const negatePatterns: GitignorePattern[] = [];
   let currentDir = dirPath;
 
   // Walk up directory tree to collect all .gitignore patterns
@@ -126,7 +151,14 @@ function loadGitignorePatterns(dirPath: string): string[] {
           .map(line => line.trim())
           .filter(line => line && !line.startsWith('#'));
 
-        patterns.unshift(...lines);
+        for (const line of lines) {
+          const pattern = compileGitignorePattern(line);
+          if (pattern.isNegation) {
+            negatePatterns.push(pattern);
+          } else {
+            ignorePatterns.push(pattern);
+          }
+        }
       } catch (error) {
         // Ignore .gitignore read errors
       }
@@ -139,8 +171,97 @@ function loadGitignorePatterns(dirPath: string): string[] {
     currentDir = parentDir;
   }
 
-  gitignoreCache.set(cacheKey, patterns);
-  return patterns;
+  gitignoreCache.set(cacheKey, { ignore: ignorePatterns, negate: negatePatterns });
+  return [...ignorePatterns, ...negatePatterns];
+}
+
+/**
+ * Compile a .gitignore pattern into a regex pattern object
+ */
+function compileGitignorePattern(line: string): GitignorePattern {
+  let pattern = line;
+  const isNegation = pattern.startsWith('!');
+
+  if (isNegation) {
+    pattern = pattern.substring(1);
+  }
+
+  // Handle directory patterns (ending with /)
+  const isDirectory = pattern.endsWith('/');
+  if (isDirectory) {
+    pattern = pattern.slice(0, -1);
+  }
+
+  // Remove leading slash for matching
+  const hasLeadingSlash = pattern.startsWith('/');
+  if (hasLeadingSlash) {
+    pattern = pattern.substring(1);
+  }
+
+  // Handle recursive globbing (**)
+  pattern = pattern
+    .replace(/\*\*/g, '(.*/)?')  // ** matches any number of directories
+    .replace(/\*/g, '[^/]*')     // * matches within a directory
+    .replace(/\?/g, '[^/]');      // ? matches single character
+
+  // Escape special regex characters
+  pattern = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+
+  // Convert to regex
+  let regexPattern: string;
+  if (hasLeadingSlash) {
+    // Pattern starting with / matches from root
+    regexPattern = `^${pattern}.*`;
+  } else {
+    // Pattern without / matches anywhere
+    regexPattern = `(?:^|/)${pattern}(?:/|$)`;
+  }
+
+  const regex = new RegExp(regexPattern);
+
+  return {
+    pattern: line,
+    isNegation,
+    isDirectory,
+    regex
+  };
+}
+
+/**
+ * Check if a file path matches a .gitignore pattern
+ * @deprecated Use shouldIgnoreFile instead which handles negation properly
+ */
+function matchesGitignorePattern(filePath: string, pattern: string): boolean {
+  // Remove leading slashes for matching
+  let gitignorePattern = pattern.replace(/^\//, '');
+
+  // Handle directory patterns (ending with /)
+  const isDirectoryPattern = gitignorePattern.endsWith('/');
+  if (isDirectoryPattern) {
+    gitignorePattern = gitignorePattern.slice(0, -1);
+  }
+
+  // Handle negation patterns (starting with !)
+  if (gitignorePattern.startsWith('!')) {
+    return false; // Negation not implemented for simplicity
+  }
+
+  // Convert glob pattern to regex
+  let regexPattern = gitignorePattern
+    .replace(/\./g, '\\.')
+    .replace(/\*/g, '.*')
+    .replace(/\?/g, '.');
+
+  // Match anywhere in path if pattern doesn't start with /
+  if (!pattern.startsWith('/')) {
+    regexPattern = `.*${regexPattern}`;
+  }
+
+  // Match end of path
+  regexPattern = `${regexPattern}.*`;
+
+  const regex = new RegExp(regexPattern);
+  return regex.test(filePath);
 }
 
 /**

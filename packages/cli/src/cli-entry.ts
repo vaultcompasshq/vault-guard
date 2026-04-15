@@ -3,4 +3,13 @@
 import { buildCli } from './cli';
 
 const program = buildCli();
-program.parse();
+
+// Parse arguments and execute command
+program.parseAsync().then(() => {
+  // Successful completion
+  process.exit(0);
+}).catch((error) => {
+  // Handle errors
+  console.error(error);
+  process.exit(1);
+});

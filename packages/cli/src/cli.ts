@@ -20,7 +20,10 @@ export function buildCli(): Command {
     .description('Scan files for secrets')
     .argument('[path]', 'Path to scan', '.')
     .action(async (path: string) => {
-      await scanCommand(path);
+      const exitCode = await scanCommand(path);
+      if (exitCode !== 0) {
+        process.exit(exitCode);
+      }
     });
 
   // Install-hook command
@@ -50,10 +53,13 @@ export function buildCli(): Command {
   // Fix command
   program
     .command('fix')
-    .description('Auto-fix issues')
-    .argument('[files...]', 'Files to fix')
+    .description('Show remediation steps for secrets')
+    .argument('[files...]', 'Files to check')
     .action(async (files: string[]) => {
-      await fixCommand(files);
+      const exitCode = await fixCommand(files);
+      if (exitCode !== 0) {
+        process.exit(exitCode);
+      }
     });
 
   // Check command
@@ -62,7 +68,10 @@ export function buildCli(): Command {
     .description('Quick check')
     .argument('[files...]', 'Files to check')
     .action(async (files: string[]) => {
-      await checkCommand(files);
+      const exitCode = await checkCommand(files);
+      if (exitCode !== 0) {
+        process.exit(exitCode);
+      }
     });
 
   return program;
