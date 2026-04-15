@@ -1,5 +1,6 @@
 import { SecretScanner } from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
+import path from 'path';
 import { scanFilesAsync } from '../utils/scan-utils';
 
 export async function checkCommand(files: string[]): Promise<number> {
@@ -34,6 +35,5 @@ export async function checkCommand(files: string[]): Promise<number> {
 }
 
 function relativePathCwd(filePath: string): string {
-  const path = require('path');
   return path.relative(process.cwd(), filePath);
 }

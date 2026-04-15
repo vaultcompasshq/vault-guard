@@ -142,6 +142,8 @@ export class SecretScanner {
   }
 
   private maskValue(value: string, type: string): string {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const _type = type; // Type parameter reserved for future masking strategies
     // Show first 12 chars, then mask with ...
     const prefixLength = 12;
     if (value.length <= prefixLength) {

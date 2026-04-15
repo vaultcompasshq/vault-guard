@@ -1,6 +1,6 @@
 import path from 'path';
 import fs from 'fs';
-import { SecretScanner, getFilesToScan, getFilesToScanAsync } from '@vaultcompass/vault-guard-core';
+import { SecretScanner, getFilesToScan, getFilesToScanAsync, SecretMatch } from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -12,7 +12,7 @@ const BINARY_EXTENSIONS = [
 
 export interface ScanResult {
   file: string;
-  matches: any[];
+  matches: SecretMatch[];
 }
 
 export interface ScanOptions {

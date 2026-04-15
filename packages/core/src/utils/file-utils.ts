@@ -53,12 +53,12 @@ export async function getAllFilesAsync(dirPath: string, visited = new Set<string
         } else if (lstat.isFile() && !shouldIgnoreFile(fullPath)) {
           files.push(fullPath);
         }
-      } catch (error) {
+      } catch {
         // Skip files/directories we can't read (permission errors, etc.)
         // Silently continue to avoid crashing on inaccessible files
       }
     }
-  } catch (error) {
+  } catch {
     // If we can't read the directory at all, return empty array
     // This handles permission errors on the directory itself
   }
@@ -101,12 +101,12 @@ export function getAllFiles(dirPath: string, visited = new Set<string>()): strin
         } else if (lstat.isFile() && !shouldIgnoreFile(fullPath)) {
           files.push(fullPath);
         }
-      } catch (error) {
+      } catch {
         // Skip files/directories we can't read (permission errors, etc.)
         // Silently continue to avoid crashing on inaccessible files
       }
     }
-  } catch (error) {
+  } catch {
     // If we can't read the directory at all, return empty array
     // This handles permission errors on the directory itself
   }
@@ -168,6 +168,7 @@ function shouldIgnoreFile(filePath: string, gitignorePatterns: GitignorePattern[
     let isIgnored = false;
 
     // First pass: check if file matches any ignore pattern
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     for (const { pattern, isNegation, regex } of gitignorePatterns) {
       if (!isNegation && regex.test(relativePath)) {
         isIgnored = true;
@@ -176,6 +177,7 @@ function shouldIgnoreFile(filePath: string, gitignorePatterns: GitignorePattern[
 
     // Second pass: check if file matches any negation pattern (only if already ignored)
     if (isIgnored) {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       for (const { pattern, isNegation, regex } of gitignorePatterns) {
         if (isNegation && regex.test(relativePath)) {
           return false; // File is re-included by negation pattern
@@ -194,8 +196,9 @@ function shouldIgnoreFile(filePath: string, gitignorePatterns: GitignorePattern[
  */
 function loadGitignorePatterns(dirPath: string): GitignorePattern[] {
   const cacheKey = dirPath;
-  if (gitignoreCache.has(cacheKey)) {
-    return gitignoreCache.get(cacheKey)!.ignore.concat(gitignoreCache.get(cacheKey)!.negate);
+  const cached = gitignoreCache.get(cacheKey);
+  if (cached) {
+    return cached.ignore.concat(cached.negate);
   }
 
   const ignorePatterns: GitignorePattern[] = [];
@@ -220,7 +223,7 @@ function loadGitignorePatterns(dirPath: string): GitignorePattern[] {
             ignorePatterns.push(pattern);
           }
         }
-      } catch (error) {
+      } catch {
         // Ignore .gitignore read errors
       }
     }
@@ -286,40 +289,4 @@ function compileGitignorePattern(line: string): GitignorePattern {
     isDirectory,
     regex
   };
-}
-
-/**
- * Check if a file path matches a .gitignore pattern
- */
-function matchesGitignorePattern(filePath: string, pattern: string): boolean {
-  // Remove leading slashes for matching
-  let gitignorePattern = pattern.replace(/^\//, '');
-
-  // Handle directory patterns (ending with /)
-  const isDirectoryPattern = gitignorePattern.endsWith('/');
-  if (isDirectoryPattern) {
-    gitignorePattern = gitignorePattern.slice(0, -1);
-  }
-
-  // Handle negation patterns (starting with !)
-  if (gitignorePattern.startsWith('!')) {
-    return false; // Negation not implemented for simplicity
-  }
-
-  // Convert glob pattern to regex
-  let regexPattern = gitignorePattern
-    .replace(/\./g, '\\.')
-    .replace(/\*/g, '.*')
-    .replace(/\?/g, '.');
-
-  // Match anywhere in path if pattern doesn't start with /
-  if (!pattern.startsWith('/')) {
-    regexPattern = `.*${regexPattern}`;
-  }
-
-  // Match end of path
-  regexPattern = `${regexPattern}.*`;
-
-  const regex = new RegExp(regexPattern);
-  return regex.test(filePath);
 }
