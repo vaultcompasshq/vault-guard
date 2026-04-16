@@ -18,7 +18,7 @@ interface GitignorePattern {
 /**
  * Get all files in directory recursively (async version)
  */
-export async function getAllFilesAsync(dirPath: string, visited = new Set<string>()): Promise<string[]> {
+export async function getAllFilesAsync(dirPath: string, visited = new Set<string>(), verbose = false): Promise<string[]> {
   const files: string[] = [];
 
   try {
@@ -53,14 +53,18 @@ export async function getAllFilesAsync(dirPath: string, visited = new Set<string
         } else if (lstat.isFile() && !shouldIgnoreFile(fullPath)) {
           files.push(fullPath);
         }
-      } catch {
+      } catch (error) {
         // Skip files/directories we can't read (permission errors, etc.)
-        // Silently continue to avoid crashing on inaccessible files
+        if (verbose) {
+          console.error(`Warning: Cannot access ${path.join(dirPath, item)}:`, error);
+        }
       }
     }
-  } catch {
+  } catch (error) {
     // If we can't read the directory at all, return empty array
-    // This handles permission errors on the directory itself
+    if (verbose) {
+      console.error(`Warning: Cannot read directory ${dirPath}:`, error);
+    }
   }
 
   return files;
@@ -69,7 +73,7 @@ export async function getAllFilesAsync(dirPath: string, visited = new Set<string
 /**
  * Get all files in directory recursively (sync version for backwards compatibility)
  */
-export function getAllFiles(dirPath: string, visited = new Set<string>()): string[] {
+export function getAllFiles(dirPath: string, visited = new Set<string>(), verbose = false): string[] {
   const files: string[] = [];
 
   try {
@@ -101,14 +105,18 @@ export function getAllFiles(dirPath: string, visited = new Set<string>()): strin
         } else if (lstat.isFile() && !shouldIgnoreFile(fullPath)) {
           files.push(fullPath);
         }
-      } catch {
+      } catch (error) {
         // Skip files/directories we can't read (permission errors, etc.)
-        // Silently continue to avoid crashing on inaccessible files
+        if (verbose) {
+          console.error(`Warning: Cannot access ${path.join(dirPath, item)}:`, error);
+        }
       }
     }
-  } catch {
+  } catch (error) {
     // If we can't read the directory at all, return empty array
-    // This handles permission errors on the directory itself
+    if (verbose) {
+      console.error(`Warning: Cannot read directory ${dirPath}:`, error);
+    }
   }
 
   return files;
@@ -117,18 +125,18 @@ export function getAllFiles(dirPath: string, visited = new Set<string>()): strin
 /**
  * Get files to scan (filters out ignored directories/files) - async version
  */
-export async function getFilesToScanAsync(targetPath: string): Promise<string[]> {
-  const allFiles = await getAllFilesAsync(targetPath);
-  const gitignorePatterns = loadGitignorePatterns(targetPath);
+export async function getFilesToScanAsync(targetPath: string, verbose = false): Promise<string[]> {
+  const allFiles = await getAllFilesAsync(targetPath, new Set(), verbose);
+  const gitignorePatterns = loadGitignorePatterns(targetPath, verbose);
   return allFiles.filter(file => !shouldIgnoreFile(file, gitignorePatterns));
 }
 
 /**
  * Get files to scan (filters out ignored directories/files) - sync version
  */
-export function getFilesToScan(targetPath: string): string[] {
-  const allFiles = getAllFiles(targetPath);
-  const gitignorePatterns = loadGitignorePatterns(targetPath);
+export function getFilesToScan(targetPath: string, verbose = false): string[] {
+  const allFiles = getAllFiles(targetPath, new Set(), verbose);
+  const gitignorePatterns = loadGitignorePatterns(targetPath, verbose);
   return allFiles.filter(file => !shouldIgnoreFile(file, gitignorePatterns));
 }
 
@@ -194,7 +202,7 @@ function shouldIgnoreFile(filePath: string, gitignorePatterns: GitignorePattern[
  * Load .gitignore patterns from directory and parent directories
  * Returns both ignore and negation patterns with proper regex compilation
  */
-function loadGitignorePatterns(dirPath: string): GitignorePattern[] {
+function loadGitignorePatterns(dirPath: string, verbose = false): GitignorePattern[] {
   const cacheKey = dirPath;
   const cached = gitignoreCache.get(cacheKey);
   if (cached) {
@@ -223,8 +231,11 @@ function loadGitignorePatterns(dirPath: string): GitignorePattern[] {
             ignorePatterns.push(pattern);
           }
         }
-      } catch {
+      } catch (error) {
         // Ignore .gitignore read errors
+        if (verbose) {
+          console.error(`Warning: Cannot read .gitignore in ${currentDir}:`, error);
+        }
       }
     }
 

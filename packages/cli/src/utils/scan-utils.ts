@@ -65,7 +65,7 @@ export async function scanFilesAsync(
       filesToScan = [targetPath];
     } else if (stat.isDirectory()) {
       // Use async getFilesToScan to get proper .gitignore filtering
-      filesToScan = await getFilesToScanAsync(targetPath);
+      filesToScan = await getFilesToScanAsync(targetPath, verbose);
     } else {
       if (verbose) {
         console.error(chalk.red('❌ Error:'), chalk.white(`Invalid path: ${targetPath}`));
@@ -159,7 +159,7 @@ export function scanFiles(
       filesToScan = [targetPath];
     } else if (stat.isDirectory()) {
       // Use getFilesToScan to get proper .gitignore filtering
-      filesToScan = getFilesToScan(targetPath);
+      filesToScan = getFilesToScan(targetPath, verbose);
     } else {
       if (verbose) {
         console.error(chalk.red('❌ Error:'), chalk.white(`Invalid path: ${targetPath}`));

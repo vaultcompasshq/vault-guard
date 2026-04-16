@@ -1,4 +1,5 @@
 export * from './types';
+export * from './errors';
 export * from './scanners';
 export * from './utils/file-utils';
 
