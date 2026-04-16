@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { HookError } from '../errors';
 
 export class PreCommitHook {
   private hookContent = `#!/bin/sh
@@ -57,9 +58,10 @@ echo "✅ No secrets found, proceeding with commit"
         message: 'Pre-commit hook installed successfully'
       };
     } catch (error) {
+      const hookError = new HookError(`Failed to install hook: ${error}`, 'install');
       return {
         success: false,
-        message: `Failed to install hook: ${error}`
+        message: hookError.message
       };
     }
   }
@@ -84,9 +86,10 @@ echo "✅ No secrets found, proceeding with commit"
         message: 'Pre-commit hook removed'
       };
     } catch (error) {
+      const hookError = new HookError(`Failed to remove hook: ${error}`, 'uninstall');
       return {
         success: false,
-        message: `Failed to remove hook: ${error}`
+        message: hookError.message
       };
     }
   }

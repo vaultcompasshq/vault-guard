@@ -1,6 +1,5 @@
 {
   "name": "@vaultcompass/vault-guard",
-  "type": "module",
   "version": "1.0.0",
   "description": "Security and optimization layer for AI-native coding",
   "private": true,
