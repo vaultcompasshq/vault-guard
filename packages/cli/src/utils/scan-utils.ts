@@ -20,6 +20,7 @@ export interface ScanOptions {
   maxSize?: number;
   skipBinary?: boolean;
   progress?: boolean;
+  concurrency?: number; // Number of files to scan in parallel
 }
 
 /**
@@ -43,7 +44,8 @@ export async function scanFilesAsync(
     verbose = false,
     maxSize = MAX_FILE_SIZE,
     skipBinary = true,
-    progress = false
+    progress = false,
+    concurrency = 10 // Scan 10 files at a time by default
   } = options;
 
   const results: ScanResult[] = [];
@@ -73,14 +75,12 @@ export async function scanFilesAsync(
       continue;
     }
 
-    // Scan each file with proper safeguards
-    for (let i = 0; i < filesToScan.length; i++) {
-      const file = filesToScan[i];
-
+    // Scan each file with proper safeguards (parallel with concurrency limit)
+    const scanFile = async (file: string): Promise<void> => {
       try {
         // Skip binary files
         if (skipBinary && isBinaryFile(file)) {
-          continue;
+          return;
         }
 
         // Check file size
@@ -93,18 +93,13 @@ export async function scanFilesAsync(
               chalk.gray(`(${(fileStat.size / 1024 / 1024).toFixed(2)}MB)`)
             );
           }
-          continue;
+          return;
         }
 
         // Scan the file
         const matches = scanner.scan(file);
         if (matches.length > 0) {
           results.push({ file, matches });
-        }
-
-        // Show progress for large scans
-        if (progress && filesToScan.length > 10 && i % 10 === 0) {
-          process.stderr.write(`\r${chalk.gray(`Scanning... ${Math.round((i / filesToScan.length) * 100)}%`)}`);
         }
       } catch (error) {
         if (verbose) {
@@ -115,6 +110,18 @@ export async function scanFilesAsync(
           console.error(chalk.gray(String(error)));
         }
         // Continue scanning other files
+      }
+    };
+
+    // Process files in batches for parallel scanning
+    for (let i = 0; i < filesToScan.length; i += concurrency) {
+      const batch = filesToScan.slice(i, i + concurrency);
+      await Promise.all(batch.map(scanFile));
+
+      // Show progress for large scans
+      if (progress && filesToScan.length > 10) {
+        const percent = Math.round(((i + batch.length) / filesToScan.length) * 100);
+        process.stderr.write(`\r${chalk.gray(`Scanning... ${percent}%`)}`);
       }
     }
 
