@@ -1,6 +1,5 @@
 import fs from 'fs';
 import { SecretMatch } from '../types';
-import { ScanError } from '../errors';
 
 export class SecretScanner {
   private patterns: Map<string, { regex: RegExp; severity: SecretMatch['severity'] }>;
