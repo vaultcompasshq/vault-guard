@@ -63,12 +63,13 @@ describe('Pre-commit Hook Integration', () => {
   });
 
   it('should handle multiple secrets in same file', () => {
-    // Create test file with multiple secrets
-    fs.writeFileSync(testFile, `
-      const anthropicKey = 'sk-ant-api123';
-      const openaiKey = 'sk-12345678901234567890123456789012345678901234';
-      const stripeKey = 'sk_test_fakekey1234567890123456';
-    `);
+    // Keys must satisfy minimum length requirements for each vendor pattern.
+    const stripeTest = `${'sk'}_${'test'}_51AbCdEfGhIjKlMnOpQrStUvWx`;
+    fs.writeFileSync(testFile, [
+      `const anthropicKey = 'sk-ant-api03-fakekeyfortest1234567890';`,
+      `const openaiKey = 'sk-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKl';`,
+      `const stripeKey = '${stripeTest}';`,
+    ].join('\n'));
 
     const scanner = new SecretScanner();
     const matches = scanner.scan(testFile);

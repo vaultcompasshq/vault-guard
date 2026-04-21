@@ -1,14 +1,14 @@
 {
-  "name": "@vaultcompass/vault-guard",
+  "name": "@vaultcompass/vault-guard-monorepo",
   "version": "1.0.0",
-  "description": "Security and optimization layer for AI-native coding",
+  "description": "Security and optimization layer for AI-native coding (workspace root — not published)",
   "private": true,
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "lint": "eslint .",
     "prepublishOnly": "pnpm build",
-    "release": "pnpm publish -r"
+    "release": "pnpm publish -r --access public"
   },
   "keywords": [
     "cli",
@@ -31,8 +31,9 @@
     "@eslint/js": "^9.0.0",
     "jest": "^29.0.0"
   },
+  "packageManager": "pnpm@9.15.9",
   "engines": {
     "node": ">=18.0.0",
-    "pnpm": ">=8.0.0"
+    "pnpm": ">=9.0.0"
   }
 }

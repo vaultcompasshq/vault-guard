@@ -1,0 +1,34 @@
+name: Bug report
+description: Something is broken in Vault Guard
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug.
+  - type: input
+    id: version
+    attributes:
+      label: vault-guard version
+      description: Output of `vault-guard --version` or npm package version
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How can we reproduce it?
+      description: Commands, minimal file content (redact secrets!), OS / Node version.
+    validations:
+      required: true

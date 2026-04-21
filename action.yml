@@ -1,0 +1,54 @@
+name: Vault Guard
+description: Scan a repository for secrets with @vaultcompass/vault-guard (SARIF-friendly). Requires a prior actions/checkout of your repo.
+author: Vault & Compass LLC
+branding:
+  icon: shield
+  color: red
+
+inputs:
+  version:
+    description: npm dist-tag or semver for @vaultcompass/vault-guard
+    required: false
+    default: latest
+  path:
+    description: Path to scan (relative to the workspace root)
+    required: false
+    default: .
+  format:
+    description: Output format for vault-guard scan (text, json, sarif)
+    required: false
+    default: sarif
+  sarif-output:
+    description: Path of the SARIF or JSON file written under the workspace root
+    required: false
+    default: vault-guard-results.sarif
+
+outputs:
+  results-file:
+    description: Absolute path to the written results file
+    value: ${{ steps.run.outputs.results_file }}
+
+runs:
+  using: composite
+  steps:
+    # Consumers must run `actions/checkout` on their repository *before* this action.
+
+    - name: Setup Node.js
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: '20'
+
+    - name: Run vault-guard
+      id: run
+      shell: bash
+      run: |
+        set -euo pipefail
+        ROOT="${GITHUB_WORKSPACE}"
+        OUT="${ROOT}/${{ inputs.sarif-output }}"
+        REL="${{ inputs.path }}"
+        cd "${ROOT}"
+        if [[ "${REL}" != "." && "${REL}" != ./ ]]; then
+          cd "${ROOT}/${REL}"
+        fi
+        npx --yes "@vaultcompass/vault-guard@${{ inputs.version }}" scan . --format "${{ inputs.format }}" | tee "${OUT}"
+        echo "results_file=${OUT}" >> "${GITHUB_OUTPUT}"

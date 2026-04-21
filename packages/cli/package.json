@@ -4,6 +4,24 @@
   "description": "Security and optimization layer for AI-native coding",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vaultcompasshq/vault-guard.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/vaultcompasshq/vault-guard/issues"
+  },
+  "homepage": "https://github.com/vaultcompasshq/vault-guard#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "bin": {
     "vault-guard": "./dist/cli-entry.js"
   },
@@ -22,6 +40,7 @@
   ],
   "dependencies": {
     "@vaultcompass/vault-guard-core": "workspace:*",
+    "@vaultcompass/vault-guard-telemetry": "workspace:*",
     "chalk": "^4.1.2",
     "commander": "^12.0.0"
   },

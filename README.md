@@ -16,7 +16,20 @@ npm install -g @vaultcompass/vault-guard
 vault-guard scan .
 ```
 
-Scans your codebase for API keys, tokens, and other secrets. Blocks commits if found.
+Scans your codebase for API keys, tokens, and other secrets.
+
+**Staged files only** (fast, matches what you are about to commit):
+
+```bash
+vault-guard scan --staged
+```
+
+**Machine-readable output** (SARIF for GitHub Code Scanning, or JSON):
+
+```bash
+vault-guard scan . --format sarif
+vault-guard scan . --format json
+```
 
 ### Install pre-commit hook
 
@@ -24,7 +37,20 @@ Scans your codebase for API keys, tokens, and other secrets. Blocks commits if f
 vault-guard install-hook
 ```
 
-Automatically scan before every commit. Never commit a secret again.
+Installs a Git hook that runs **`vault-guard scan --staged`** before each commit. Honors
+`core.hooksPath` (including global `hooksPath` on your machine) so the hook lands where Git
+actually executes it.
+
+**Managers** (optional):
+
+```bash
+vault-guard install-hook --manager native     # default: Git hooks / hooksPath
+vault-guard install-hook --manager husky      # .husky/pre-commit
+vault-guard install-hook --manager lefthook   # lefthook-local.yml
+vault-guard install-hook --manager precommit  # .pre-commit-config.yaml (only if absent)
+```
+
+Emergency bypass (discouraged): `git commit --no-verify`.
 
 ### Check token usage
 
@@ -42,17 +68,98 @@ vault-guard check src/api.ts
 
 Check specific files for secrets.
 
+### Statusline JSON (M5)
+
+For Cursor CLI / custom status lines:
+
+```bash
+vault-guard statusline --json
+```
+
+Emits `secrets_today`, token totals, estimated spend, and last model from **local** `~/.vault-guard/usage.sqlite`.
+
+### Model hint (M6)
+
+```bash
+vault-guard suggest-model --json
+```
+
+Uses recent local telemetry to suggest a model label (heuristic).
+
+### Anthropic proxy (M6, opt-in)
+
+```bash
+vault-guard proxy --listen 127.0.0.1:8765
+```
+
+Forwards **`POST /v1/messages`** to `api.anthropic.com` and logs **`usage`** for non-stream JSON responses into the local SQLite DB. Point clients at `ANTHROPIC_BASE_URL=http://127.0.0.1:8765` when you explicitly want this behavior.
+
+### MCP server (M5)
+
+See **[docs/MCP.md](./docs/MCP.md)**. Run: `npx -y @vaultcompass/vault-guard-mcp` (stdio).
+
+### VS Code / Cursor extension (M5)
+
+Workspace package **`packages/vscode-extension`**: `pnpm --filter vault-guard-vscode build`, then **Run Extension** from VS Code for local tryout.
+
 ## What it detects
 
-- AI/ML API keys (Anthropic, OpenAI, Cohere, HuggingFace)
+- AI/ML API keys (Anthropic, OpenAI, HuggingFace, Replicate, `sk-proj-*`)
 - Payment processors (Stripe, PayPal)
-- Cloud providers (AWS, GCP, Azure)
-- Database URLs (PostgreSQL, MongoDB, Redis)
-- Version control tokens (GitHub, GitLab, Bitbucket)
+- Cloud providers (AWS access keys, context-anchored AWS secret keys, GCP, Azure storage)
+- Database URLs (PostgreSQL, MySQL, MongoDB, Redis)
+- Version control tokens (GitHub classic + fine-grained PATs, GitLab, Bitbucket)
 - Communication (Slack, Discord webhooks)
-- SSH keys, JWT tokens, passwords
+- SSH private keys, JWTs, and entropy-gated generic `api_key` / `secret` assignments
+
+See **`docs/PRODUCTION_PLAN.md`** for the full roadmap (MCP, editor integrations, spend tracking).
+
+## Adoption & marketing (M7)
+
+In-repo assets so you can ship §5 of the production plan without blocking on external hosts:
+
+| Asset | Purpose |
+|--------|---------|
+| **[marketing/index.html](./marketing/index.html)** | Static landing page (copy to GitHub Pages or `vaultcompass.io`; see [marketing/README.md](./marketing/README.md)). |
+| **[docs/SCREENCAST.md](./docs/SCREENCAST.md)** | 90-second storyboard + checklist before/after upload. |
+| **[docs/AWESOME_LISTS.md](./docs/AWESOME_LISTS.md)** | Curated list targets + PR template + tracking table. |
+| **[docs/DESIGN_PARTNERS.md](./docs/DESIGN_PARTNERS.md)** | Outreach copy + **five-slot** calendar template (you book the slots). |
+| **[docs/ISSUE_TRIAGE.md](./docs/ISSUE_TRIAGE.md)** | 24h triage habit for early OSS velocity. |
+
+**Exit criteria you still do outside git:** publish the landing URL, record and link the screencast, open awesome-list PRs, and book five partner conversations using the template.
+
+## GitHub Action
+
+This repository ships a **composite action** at the repo root (`action.yml`). In your workflow:
+
+```yaml
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: vaultcompasshq/vault-guard@v1.0.0 # or main / a tag you trust
+        with:
+          version: latest
+          path: .
+          format: sarif
+          sarif-output: vault-guard-results.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: vault-guard-results.sarif
+```
+
+Details: **`docs/GITHUB_ACTION.md`**. Branch protection and org checklist: **`docs/GITHUB_BRANCH_PROTECTION.md`**.
+
+## Docker & Homebrew
+
+- **Docker:** `docker/README.md` — image installs the published npm CLI.
+- **Homebrew:** `packaging/homebrew/README.md` — optional tap workflow (npm remains canonical).
 
 ## Development
+
+Requires **Node.js 18+** and **pnpm 8+**.
 
 ```bash
 git clone https://github.com/vaultcompasshq/vault-guard.git
@@ -60,7 +167,10 @@ cd vault-guard
 pnpm install
 pnpm build
 pnpm test
+pnpm lint
 ```
+
+The workspace root is **`@vaultcompass/vault-guard-monorepo`** (private). Published npm packages include **`@vaultcompass/vault-guard`** (CLI), **`@vaultcompass/vault-guard-core`**, **`@vaultcompass/vault-guard-mcp`**, and **`@vaultcompass/vault-guard-telemetry`** under `packages/`. The VS Code extension package **`vault-guard-vscode`** is built from source for local or marketplace packaging.
 
 ## License
 

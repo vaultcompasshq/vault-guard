@@ -1,0 +1,32 @@
+{
+  "name": "@vaultcompass/vault-guard-telemetry",
+  "version": "1.0.0",
+  "description": "Opt-in local telemetry store for Vault Guard (usage + session events)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vaultcompasshq/vault-guard.git",
+    "directory": "packages/telemetry"
+  },
+  "engines": { "node": ">=18.0.0" },
+  "scripts": {
+    "build": "tsc",
+    "test": "jest"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@vaultcompass/vault-guard-core": "workspace:*",
+    "better-sqlite3": "^11.8.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.11.16",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "typescript": "^5.3.3"
+  }
+}

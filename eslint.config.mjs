@@ -6,6 +6,7 @@ export default [
   {
     ignores: [
       'node_modules/**',
+      'packages/mcp/scripts/**',
       'packages/**/dist/**',
       'packages/**/build/**',
       'packages/**/coverage/**',
@@ -15,6 +16,7 @@ export default [
       '**/*.d.ts.map',
       '**/*.js.map',
       '**/jest.config.js',
+      '**/jest.config.cjs',
     ],
   },
   js.configs.recommended,
@@ -48,7 +50,7 @@ export default [
       '@typescript-eslint/explicit-module-boundary-types': 'off',
       '@typescript-eslint/no-non-null-assertion': 'warn',
       'no-console': 'off',
-      'no-undef': 'off', // TypeScript handles this
+      'no-undef': 'off',
     },
   },
 ];

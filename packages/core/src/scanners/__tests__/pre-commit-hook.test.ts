@@ -1,6 +1,8 @@
 import { PreCommitHook } from '../pre-commit-hook';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
+import { execSync } from 'child_process';
 
 describe('PreCommitHook', () => {
   let preCommitHook: PreCommitHook;
@@ -8,387 +10,275 @@ describe('PreCommitHook', () => {
   let gitDir: string;
   let hooksDir: string;
   let hookPath: string;
+  const originalCwd = process.cwd();
 
   beforeEach(() => {
     preCommitHook = new PreCommitHook();
-    testDir = path.join(process.cwd(), 'tmp-test-pre-commit');
+    // Isolated temp dir outside any parent Git repo.
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-precommit-'));
+    execSync('git init -q', { cwd: testDir, stdio: 'ignore' });
+    // Override a *global* core.hooksPath (common on dev machines) so hooks resolve to .git/hooks.
+    execSync('git config --local core.hooksPath hooks', { cwd: testDir, stdio: 'ignore' });
     gitDir = path.join(testDir, '.git');
     hooksDir = path.join(gitDir, 'hooks');
     hookPath = path.join(hooksDir, 'pre-commit');
-
-    // Create test directory structure
-    if (!fs.existsSync(testDir)) {
-      fs.mkdirSync(testDir, { recursive: true });
-    }
   });
 
   afterEach(() => {
-    // Clean up test directory
+    process.chdir(originalCwd);
     if (fs.existsSync(testDir)) {
+      try {
+        execSync(`chmod -R u+rwx "${testDir}"`, { stdio: 'ignore' });
+      } catch {
+        /* ignore */
+      }
       fs.rmSync(testDir, { recursive: true, force: true });
     }
   });
 
-  describe('install', () => {
+  describe('install (native)', () => {
     it('should fail when not in a git repository', () => {
-      // Test directory has no .git folder
-      const originalCwd = process.cwd();
-      process.chdir(testDir);
-
+      const nonGit = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-nogit-'));
       try {
-        const result = preCommitHook.install();
-
+        process.chdir(nonGit);
+        const result = preCommitHook.install({ manager: 'native' });
         expect(result.success).toBe(false);
         expect(result.message).toBe('Not a git repository');
       } finally {
         process.chdir(originalCwd);
+        fs.rmSync(nonGit, { recursive: true, force: true });
       }
     });
 
     it('should install hook in git repository', () => {
-      // Create .git directory
-      fs.mkdirSync(gitDir, { recursive: true });
-
-      const originalCwd = process.cwd();
       process.chdir(testDir);
 
-      try {
-        const result = preCommitHook.install();
+      const result = preCommitHook.install({ manager: 'native' });
 
-        expect(result.success).toBe(true);
-        expect(result.message).toBe('Pre-commit hook installed successfully');
-        expect(fs.existsSync(hookPath)).toBe(true);
+      expect(result.success).toBe(true);
+      expect(result.message).toContain('Pre-commit hook installed');
+      expect(fs.existsSync(hookPath)).toBe(true);
 
-        // Verify hook content
-        const hookContent = fs.readFileSync(hookPath, 'utf-8');
-        expect(hookContent).toContain('vault-guard');
-        expect(hookContent).toContain('pre-commit hook');
-      } finally {
-        process.chdir(originalCwd);
-      }
+      const hookContent = fs.readFileSync(hookPath, 'utf-8');
+      expect(hookContent).toContain('vault-guard');
+      expect(hookContent).toContain('scan --staged');
+    });
+
+    it('should install into core.hooksPath when set (relative to .git)', () => {
+      const customHooksRel = 'my-hooks';
+      const customHooksAbs = path.join(gitDir, customHooksRel);
+      fs.mkdirSync(customHooksAbs, { recursive: true });
+      execSync(`git config --local core.hooksPath ${customHooksRel}`, { cwd: testDir, stdio: 'ignore' });
+
+      const customHookFile = path.join(customHooksAbs, 'pre-commit');
+      process.chdir(testDir);
+
+      const result = preCommitHook.install({ manager: 'native' });
+      expect(result.success).toBe(true);
+      expect(result.message).toContain('hooksPath');
+      expect(fs.existsSync(customHookFile)).toBe(true);
+      expect(fs.readFileSync(customHookFile, 'utf-8')).toContain('scan --staged');
     });
 
     it('should create hooks directory if it does not exist', () => {
-      // Create .git directory but no hooks directory
-      fs.mkdirSync(gitDir, { recursive: true });
-
-      const originalCwd = process.cwd();
+      fs.rmSync(hooksDir, { recursive: true, force: true });
       process.chdir(testDir);
 
-      try {
-        const result = preCommitHook.install();
+      const result = preCommitHook.install({ manager: 'native' });
 
-        expect(result.success).toBe(true);
-        expect(fs.existsSync(hooksDir)).toBe(true);
-        expect(fs.existsSync(hookPath)).toBe(true);
-      } finally {
-        process.chdir(originalCwd);
-      }
+      expect(result.success).toBe(true);
+      expect(fs.existsSync(hooksDir)).toBe(true);
+      expect(fs.existsSync(hookPath)).toBe(true);
     });
 
     it('should detect already installed hook', () => {
-      // Create .git and hooks directory
       fs.mkdirSync(hooksDir, { recursive: true });
-
-      // Write existing hook with vault-guard content
-      fs.writeFileSync(hookPath, '#!/bin/sh\n# vault-guard pre-commit hook\necho "test"', { mode: 0o755 });
-
-      const originalCwd = process.cwd();
+      fs.writeFileSync(
+        hookPath,
+        '#!/bin/sh\n# vault-guard pre-commit hook\nvault-guard scan --staged\n',
+        { mode: 0o755 },
+      );
       process.chdir(testDir);
 
-      try {
-        const result = preCommitHook.install();
+      const result = preCommitHook.install({ manager: 'native' });
 
-        expect(result.success).toBe(true);
-        expect(result.message).toBe('Hook already installed');
-      } finally {
-        process.chdir(originalCwd);
-      }
+      expect(result.success).toBe(true);
+      expect(result.message).toBe('Hook already installed');
     });
 
     it('should overwrite non-vault-guard hook', () => {
-      // Create .git and hooks directory
       fs.mkdirSync(hooksDir, { recursive: true });
-
-      // Write existing hook without vault-guard content
       fs.writeFileSync(hookPath, '#!/bin/sh\necho "other hook"', { mode: 0o755 });
-
-      const originalCwd = process.cwd();
       process.chdir(testDir);
 
-      try {
-        const result = preCommitHook.install();
+      const result = preCommitHook.install({ manager: 'native' });
 
-        expect(result.success).toBe(true);
-        expect(result.message).toBe('Pre-commit hook installed successfully');
+      expect(result.success).toBe(true);
+      expect(result.message).toContain('Pre-commit hook installed');
 
-        // Verify hook was overwritten
-        const hookContent = fs.readFileSync(hookPath, 'utf-8');
-        expect(hookContent).toContain('vault-guard');
-      } finally {
-        process.chdir(originalCwd);
-      }
+      const hookContent = fs.readFileSync(hookPath, 'utf-8');
+      expect(hookContent).toContain('vault-guard');
+      expect(hookContent).toContain('scan --staged');
     });
 
     it('should set executable permissions on hook file', () => {
-      // Create .git directory
-      fs.mkdirSync(gitDir, { recursive: true });
-
-      const originalCwd = process.cwd();
       process.chdir(testDir);
 
-      try {
-        const result = preCommitHook.install();
+      const result = preCommitHook.install({ manager: 'native' });
 
-        expect(result.success).toBe(true);
-
-        // Check file permissions (should be executable)
-        const stats = fs.statSync(hookPath);
-        // Note: mode check may vary by platform, but we verify file exists
-        expect(stats.isFile()).toBe(true);
-      } finally {
-        process.chdir(originalCwd);
-      }
+      expect(result.success).toBe(true);
+      expect(fs.statSync(hookPath).isFile()).toBe(true);
     });
 
     it('should handle file system errors during installation', () => {
-      // Create .git directory but make hooks read-only
       fs.mkdirSync(hooksDir, { recursive: true });
-
-      const originalCwd = process.cwd();
       process.chdir(testDir);
 
+      fs.chmodSync(hooksDir, 0o444);
+
+      const result = preCommitHook.install({ manager: 'native' });
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('Failed to install hook');
+
       try {
-        // Make hooks directory read-only
-        fs.chmodSync(hooksDir, 0o444);
-
-        const result = preCommitHook.install();
-
-        // Should fail due to permission error
-        expect(result.success).toBe(false);
-        expect(result.message).toContain('Failed to install hook');
-      } finally {
-        // Restore permissions for cleanup
-        try {
-          fs.chmodSync(hooksDir, 0o755);
-        } catch {
-          // Ignore if cleanup fails
-        }
-        process.chdir(originalCwd);
+        fs.chmodSync(hooksDir, 0o755);
+      } catch {
+        /* ignore */
       }
     });
   });
 
-  describe('uninstall', () => {
+  describe('uninstall (native)', () => {
     it('should return success when hook does not exist', () => {
-      const originalCwd = process.cwd();
       process.chdir(testDir);
 
-      try {
-        const result = preCommitHook.uninstall();
+      const result = preCommitHook.uninstall({ manager: 'native' });
 
-        expect(result.success).toBe(true);
-        expect(result.message).toBe('No hook to remove');
-      } finally {
-        process.chdir(originalCwd);
-      }
+      expect(result.success).toBe(true);
+      expect(result.message).toBe('No hook to remove');
     });
 
     it('should remove existing hook', () => {
-      // Create .git and hooks directory with hook file
       fs.mkdirSync(hooksDir, { recursive: true });
-      fs.writeFileSync(hookPath, '#!/bin/sh\n# vault-guard hook', { mode: 0o755 });
-
-      const originalCwd = process.cwd();
+      fs.writeFileSync(hookPath, '#!/bin/sh\n# vault-guard pre-commit hook\nvault-guard scan --staged\n', {
+        mode: 0o755,
+      });
       process.chdir(testDir);
 
-      try {
-        const result = preCommitHook.uninstall();
+      const result = preCommitHook.uninstall({ manager: 'native' });
 
-        expect(result.success).toBe(true);
-        expect(result.message).toBe('Pre-commit hook removed');
-        expect(fs.existsSync(hookPath)).toBe(false);
-      } finally {
-        process.chdir(originalCwd);
-      }
-    });
-
-    it('should handle file system errors gracefully', () => {
-      // Create hook file
-      fs.mkdirSync(hooksDir, { recursive: true });
-      fs.writeFileSync(hookPath, '#!/bin/sh\ntest', { mode: 0o755 });
-
-      const originalCwd = process.cwd();
-      process.chdir(testDir);
-
-      try {
-        // This test verifies the error handling path exists
-        // In most cases, unlink will succeed even with read-only files
-        const result = preCommitHook.uninstall();
-
-        // Should succeed in normal conditions
-        expect(result.success).toBe(true);
-        expect(fs.existsSync(hookPath)).toBe(false);
-      } finally {
-        process.chdir(originalCwd);
-      }
+      expect(result.success).toBe(true);
+      expect(result.message).toBe('Pre-commit hook removed');
+      expect(fs.existsSync(hookPath)).toBe(false);
     });
   });
 
-  describe('isInstalled', () => {
+  describe('isInstalled (native)', () => {
     it('should return false when hook does not exist', () => {
-      const originalCwd = process.cwd();
       process.chdir(testDir);
-
-      try {
-        const result = preCommitHook.isInstalled();
-
-        expect(result).toBe(false);
-      } finally {
-        process.chdir(originalCwd);
-      }
+      expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(false);
     });
 
     it('should return false when hook exists but is not vault-guard hook', () => {
-      // Create .git and hooks directory
       fs.mkdirSync(hooksDir, { recursive: true });
-
-      // Write hook without vault-guard content
       fs.writeFileSync(hookPath, '#!/bin/sh\necho "other hook"', { mode: 0o755 });
-
-      const originalCwd = process.cwd();
       process.chdir(testDir);
 
-      try {
-        const result = preCommitHook.isInstalled();
-
-        expect(result).toBe(false);
-      } finally {
-        process.chdir(originalCwd);
-      }
+      expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(false);
     });
 
     it('should return true when vault-guard hook is installed', () => {
-      // Create .git and hooks directory
       fs.mkdirSync(hooksDir, { recursive: true });
-
-      // Write hook with vault-guard content
-      fs.writeFileSync(hookPath, '#!/bin/sh\n# vault-guard pre-commit hook\necho "test"', { mode: 0o755 });
-
-      const originalCwd = process.cwd();
+      fs.writeFileSync(
+        hookPath,
+        '#!/bin/sh\n# vault-guard pre-commit hook\nvault-guard scan --staged\n',
+        { mode: 0o755 },
+      );
       process.chdir(testDir);
 
-      try {
-        const result = preCommitHook.isInstalled();
-
-        expect(result).toBe(true);
-      } finally {
-        process.chdir(originalCwd);
-      }
-    });
-
-    it('should detect vault-guard hook even with other content', () => {
-      // Create .git and hooks directory
-      fs.mkdirSync(hooksDir, { recursive: true });
-
-      // Write hook with vault-guard and other content
-      const hookContent = `#!/bin/sh
-# vault-guard pre-commit hook
-# Some other comments
-echo "Running checks"
-vault-guard scan
-echo "Done"
-`;
-      fs.writeFileSync(hookPath, hookContent, { mode: 0o755 });
-
-      const originalCwd = process.cwd();
-      process.chdir(testDir);
-
-      try {
-        const result = preCommitHook.isInstalled();
-
-        expect(result).toBe(true);
-      } finally {
-        process.chdir(originalCwd);
-      }
+      expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(true);
     });
   });
 
   describe('integration workflow', () => {
     it('should handle full install-check-uninstall workflow', () => {
-      // Create .git directory
-      fs.mkdirSync(gitDir, { recursive: true });
-
-      const originalCwd = process.cwd();
       process.chdir(testDir);
 
-      try {
-        // Initial state: not installed
-        expect(preCommitHook.isInstalled()).toBe(false);
+      expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(false);
 
-        // Install hook
-        const installResult = preCommitHook.install();
-        expect(installResult.success).toBe(true);
-        expect(preCommitHook.isInstalled()).toBe(true);
+      const installResult = preCommitHook.install({ manager: 'native' });
+      expect(installResult.success).toBe(true);
+      expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(true);
 
-        // Try to install again (should detect existing)
-        const reinstallResult = preCommitHook.install();
-        expect(reinstallResult.success).toBe(true);
-        expect(reinstallResult.message).toBe('Hook already installed');
+      const reinstallResult = preCommitHook.install({ manager: 'native' });
+      expect(reinstallResult.success).toBe(true);
+      expect(reinstallResult.message).toBe('Hook already installed');
 
-        // Uninstall hook
-        const uninstallResult = preCommitHook.uninstall();
-        expect(uninstallResult.success).toBe(true);
-        expect(preCommitHook.isInstalled()).toBe(false);
+      const uninstallResult = preCommitHook.uninstall({ manager: 'native' });
+      expect(uninstallResult.success).toBe(true);
+      expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(false);
 
-        // Try to uninstall again (should handle gracefully)
-        const reuninstallResult = preCommitHook.uninstall();
-        expect(reuninstallResult.success).toBe(true);
-        expect(reuninstallResult.message).toBe('No hook to remove');
-      } finally {
-        process.chdir(originalCwd);
-      }
+      const reuninstallResult = preCommitHook.uninstall({ manager: 'native' });
+      expect(reuninstallResult.success).toBe(true);
+      expect(reuninstallResult.message).toBe('No hook to remove');
     });
   });
 
   describe('hook content', () => {
-    it('should contain correct vault-guard command', () => {
-      // Create .git directory
-      fs.mkdirSync(gitDir, { recursive: true });
-
-      const originalCwd = process.cwd();
+    it('should run vault-guard scan --staged with bypass hint', () => {
       process.chdir(testDir);
+      preCommitHook.install({ manager: 'native' });
 
-      try {
-        preCommitHook.install();
+      const hookContent = fs.readFileSync(hookPath, 'utf-8');
 
-        const hookContent = fs.readFileSync(hookPath, 'utf-8');
-
-        expect(hookContent).toContain('vault-guard scan');
-        expect(hookContent).toContain('COMMIT BLOCKED');
-        expect(hookContent).toContain('vault-guard fix');
-      } finally {
-        process.chdir(originalCwd);
-      }
+      expect(hookContent).toContain('vault-guard scan --staged');
+      expect(hookContent).toContain('COMMIT BLOCKED');
+      expect(hookContent).toContain('--no-verify');
+      expect(hookContent).toContain('set -e');
     });
 
     it('should have proper shell script structure', () => {
-      // Create .git directory
-      fs.mkdirSync(gitDir, { recursive: true });
-
-      const originalCwd = process.cwd();
       process.chdir(testDir);
+      preCommitHook.install({ manager: 'native' });
 
-      try {
-        preCommitHook.install();
+      const hookContent = fs.readFileSync(hookPath, 'utf-8');
 
-        const hookContent = fs.readFileSync(hookPath, 'utf-8');
+      expect(hookContent).toMatch(/^#!\/bin\/sh/);
+      expect(hookContent).toContain('exit 1');
+    });
+  });
 
-        expect(hookContent).toMatch(/^#!\/bin\/sh/);
-        expect(hookContent).toContain('exit 1');
-      } finally {
-        process.chdir(originalCwd);
-      }
+  describe('Husky manager', () => {
+    it('creates .husky/pre-commit with vault-guard', () => {
+      process.chdir(testDir);
+      const r = preCommitHook.install({ manager: 'husky' });
+      expect(r.success).toBe(true);
+      const p = path.join(testDir, '.husky', 'pre-commit');
+      expect(fs.existsSync(p)).toBe(true);
+      expect(fs.readFileSync(p, 'utf-8')).toContain('scan --staged');
+    });
+  });
+
+  describe('Lefthook manager', () => {
+    it('writes lefthook-local.yml when absent', () => {
+      process.chdir(testDir);
+      const r = preCommitHook.install({ manager: 'lefthook' });
+      expect(r.success).toBe(true);
+      const p = path.join(testDir, 'lefthook-local.yml');
+      expect(fs.readFileSync(p, 'utf-8')).toContain('vault-guard');
+    });
+  });
+
+  describe('pre-commit framework manager', () => {
+    it('creates .pre-commit-config.yaml when absent', () => {
+      process.chdir(testDir);
+      const r = preCommitHook.install({ manager: 'precommit' });
+      expect(r.success).toBe(true);
+      const p = path.join(testDir, '.pre-commit-config.yaml');
+      const body = fs.readFileSync(p, 'utf-8');
+      expect(body).toContain('vault-guard');
+      expect(body).toContain('scan --staged');
     });
   });
 });

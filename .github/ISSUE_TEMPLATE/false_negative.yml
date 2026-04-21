@@ -1,0 +1,29 @@
+name: False negative (missed secret)
+description: Vault Guard did not flag something you believe is a real secret.
+labels: ['false-negative', 'triage']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not paste real secrets.** Use redacted snippets or test-shaped values only.
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: File type, framework, how the value is used.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal redacted example
+      description: Smallest pattern that should match but does not.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: vault-guard version
+      placeholder: e.g. 1.0.0
+    validations:
+      required: true

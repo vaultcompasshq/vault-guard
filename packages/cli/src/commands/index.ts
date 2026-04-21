@@ -4,3 +4,6 @@ export { tokensCommand } from './tokens';
 export { monitorCommand } from './monitor';
 export { fixCommand } from './fix';
 export { checkCommand } from './check';
+export { statuslineCommand } from './statusline';
+export { suggestModelCommand } from './suggest-model';
+export { proxyCommand } from './proxy';

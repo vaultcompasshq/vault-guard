@@ -1,0 +1,44 @@
+{
+  "name": "vault-guard-vscode",
+  "displayName": "Vault Guard",
+  "description": "Inline secret diagnostics and local spend/status hints for Vault Guard",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "vaultcompass",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Linters", "Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Vault Guard",
+      "properties": {
+        "vaultGuard.executable": {
+          "type": "string",
+          "default": "vault-guard",
+          "description": "vault-guard CLI on PATH (used for statusline JSON integration)"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "vaultGuard.copyAllowListSnippet",
+        "title": "Vault Guard: Copy .vault-guard.yml allow-list snippet"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=dist/extension.js --format=cjs",
+    "vscode:prepublish": "pnpm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.16",
+    "@types/vscode": "^1.85.0",
+    "@vaultcompass/vault-guard-core": "workspace:*",
+    "esbuild": "^0.24.2",
+    "typescript": "^5.3.3"
+  },
+  "license": "MIT"
+}

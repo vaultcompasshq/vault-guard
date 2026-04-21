@@ -75,4 +75,25 @@ describe('CLI', () => {
       expect(command).toBeDefined();
     });
   });
+
+  describe('vault-guard statusline', () => {
+    it('should have statusline command', () => {
+      const command = program.commands.find(cmd => cmd.name() === 'statusline');
+      expect(command).toBeDefined();
+    });
+  });
+
+  describe('vault-guard suggest-model', () => {
+    it('should have suggest-model command', () => {
+      const command = program.commands.find(cmd => cmd.name() === 'suggest-model');
+      expect(command).toBeDefined();
+    });
+  });
+
+  describe('vault-guard proxy', () => {
+    it('should have proxy command', () => {
+      const command = program.commands.find(cmd => cmd.name() === 'proxy');
+      expect(command).toBeDefined();
+    });
+  });
 });

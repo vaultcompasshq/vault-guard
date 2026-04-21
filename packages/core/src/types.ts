@@ -1,8 +1,14 @@
 export interface SecretMatch {
+  /** Pattern id (e.g. "anthropic", "aws-access"). */
   type: string;
+  /** Masked representation of the matched value (safe to log). */
   value: string;
+  /** 1-based line number in the file. */
   line: number;
+  /** 0-based absolute byte offset in the file (used for deduplication). */
   column: number;
+  /** Byte length of the original match (used for SARIF region output). */
+  matchLength: number;
   severity: 'critical' | 'high' | 'medium' | 'low';
 }
 

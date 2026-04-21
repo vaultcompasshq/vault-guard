@@ -1,7 +1,23 @@
 import path from 'path';
 import fs from 'fs';
-import { SecretScanner, getFilesToScan, getFilesToScanAsync, SecretMatch } from '@vaultcompass/vault-guard-core';
+import {
+  SecretScanner,
+  getFilesToScan,
+  getFilesToScanAsync,
+  formatJson as formatJsonResults,
+  formatSarif as formatSarifResults,
+  type JsonOutput,
+  type FileScanResult,
+} from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
+
+export type { JsonOutput };
+export function formatJson(results: ScanResult[]): string {
+  return formatJsonResults(results);
+}
+export function formatSarif(results: ScanResult[]): string {
+  return formatSarifResults(results);
+}
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
@@ -10,10 +26,7 @@ const BINARY_EXTENSIONS = [
   '.tar', '.gz', '.exe', '.dll', '.so', '.dylib', '.bin'
 ];
 
-export interface ScanResult {
-  file: string;
-  matches: SecretMatch[];
-}
+export type ScanResult = FileScanResult;
 
 export interface ScanOptions {
   verbose?: boolean;
@@ -21,6 +34,73 @@ export interface ScanOptions {
   skipBinary?: boolean;
   progress?: boolean;
   concurrency?: number; // Number of files to scan in parallel
+}
+
+/**
+ * Scan an explicit list of files (e.g. paths from \`git diff --cached\`).
+ * Skips missing paths and non-files silently.
+ */
+export async function scanFileListAsync(
+  files: string[],
+  scanner: SecretScanner,
+  options: ScanOptions = {}
+): Promise<ScanResult[]> {
+  const {
+    verbose = false,
+    maxSize = MAX_FILE_SIZE,
+    skipBinary = true,
+    progress = false,
+    concurrency = 10,
+  } = options;
+
+  const results: ScanResult[] = [];
+
+  const scanFile = async (file: string): Promise<void> => {
+    try {
+      if (!fs.existsSync(file)) return;
+      const st = await fs.promises.stat(file);
+      if (!st.isFile()) return;
+
+      if (skipBinary && isBinaryFile(file)) return;
+
+      if (st.size > maxSize) {
+        if (verbose) {
+          console.warn(
+            chalk.yellow(`⚠️  Skipping large file:`),
+            chalk.white(path.relative(process.cwd(), file)),
+            chalk.gray(`(${(st.size / 1024 / 1024).toFixed(2)}MB)`),
+          );
+        }
+        return;
+      }
+
+      const matches = scanner.scan(file);
+      if (matches.length > 0) {
+        results.push({ file, matches });
+      }
+    } catch (error) {
+      if (verbose) {
+        console.error(chalk.red('❌ Error scanning file:'), chalk.white(path.relative(process.cwd(), file)));
+        console.error(chalk.gray(String(error)));
+      }
+    }
+  };
+
+  for (let i = 0; i < files.length; i += concurrency) {
+    const batch = files.slice(i, i + concurrency);
+    await Promise.all(batch.map(scanFile));
+
+    if (progress && files.length > 10) {
+      const percent = Math.round(((i + batch.length) / files.length) * 100);
+      process.stderr.write(`\r${chalk.gray(`Scanning... ${percent}%`)}`);
+    }
+  }
+
+  if (progress && files.length > 10) {
+    process.stderr.write('\r');
+  }
+
+  return results;
 }
 
 /**

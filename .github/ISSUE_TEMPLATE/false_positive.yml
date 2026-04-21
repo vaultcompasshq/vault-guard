@@ -1,0 +1,30 @@
+name: False positive
+description: Vault Guard flagged something that is not a secret
+labels: [false-positive, triage]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: vault-guard version
+    validations:
+      required: true
+  - type: input
+    id: rule
+    attributes:
+      label: Rule / pattern id (from scan output)
+    validations:
+      required: true
+  - type: textarea
+    id: snippet
+    attributes:
+      label: Redacted snippet or description
+      description: Do not paste real credentials. Describe shape (e.g. public GA id, git SHA).
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: File type / context
+      description: e.g. test fixture, public config, generated code
+    validations:
+      required: false
