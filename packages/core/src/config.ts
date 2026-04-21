@@ -5,7 +5,7 @@ import { SecretMatch } from './types';
 /**
  * Shape of .vault-guard.json in a repository root.
  *
- * YAML support (.vault-guard.yml) deferred to M2 to avoid adding a runtime
+ * YAML support (.vault-guard.yml) deferred to a follow-up to avoid adding a runtime
  * dependency on the core package.
  */
 export interface VaultGuardConfig {

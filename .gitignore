@@ -9,3 +9,11 @@ coverage/
 .nyc_output/
 tmp-test-*
 tmp-test-integration/
+
+# Local-only planning, marketing, and adoption docs (kept on disk, not tracked).
+marketing/
+docs/PRODUCTION_PLAN.md
+docs/AWESOME_LISTS.md
+docs/DESIGN_PARTNERS.md
+docs/SCREENCAST.md
+docs/ISSUE_TRIAGE.md

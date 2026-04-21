@@ -68,7 +68,7 @@ vault-guard check src/api.ts
 
 Check specific files for secrets.
 
-### Statusline JSON (M5)
+### Statusline JSON
 
 For Cursor CLI / custom status lines:
 
@@ -78,7 +78,7 @@ vault-guard statusline --json
 
 Emits `secrets_today`, token totals, estimated spend, and last model from **local** `~/.vault-guard/usage.sqlite`.
 
-### Model hint (M6)
+### Model hint
 
 ```bash
 vault-guard suggest-model --json
@@ -86,7 +86,7 @@ vault-guard suggest-model --json
 
 Uses recent local telemetry to suggest a model label (heuristic).
 
-### Anthropic proxy (M6, opt-in)
+### Anthropic proxy (opt-in)
 
 ```bash
 vault-guard proxy --listen 127.0.0.1:8765
@@ -94,11 +94,11 @@ vault-guard proxy --listen 127.0.0.1:8765
 
 Forwards **`POST /v1/messages`** to `api.anthropic.com` and logs **`usage`** for non-stream JSON responses into the local SQLite DB. Point clients at `ANTHROPIC_BASE_URL=http://127.0.0.1:8765` when you explicitly want this behavior.
 
-### MCP server (M5)
+### MCP server
 
 See **[docs/MCP.md](./docs/MCP.md)**. Run: `npx -y @vaultcompass/vault-guard-mcp` (stdio).
 
-### VS Code / Cursor extension (M5)
+### VS Code / Cursor extension
 
 Workspace package **`packages/vscode-extension`**: `pnpm --filter vault-guard-vscode build`, then **Run Extension** from VS Code for local tryout.
 
@@ -111,22 +111,6 @@ Workspace package **`packages/vscode-extension`**: `pnpm --filter vault-guard-vs
 - Version control tokens (GitHub classic + fine-grained PATs, GitLab, Bitbucket)
 - Communication (Slack, Discord webhooks)
 - SSH private keys, JWTs, and entropy-gated generic `api_key` / `secret` assignments
-
-See **`docs/PRODUCTION_PLAN.md`** for the full roadmap (MCP, editor integrations, spend tracking).
-
-## Adoption & marketing (M7)
-
-In-repo assets so you can ship §5 of the production plan without blocking on external hosts:
-
-| Asset | Purpose |
-|--------|---------|
-| **[marketing/index.html](./marketing/index.html)** | Static landing page (copy to GitHub Pages or `vaultcompass.io`; see [marketing/README.md](./marketing/README.md)). |
-| **[docs/SCREENCAST.md](./docs/SCREENCAST.md)** | 90-second storyboard + checklist before/after upload. |
-| **[docs/AWESOME_LISTS.md](./docs/AWESOME_LISTS.md)** | Curated list targets + PR template + tracking table. |
-| **[docs/DESIGN_PARTNERS.md](./docs/DESIGN_PARTNERS.md)** | Outreach copy + **five-slot** calendar template (you book the slots). |
-| **[docs/ISSUE_TRIAGE.md](./docs/ISSUE_TRIAGE.md)** | 24h triage habit for early OSS velocity. |
-
-**Exit criteria you still do outside git:** publish the landing URL, record and link the screencast, open awesome-list PRs, and book five partner conversations using the template.
 
 ## GitHub Action
 

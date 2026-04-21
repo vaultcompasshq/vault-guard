@@ -9,19 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **M7:** Static landing **`marketing/index.html`** (+ **`marketing/README.md`** deploy notes), **`docs/SCREENCAST.md`** (shot list + checklist), **`docs/AWESOME_LISTS.md`** (submission template + tracking table), **`docs/DESIGN_PARTNERS.md`** (outreach + five-slot calendar template), **`docs/ISSUE_TRIAGE.md`**, README **Adoption & marketing** section.
-- **M5:** `@vaultcompass/vault-guard-mcp` (stdio MCP: `scan_workspace`, `scan_file`, `scan_text`, `report_token_usage`, `record_session_event`), **`vault-guard statusline`**, VS Code extension package **`vault-guard-vscode`** (diagnostics + status bar + allow-list snippet command), **`docs/MCP.md`**.
-- **M6:** `@vaultcompass/vault-guard-telemetry` (local `~/.vault-guard/usage.sqlite`), **`vault-guard suggest-model`**, **`vault-guard proxy --listen`** (Anthropic `/v1/messages` forwarder MVP with usage logging for non-stream JSON).
-- **Core:** `SecretScanner.scanContent()`, shared **`formatJson` / `formatSarif`** in `@vaultcompass/vault-guard-core`.
+- `@vaultcompass/vault-guard-mcp` — stdio MCP server (`scan_workspace`, `scan_file`, `scan_text`, `report_token_usage`, `record_session_event`); plus **`vault-guard statusline`** and VS Code extension package **`vault-guard-vscode`** (inline diagnostics, status bar, allow-list snippet command). See **`docs/MCP.md`**.
+- `@vaultcompass/vault-guard-telemetry` — local `~/.vault-guard/usage.sqlite` store, **`vault-guard suggest-model`** heuristic, and **`vault-guard proxy --listen`** (Anthropic `/v1/messages` forwarder MVP with `usage` logging for non-stream JSON).
+- `SecretScanner.scanContent()` and shared **`formatJson` / `formatSarif`** in `@vaultcompass/vault-guard-core`.
 - **`vault-guard scan --staged`** — scans only git-indexed (staged) files.
-- **Pre-commit hook (M2):** respects `core.hooksPath` (local + global), installs
-  `vault-guard scan --staged` with `set -e`, TTY re-attach, and `--no-verify` hint;
-  optional **`--manager`** `native` | `husky` | `lefthook` | `precommit`.
-- **Git utilities in core:** `getGitStagedFilePaths`, `isInsideGitWorkTree`.
-- **M3:** `LICENSE`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, Dependabot, CodeQL and
-  OpenSSF Scorecard workflows, issue + PR templates.
-- **M4:** root **`action.yml`** composite action, **`docker/`** image recipe,
-  **`packaging/homebrew/README.md`**, **`docs/GITHUB_ACTION.md`**.
+- Pre-commit hook respects `core.hooksPath` (local + global), installs `vault-guard scan --staged` with `set -e`, TTY re-attach, and `--no-verify` hint; optional **`--manager`** `native` | `husky` | `lefthook` | `precommit`.
+- Git utilities in core: `getGitStagedFilePaths`, `isInsideGitWorkTree`.
+- Repo hygiene: `LICENSE`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, Dependabot, CodeQL and OpenSSF Scorecard workflows, issue + PR templates.
+- Distribution: root **`action.yml`** composite action, **`docker/`** image recipe, **`packaging/homebrew/README.md`**, **`docs/GITHUB_ACTION.md`**.
 
 ### Changed
 
