@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Tighter secret redaction in all output formats.** Matched values are now redacted
+  to a 4-character prefix + length tag (e.g. `sk-a…(37c)`) instead of a 12-character
+  prefix. The longer prefix could leak meaningful entropy for some vendor formats.
+- **SARIF output no longer embeds the redacted value in the rule message.** The
+  `region` (line, startColumn, endColumn) plus `ruleId` are sufficient for reviewers,
+  and removing the value shrinks the leak surface when SARIF is uploaded to GitHub
+  Code Scanning, attached to PRs, or shared in support tickets.
+- **JSON and SARIF outputs now emit cwd-relative file paths** (paths outside the
+  scan root remain absolute). Avoids leaking the developer's home directory and OS
+  username when output is shared.
+- Text output reformatted as `path:line:col` so editors auto-link to the exact
+  location (iTerm2, Windows Terminal, VS Code, JetBrains all recognise this form).
+
 ### Added
 
 - `@vaultcompass/vault-guard-mcp` — stdio MCP server (`scan_workspace`, `scan_file`, `scan_text`, `report_token_usage`, `record_session_event`); plus **`vault-guard statusline`** and VS Code extension package **`vault-guard-vscode`** (inline diagnostics, status bar, allow-list snippet command). See **`docs/MCP.md`**.

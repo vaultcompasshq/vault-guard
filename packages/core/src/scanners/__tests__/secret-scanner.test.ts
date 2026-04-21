@@ -26,7 +26,7 @@ describe('SecretScanner', () => {
       expect(matches).toHaveLength(1);
       expect(matches[0].type).toBe('anthropic');
       expect(matches[0].severity).toBe('critical');
-      expect(matches[0].value).toMatch(/^sk-ant-api03\.\.\.$/);
+      expect(matches[0].value).toMatch(/^sk-a…\(\d+c\)$/);
     });
 
     it('detects Stripe live key', () => {
@@ -99,11 +99,26 @@ describe('SecretScanner', () => {
   // ---------------------------------------------------------------------------
 
   describe('value masking', () => {
-    it('masks secret values — shows first 12 chars only', () => {
+    it('redacts to a 4-char prefix + length tag (sk-a…(Nc))', () => {
       fs.writeFileSync(testFilePath, `const k = "sk-ant-api03-verylongkeyhere123456789";`);
       const matches = scanner.scan(testFilePath);
       expect(matches[0].value).not.toContain('verylongkeyhere123456789');
-      expect(matches[0].value).toMatch(/^sk-ant-api03\.\.\.$/);
+      expect(matches[0].value).not.toContain('sk-ant-api03');
+      expect(matches[0].value).toMatch(/^sk-a…\(\d+c\)$/);
+    });
+
+    it('never includes the raw secret in any output formatter', async () => {
+      const { formatJson, formatSarif } = await import('../../scan-output');
+      const rawSecret = 'sk-ant-api03-verylongkeyhere123456789';
+      fs.writeFileSync(testFilePath, `const k = "${rawSecret}";`);
+      const matches = scanner.scan(testFilePath);
+      const results = [{ file: testFilePath, matches }];
+      const json = formatJson(results);
+      const sarif = formatSarif(results);
+      expect(json).not.toContain(rawSecret);
+      expect(sarif).not.toContain(rawSecret);
+      expect(json).not.toContain('verylongkeyhere');
+      expect(sarif).not.toContain('verylongkeyhere');
     });
   });
 

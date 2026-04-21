@@ -13,10 +13,10 @@ import chalk from 'chalk';
 
 export type { JsonOutput };
 export function formatJson(results: ScanResult[]): string {
-  return formatJsonResults(results);
+  return formatJsonResults(results, { cwd: process.cwd() });
 }
 export function formatSarif(results: ScanResult[]): string {
-  return formatSarifResults(results);
+  return formatSarifResults(results, { cwd: process.cwd() });
 }
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -297,7 +297,18 @@ export function scanFiles(
 }
 
 /**
- * Display scan results with proper formatting
+ * Display scan results with proper formatting.
+ *
+ * Output format: `<path>:<line>:<col>  <severity>  <type>  <redacted>`
+ *
+ * Why this layout:
+ *   - Most modern terminals (iTerm2, Windows Terminal, VS Code, JetBrains)
+ *     auto-link `path:line:col` so users can cmd/ctrl-click directly to the
+ *     source — no copy-paste, no greppable secret value needed.
+ *   - Paths are cwd-relative for the same reason JSON/SARIF are: avoids
+ *     leaking the developer's home dir / username when output is shared.
+ *   - The redacted match value (`sk-a…(37c)`) is shown last and intentionally
+ *     low-information.
  */
 export function displayScanResults(results: ScanResult[]): void {
   if (results.length === 0) {
@@ -309,22 +320,29 @@ export function displayScanResults(results: ScanResult[]): void {
   console.log(chalk.red.bold('🚨 BLOCKED:'), chalk.white(`Found ${totalSecrets} secret${totalSecrets > 1 ? 's' : ''}\n`));
 
   for (const { file, matches } of results) {
-    const relativePath = path.relative(process.cwd(), file);
-    console.log(chalk.white.bold(`\n${relativePath}:`));
+    const relativePath = relativeForDisplay(file);
 
     for (const match of matches) {
       const severityColor = getSeverityColor(match.severity);
       const emoji = getSeverityEmoji(match.severity);
+      const location = `${relativePath}:${match.line}:${match.column + 1}`;
 
       console.log(
-        `  ${emoji} ${chalk.white(`Line ${match.line}:`)} ${severityColor(match.type)} (${chalk.gray(match.severity)})`
+        `  ${emoji} ${chalk.cyan(location)}  ${severityColor(match.severity)}  ${chalk.white(match.type)}  ${chalk.gray(match.value)}`
       );
-      console.log(chalk.gray(`    ${match.value}`));
     }
   }
 
   console.log('');
-  console.log(chalk.red.bold('\n❌ BLOCKED:'), chalk.white('Commit blocked - remove secrets before pushing\n'));
+  console.log(chalk.red.bold('❌ BLOCKED:'), chalk.white('Commit blocked — remove secrets before pushing\n'));
+}
+
+/** cwd-relative when inside cwd, absolute otherwise. Matches scan-output behaviour. */
+function relativeForDisplay(file: string): string {
+  if (!path.isAbsolute(file)) return file;
+  const rel = path.relative(process.cwd(), file);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return file;
+  return rel || '.';
 }
 
 function getSeverityColor(severity: string): (text: string) => string {

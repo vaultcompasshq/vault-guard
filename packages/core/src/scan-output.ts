@@ -1,3 +1,4 @@
+import path from 'path';
 import type { SecretMatch } from './types';
 
 /** One file’s scan outcome — shared by CLI, MCP, and SARIF/JSON formatters. */
@@ -17,12 +18,39 @@ export interface JsonOutput {
       severity: string;
       line: number;
       column: number;
+      /** Redacted form, e.g. `sk-a…(37c)`. Never the raw secret. */
       value: string;
     }>;
   }>;
 }
 
-export function formatJson(results: FileScanResult[]): string {
+export interface FormatOptions {
+  /**
+   * Base directory to render `file` paths relative to.
+   * Defaults to `process.cwd()`. Files outside this root are kept absolute.
+   * Pass `null` to skip relativization entirely.
+   */
+  cwd?: string | null;
+}
+
+/**
+ * Normalize a file path for output: cwd-relative when inside `cwd`, absolute
+ * otherwise (so we never emit `../../..` traversals).
+ *
+ * Why this matters: absolute paths in JSON / SARIF leak the developer's home
+ * directory and OS username when the output is shared (PR comments, GitHub
+ * Code Scanning UI, support tickets, screenshots).
+ */
+function normalizeFilePath(file: string, cwd: string | null | undefined): string {
+  if (cwd === null) return file;
+  const base = cwd ?? process.cwd();
+  if (!path.isAbsolute(file)) return file;
+  const rel = path.relative(base, file);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return file;
+  return rel || '.';
+}
+
+export function formatJson(results: FileScanResult[], opts: FormatOptions = {}): string {
   const output: JsonOutput = {
     version: '1',
     scannedAt: new Date().toISOString(),
@@ -31,7 +59,7 @@ export function formatJson(results: FileScanResult[]): string {
       secrets: results.reduce((n, r) => n + r.matches.length, 0),
     },
     results: results.map(({ file, matches }) => ({
-      file,
+      file: normalizeFilePath(file, opts.cwd),
       matches: matches.map(m => ({
         type: m.type,
         severity: m.severity,
@@ -45,7 +73,7 @@ export function formatJson(results: FileScanResult[]): string {
 }
 
 /** SARIF 2.1.0 — compatible with GitHub Code Scanning (upload-sarif action). */
-export function formatSarif(results: FileScanResult[]): string {
+export function formatSarif(results: FileScanResult[], opts: FormatOptions = {}): string {
   const rules = [
     ...new Set(results.flatMap(r => r.matches.map(m => m.type))),
   ].map(id => ({
@@ -63,11 +91,14 @@ export function formatSarif(results: FileScanResult[]): string {
     matches.map(m => ({
       ruleId: m.type,
       level: m.severity === 'critical' ? 'error' : m.severity === 'high' ? 'warning' : 'note',
-      message: { text: `Possible secret of type '${m.type}' detected (masked: ${m.value})` },
+      // Intentionally do NOT include the masked value here. Reviewers have the
+      // exact byte region (startLine/startColumn/endColumn) and the rule id;
+      // the masked prefix adds no signal and grows the leak surface area.
+      message: { text: `Possible secret of type '${m.type}'` },
       locations: [
         {
           physicalLocation: {
-            artifactLocation: { uri: file, uriBaseId: '%SRCROOT%' },
+            artifactLocation: { uri: normalizeFilePath(file, opts.cwd), uriBaseId: '%SRCROOT%' },
             region: {
               startLine: m.line,
               startColumn: m.column + 1,

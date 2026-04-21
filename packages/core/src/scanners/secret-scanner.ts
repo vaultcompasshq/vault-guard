@@ -319,13 +319,29 @@ export class SecretScanner {
     return kept;
   }
 
-  /** Show the first 12 characters of a secret and replace the rest with '…'. */
+  /**
+   * Redact a matched secret to a low-information identifier.
+   *
+   * Format: `<prefix>…(<length>c)` — e.g. `sk-a…(37c)`.
+   *
+   * Why not show more characters?
+   *   - 4-char prefix is enough to identify vendor (sk-a, sk_l, ghp_, AKIA, …)
+   *     without leaking meaningful entropy of the underlying secret.
+   *   - The exact location is already in `line` / `column`, so users don't
+   *     need a longer fragment to find the match in source.
+   *   - Output of this tool is routinely pasted into PRs, Slack, terminals,
+   *     SARIF uploads, and GitHub Code Scanning — the surface area for
+   *     leakage is large, so we keep the redaction conservative.
+   *
+   * For values shorter than 6 chars (rare; broad patterns enforce ≥20)
+   * we redact entirely to `*…(<length>c)`.
+   */
   private maskValue(value: string): string {
-    const PREFIX = 12;
-    if (value.length <= PREFIX) {
-      const show = Math.max(3, value.length - 3);
-      return value.substring(0, show) + '...';
+    const PREFIX = 4;
+    const lengthTag = `(${value.length}c)`;
+    if (value.length < 6) {
+      return `*…${lengthTag}`;
     }
-    return value.substring(0, PREFIX) + '...';
+    return `${value.substring(0, PREFIX)}…${lengthTag}`;
   }
 }

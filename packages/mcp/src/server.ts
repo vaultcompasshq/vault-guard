@@ -58,8 +58,8 @@ export function createMcpServer(): McpServer {
           files_with_secrets: results.length,
           total_matches: results.reduce((n, r) => n + r.matches.length, 0),
         },
-        json: JSON.parse(formatJson(results)) as unknown,
-        sarif: formatSarif(results),
+        json: JSON.parse(formatJson(results, { cwd: dir })) as unknown,
+        sarif: formatSarif(results, { cwd: dir }),
         results,
       });
     },
@@ -84,8 +84,8 @@ export function createMcpServer(): McpServer {
       const results: FileScanResult[] = matches.length ? [{ file: fp, matches }] : [];
       return toolPayload({
         summary: { files_with_secrets: results.length, total_matches: matches.length },
-        json: JSON.parse(formatJson(results)) as unknown,
-        sarif: formatSarif(results),
+        json: JSON.parse(formatJson(results, { cwd: process.cwd() })) as unknown,
+        sarif: formatSarif(results, { cwd: process.cwd() }),
       });
     },
   );
@@ -111,8 +111,9 @@ export function createMcpServer(): McpServer {
       const results: FileScanResult[] = matches.length ? [{ file: label, matches }] : [];
       return toolPayload({
         summary: { total_matches: matches.length },
-        json: JSON.parse(formatJson(results)) as unknown,
-        sarif: formatSarif(results),
+        // virtual_path is a label, not a real path; skip relativization to preserve it verbatim.
+        json: JSON.parse(formatJson(results, { cwd: null })) as unknown,
+        sarif: formatSarif(results, { cwd: null }),
       });
     },
   );

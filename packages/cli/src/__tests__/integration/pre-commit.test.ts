@@ -48,8 +48,9 @@ describe('Pre-commit Hook Integration', () => {
     const matches = scanner.scan(testFile);
 
     expect(matches.length).toBeGreaterThan(0);
-    expect(matches[0].value).toMatch(/^sk-ant-api12\.\.\.$/); // Should be masked
+    expect(matches[0].value).toMatch(/^sk-a…\(\d+c\)$/); // Should be redacted
     expect(matches[0].value).not.toContain('sk-ant-api1234567890123456789012'); // Should not contain full secret
+    expect(matches[0].value).not.toContain('sk-ant-api12'); // 4-char prefix only
   });
 
   it('should return empty array when no secrets found', () => {
