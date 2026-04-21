@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tests build Stripe/Twilio-shaped strings via **template concatenation** so GitHub push protection does not block commits that contained contiguous `sk_live_*` / `sk_test_*` / `AC…` literals in fixtures.
 - Jest resolves `@vaultcompass/vault-guard-core` from source in the CLI package so tests run without a prior `core` build.
 
 ## [1.0.0] - 2026-04-11
