@@ -1,0 +1,7 @@
+# Code owners for vault-guard.
+# Reference: https://docs.github.com/en/repositories/managing-your-repositories-settings-and-security/customizing-your-repository/about-code-owners
+#
+# Solo maintainer: every change requires review from @MelroySaldanha.
+# When the team grows, replace the catch-all with per-area ownership.
+
+* @MelroySaldanha
