@@ -53,4 +53,18 @@ export default [
       'no-undef': 'off',
     },
   },
+  {
+    files: ['scripts/**/*.cjs'],
+    languageOptions: {
+      sourceType: 'script',
+      globals: {
+        __dirname: 'readonly',
+        console: 'readonly',
+        process: 'readonly',
+        require: 'readonly',
+        module: 'readonly',
+        exports: 'writable',
+      },
+    },
+  },
 ];

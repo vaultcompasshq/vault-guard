@@ -3,8 +3,20 @@ module.exports = {
   testEnvironment: 'node',
   roots: ['<rootDir>/src'],
   testMatch: ['**/__tests__/**/*.test.ts'],
+  maxWorkers: 1,
   moduleNameMapper: {
     '^@vaultcompass/vault-guard-core$': '<rootDir>/../core/src/index.ts',
     '^@vaultcompass/vault-guard-telemetry$': '<rootDir>/../telemetry/src/index.ts',
+  },
+  // `server.ts` is heavy SDK wiring; Istanbul instrumentation has OOM/SIGTERM'd
+  // workers in CI. Only ratchet coverage on the unit-tested scan helper.
+  collectCoverageFrom: ['src/workspace-scan.ts'],
+  coverageThreshold: {
+    global: {
+      branches: 48,
+      functions: 100,
+      lines: 93,
+      statements: 84,
+    },
   },
 };

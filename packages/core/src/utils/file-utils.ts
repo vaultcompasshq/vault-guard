@@ -2,6 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { promises as fsPromises } from 'fs';
 
+import { DiagnosticBus } from '../diagnostics';
+
 // Cache for .gitignore patterns to avoid re-reading files
 const gitignoreCache = new Map<string, { ignore: GitignorePattern[]; negate: GitignorePattern[] }>();
 
@@ -18,13 +20,20 @@ interface GitignorePattern {
 /**
  * Get all files in directory recursively (async version)
  */
-export async function getAllFilesAsync(dirPath: string, visited = new Set<string>(), verbose = false): Promise<string[]> {
+export async function getAllFilesAsync(dirPath: string, visited = new Set<string>(), verbose = false, bus?: DiagnosticBus): Promise<string[]> {
   const files: string[] = [];
 
   try {
     try {
       await fsPromises.access(dirPath);
     } catch {
+      if (bus) {
+        bus.add({
+          code: 'fs.permission_denied',
+          severity: 'warning',
+          ctx: { dir: dirPath },
+        });
+      }
       return files;
     }
 
@@ -48,13 +57,20 @@ export async function getAllFilesAsync(dirPath: string, visited = new Set<string
         }
 
         if (lstat.isDirectory() && !shouldIgnoreDirectory(item)) {
-          const subFiles = await getAllFilesAsync(fullPath, visited);
+          const subFiles = await getAllFilesAsync(fullPath, visited, verbose, bus);
           files.push(...subFiles);
         } else if (lstat.isFile() && !shouldIgnoreFile(fullPath)) {
           files.push(fullPath);
         }
       } catch (error) {
         // Skip files/directories we can't read (permission errors, etc.)
+        if (bus) {
+          bus.add({
+            code: 'fs.permission_denied',
+            severity: 'warning',
+            ctx: { path: path.join(dirPath, item), detail: String(error) },
+          });
+        }
         if (verbose) {
           console.error(`Warning: Cannot access ${path.join(dirPath, item)}:`, error);
         }
@@ -62,6 +78,13 @@ export async function getAllFilesAsync(dirPath: string, visited = new Set<string
     }
   } catch (error) {
     // If we can't read the directory at all, return empty array
+    if (bus) {
+      bus.add({
+        code: 'fs.permission_denied',
+        severity: 'warning',
+        ctx: { dir: dirPath, detail: String(error) },
+      });
+    }
     if (verbose) {
       console.error(`Warning: Cannot read directory ${dirPath}:`, error);
     }
@@ -73,11 +96,18 @@ export async function getAllFilesAsync(dirPath: string, visited = new Set<string
 /**
  * Get all files in directory recursively (sync version for backwards compatibility)
  */
-export function getAllFiles(dirPath: string, visited = new Set<string>(), verbose = false): string[] {
+export function getAllFiles(dirPath: string, visited = new Set<string>(), verbose = false, bus?: DiagnosticBus): string[] {
   const files: string[] = [];
 
   try {
     if (!fs.existsSync(dirPath)) {
+      if (bus) {
+        bus.add({
+          code: 'fs.permission_denied',
+          severity: 'warning',
+          ctx: { dir: dirPath },
+        });
+      }
       return files;
     }
 
@@ -101,12 +131,19 @@ export function getAllFiles(dirPath: string, visited = new Set<string>(), verbos
         }
 
         if (lstat.isDirectory() && !shouldIgnoreDirectory(item)) {
-          files.push(...getAllFiles(fullPath, visited));
+          files.push(...getAllFiles(fullPath, visited, verbose, bus));
         } else if (lstat.isFile() && !shouldIgnoreFile(fullPath)) {
           files.push(fullPath);
         }
       } catch (error) {
         // Skip files/directories we can't read (permission errors, etc.)
+        if (bus) {
+          bus.add({
+            code: 'fs.permission_denied',
+            severity: 'warning',
+            ctx: { path: path.join(dirPath, item), detail: String(error) },
+          });
+        }
         if (verbose) {
           console.error(`Warning: Cannot access ${path.join(dirPath, item)}:`, error);
         }
@@ -114,6 +151,13 @@ export function getAllFiles(dirPath: string, visited = new Set<string>(), verbos
     }
   } catch (error) {
     // If we can't read the directory at all, return empty array
+    if (bus) {
+      bus.add({
+        code: 'fs.permission_denied',
+        severity: 'warning',
+        ctx: { dir: dirPath, detail: String(error) },
+      });
+    }
     if (verbose) {
       console.error(`Warning: Cannot read directory ${dirPath}:`, error);
     }
@@ -125,8 +169,8 @@ export function getAllFiles(dirPath: string, visited = new Set<string>(), verbos
 /**
  * Get files to scan (filters out ignored directories/files) - async version
  */
-export async function getFilesToScanAsync(targetPath: string, verbose = false): Promise<string[]> {
-  const allFiles = await getAllFilesAsync(targetPath, new Set(), verbose);
+export async function getFilesToScanAsync(targetPath: string, verbose = false, bus?: DiagnosticBus): Promise<string[]> {
+  const allFiles = await getAllFilesAsync(targetPath, new Set(), verbose, bus);
   const gitignorePatterns = loadGitignorePatterns(targetPath, verbose);
   return allFiles.filter(file => !shouldIgnoreFile(file, gitignorePatterns));
 }
@@ -134,8 +178,8 @@ export async function getFilesToScanAsync(targetPath: string, verbose = false): 
 /**
  * Get files to scan (filters out ignored directories/files) - sync version
  */
-export function getFilesToScan(targetPath: string, verbose = false): string[] {
-  const allFiles = getAllFiles(targetPath, new Set(), verbose);
+export function getFilesToScan(targetPath: string, verbose = false, bus?: DiagnosticBus): string[] {
+  const allFiles = getAllFiles(targetPath, new Set(), verbose, bus);
   const gitignorePatterns = loadGitignorePatterns(targetPath, verbose);
   return allFiles.filter(file => !shouldIgnoreFile(file, gitignorePatterns));
 }

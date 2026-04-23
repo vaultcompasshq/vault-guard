@@ -1,7 +1,21 @@
-import { TelemetryStore } from '@vaultcompass/vault-guard-telemetry';
+import { TelemetryStore, TelemetryUnavailableError } from '@vaultcompass/vault-guard-telemetry';
 
 export function statuslineCommand(asJson: boolean): void {
-  const store = new TelemetryStore();
+  let store: TelemetryStore;
+  try {
+    store = new TelemetryStore();
+  } catch (e) {
+    if (e instanceof TelemetryUnavailableError) {
+      if (asJson) {
+        process.stdout.write(`${JSON.stringify({ error: 'telemetry_unavailable', message: e.message })}\n`);
+      } else {
+        process.stderr.write(`vault-guard statusline: telemetry unavailable — ${e.message}\n`);
+      }
+      return;
+    }
+    throw e;
+  }
+
   try {
     const payload = store.getStatuslinePayload();
     if (asJson) {

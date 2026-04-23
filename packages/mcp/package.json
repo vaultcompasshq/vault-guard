@@ -17,6 +17,7 @@
   "scripts": {
     "build": "node scripts/build.cjs",
     "test": "jest",
+    "test:coverage": "jest --coverage",
     "start": "node dist/index.js"
   },
   "license": "MIT",

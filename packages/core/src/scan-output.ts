@@ -1,7 +1,8 @@
 import path from 'path';
 import type { SecretMatch } from './types';
+import type { Diagnostic } from './diagnostics';
 
-/** One file’s scan outcome — shared by CLI, MCP, and SARIF/JSON formatters. */
+/** One file's scan outcome — shared by CLI, MCP, and SARIF/JSON formatters. */
 export interface FileScanResult {
   file: string;
   matches: SecretMatch[];
@@ -22,6 +23,12 @@ export interface JsonOutput {
       value: string;
     }>;
   }>;
+  /** Non-fatal scan warnings (skipped files, rejected patterns, git issues). */
+  diagnostics?: Array<{
+    code: string;
+    severity: string;
+    ctx: Record<string, unknown>;
+  }>;
 }
 
 export interface FormatOptions {
@@ -31,6 +38,8 @@ export interface FormatOptions {
    * Pass `null` to skip relativization entirely.
    */
   cwd?: string | null;
+  /** Non-fatal diagnostics to include in structured output. */
+  diagnostics?: Diagnostic[];
 }
 
 /**
@@ -69,6 +78,13 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
       })),
     })),
   };
+  if (opts.diagnostics && opts.diagnostics.length > 0) {
+    output.diagnostics = opts.diagnostics.map(d => ({
+      code: d.code,
+      severity: d.severity,
+      ctx: d.ctx,
+    }));
+  }
   return JSON.stringify(output, null, 2);
 }
 
@@ -110,6 +126,18 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
     }))
   );
 
+  // Diagnostics are emitted as SARIF notifications (tool/driver/notifications)
+  // so they appear in the GitHub Code Scanning UI as tool warnings rather than
+  // results. This keeps the results array clean for triage.
+  const notifications =
+    opts.diagnostics && opts.diagnostics.length > 0
+      ? opts.diagnostics.map(d => ({
+          id: d.code,
+          level: d.severity === 'error' ? 'error' : 'warning',
+          message: { text: `${d.code}: ${JSON.stringify(d.ctx)}` },
+        }))
+      : undefined;
+
   const sarif = {
     $schema: 'https://json.schemastore.org/sarif-2.1.0',
     version: '2.1.0',
@@ -120,6 +148,7 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
             name: 'vault-guard',
             informationUri: 'https://github.com/vaultcompasshq/vault-guard',
             rules,
+            ...(notifications ? { notifications } : {}),
           },
         },
         results: sarifResults,

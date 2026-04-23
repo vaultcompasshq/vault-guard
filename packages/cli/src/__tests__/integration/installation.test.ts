@@ -14,9 +14,11 @@ describe('CLI Installation Integration', () => {
     expect(commands).toContain('scan');
     expect(commands).toContain('install-hook');
     expect(commands).toContain('tokens');
-    expect(commands).toContain('monitor');
     expect(commands).toContain('fix');
     expect(commands).toContain('check');
+    expect(commands).toContain('statusline');
+    expect(commands).toContain('suggest-model');
+    expect(commands).toContain('proxy');
   });
 
   it('should have scan command', () => {
@@ -61,15 +63,6 @@ describe('CLI Installation Integration', () => {
     expect(fixCommand).toBeDefined();
     if (fixCommand) {
       expect(fixCommand.description()).toBeDefined();
-    }
-  });
-
-  it('should have monitor command', () => {
-    const monitorCommand = program.commands.find(cmd => cmd.name() === 'monitor');
-
-    expect(monitorCommand).toBeDefined();
-    if (monitorCommand) {
-      expect(monitorCommand.description()).toBeDefined();
     }
   });
 

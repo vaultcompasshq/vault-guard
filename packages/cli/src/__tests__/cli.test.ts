@@ -55,13 +55,6 @@ describe('CLI', () => {
     });
   });
 
-  describe('vault-guard monitor', () => {
-    it('should have monitor command', () => {
-      const command = program.commands.find(cmd => cmd.name() === 'monitor');
-      expect(command).toBeDefined();
-    });
-  });
-
   describe('vault-guard fix', () => {
     it('should have fix command', () => {
       const command = program.commands.find(cmd => cmd.name() === 'fix');

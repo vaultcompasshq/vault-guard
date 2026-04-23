@@ -1,11 +1,27 @@
-import { TelemetryStore } from '@vaultcompass/vault-guard-telemetry';
+import { TelemetryStore, TelemetryUnavailableError } from '@vaultcompass/vault-guard-telemetry';
 
 export function suggestModelCommand(options: {
   json: boolean;
   cwd?: string;
   language?: string;
 }): void {
-  const store = new TelemetryStore();
+  let store: TelemetryStore;
+  try {
+    store = new TelemetryStore();
+  } catch (e) {
+    if (e instanceof TelemetryUnavailableError) {
+      if (options.json) {
+        process.stdout.write(
+          `${JSON.stringify({ error: 'telemetry_unavailable', message: e.message }, null, 2)}\n`,
+        );
+      } else {
+        process.stderr.write(`vault-guard suggest-model: telemetry unavailable — ${e.message}\n`);
+      }
+      return;
+    }
+    throw e;
+  }
+
   try {
     const s = store.suggestModel({ cwd: options.cwd, language: options.language });
     if (options.json) {

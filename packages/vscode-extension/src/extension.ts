@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
-import { SecretScanner, loadConfig } from '@vaultcompass/vault-guard-core';
+import { SecretScanner, loadConfig, ConfigError } from '@vaultcompass/vault-guard-core';
 
 const collection = vscode.languages.createDiagnosticCollection('vault-guard');
 
@@ -11,10 +11,29 @@ function mapSeverity(s: string): vscode.DiagnosticSeverity {
   return vscode.DiagnosticSeverity.Information;
 }
 
+/**
+ * Load Vault Guard config, falling back to defaults on parse errors.
+ * The extension host must not crash on a user config typo — surface the
+ * problem in the OUTPUT channel and continue scanning with built-in rules.
+ */
+function safeLoadConfig(dir: string): ReturnType<typeof loadConfig> {
+  try {
+    return loadConfig(dir);
+  } catch (e) {
+    if (e instanceof ConfigError) {
+      void vscode.window.showWarningMessage(
+        `Vault Guard: ignoring broken config at ${e.filePath}. ${e.message}`,
+      );
+      return {};
+    }
+    throw e;
+  }
+}
+
 function refreshDocument(doc: vscode.TextDocument): void {
   if (doc.uri.scheme !== 'file') return;
   const dir = path.dirname(doc.uri.fsPath);
-  const scanner = new SecretScanner(loadConfig(dir));
+  const scanner = new SecretScanner(safeLoadConfig(dir));
   const matches = scanner.scanContent(doc.getText());
   const diags: vscode.Diagnostic[] = matches.map(m => {
     const lineIdx = Math.max(0, m.line - 1);

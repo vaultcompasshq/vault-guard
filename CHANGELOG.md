@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`DiagnosticBus`** — every previously silent `catch {}` in the scanner, file
+  walker, git helpers, and config loader now emits a typed diagnostic
+  (`config.parse_error`, `file.too_large`, `fs.permission_denied`,
+  `git.staged_files_failed`, `pattern.redos_unsafe`, …). Diagnostics surface in
+  JSON output (`diagnostics[]`) and SARIF (tool/driver `notifications`), so a
+  swallowed permission error or a corrupt `.vault-guard.json` no longer
+  produces a misleading "✅ no secrets found".
+- **Heuristic ReDoS gate on user-supplied `extra_patterns`** — length cap,
+  quantifier-density cap, and shape checks for `(…[*+]…)[*+]` and
+  `(.|.)[*+]`. Rejected patterns surface as `pattern.redos_unsafe` /
+  `pattern.too_long` diagnostics rather than being silently dropped.
+  `extra_patterns_unsafe: true` opts out of the heuristic; the length cap
+  always applies as a memory-use backstop. Tracked threat: catastrophic
+  backtracking from a malicious in-repo `.vault-guard.json`.
+- **Pre-commit fails closed on git failure.** `getGitStagedFilePaths` now
+  throws `GitError` instead of returning `[]` when `git diff --cached` fails.
+  The pre-commit path catches it, exits **2**, and prints the failing command
+  so a broken git environment can't masquerade as a clean commit.
+- **Telemetry native bindings load lazily and degrade gracefully.**
+  `better-sqlite3` is loaded with `createRequire` on first use; missing or
+  ABI-mismatched bindings throw `TelemetryUnavailableError`. `statusline` and
+  `suggest-model` catch this and exit cleanly; `proxy` lets it propagate
+  (it is the primary writer and should fail loudly).
+- **WAL checkpoint on proxy shutdown.** SIGINT/SIGTERM now triggers
+  `wal_checkpoint(TRUNCATE)` before closing the SQLite handle, so usage rows
+  written just before shutdown survive without WAL recovery surprises.
+
 - **Tighter secret redaction in all output formats.** Matched values are now redacted
   to a 4-character prefix + length tag (e.g. `sk-a…(37c)`) instead of a 12-character
   prefix. The longer prefix could leak meaningful entropy for some vendor formats.
@@ -24,6 +51,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`docs/RULES.md`** — generated from `BUILTIN_PATTERNS` via
+  `scripts/gen-rules-doc.cjs`. CI fails if the file drifts from the source.
+- **`docs/PRIVACY.md`** and **`docs/THREAT_MODEL.md`** — what
+  `~/.vault-guard/usage.sqlite` actually stores, and the per-component
+  threat model for CLI / proxy / MCP boundaries.
+- `.github/dependabot.yml` — weekly npm + GitHub Actions updates, grouped
+  by `@types/*`, eslint, and jest.
+- `.gitattributes` — repo-wide `text=auto eol=lf` to keep Windows
+  contributors from accidentally committing CRLF source files.
+- Coverage thresholds in every package's `jest.config.js`, with
+  `pnpm test:coverage` wired through `--workspace-concurrency=1` (proxy
+  integration tests bind real ports).
+
 - `@vaultcompass/vault-guard-mcp` — stdio MCP server (`scan_workspace`, `scan_file`, `scan_text`, `report_token_usage`, `record_session_event`); plus **`vault-guard statusline`** and VS Code extension package **`vault-guard-vscode`** (inline diagnostics, status bar, allow-list snippet command). See **`docs/MCP.md`**.
 - `@vaultcompass/vault-guard-telemetry` — local `~/.vault-guard/usage.sqlite` store, **`vault-guard suggest-model`** heuristic, and **`vault-guard proxy --listen`** (Anthropic `/v1/messages` forwarder MVP with `usage` logging for non-stream JSON).
 - `SecretScanner.scanContent()` and shared **`formatJson` / `formatSarif`** in `@vaultcompass/vault-guard-core`.
@@ -32,6 +72,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Git utilities in core: `getGitStagedFilePaths`, `isInsideGitWorkTree`.
 - Repo hygiene: `LICENSE`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, Dependabot, CodeQL and OpenSSF Scorecard workflows, issue + PR templates.
 - Distribution: root **`action.yml`** composite action, **`docker/`** image recipe, **`packaging/homebrew/README.md`**, **`docs/GITHUB_ACTION.md`**.
+
+### Removed
+
+- **`vault-guard monitor`** subcommand. The implementation was a stub that
+  printed placeholder text; it has been removed from the CLI surface,
+  command index, and tests rather than left as a misleading entry point.
+  `vault-guard statusline --json` covers the live-status use case.
 
 ### Changed
 

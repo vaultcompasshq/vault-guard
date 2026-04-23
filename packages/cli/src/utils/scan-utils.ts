@@ -8,15 +8,21 @@ import {
   formatSarif as formatSarifResults,
   type JsonOutput,
   type FileScanResult,
+  type Diagnostic,
+  type DiagnosticBus,
 } from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
 
 export type { JsonOutput };
-export function formatJson(results: ScanResult[]): string {
-  return formatJsonResults(results, { cwd: process.cwd() });
+export interface ScanFormatOptions {
+  diagnostics?: Diagnostic[];
 }
-export function formatSarif(results: ScanResult[]): string {
-  return formatSarifResults(results, { cwd: process.cwd() });
+
+export function formatJson(results: ScanResult[], opts: ScanFormatOptions = {}): string {
+  return formatJsonResults(results, { cwd: process.cwd(), diagnostics: opts.diagnostics });
+}
+export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {}): string {
+  return formatSarifResults(results, { cwd: process.cwd(), diagnostics: opts.diagnostics });
 }
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -34,6 +40,7 @@ export interface ScanOptions {
   skipBinary?: boolean;
   progress?: boolean;
   concurrency?: number; // Number of files to scan in parallel
+  bus?: DiagnosticBus;
 }
 
 /**
@@ -64,6 +71,13 @@ export async function scanFileListAsync(
       if (skipBinary && isBinaryFile(file)) return;
 
       if (st.size > maxSize) {
+        if (options.bus) {
+          options.bus.add({
+            code: 'file.too_large',
+            severity: 'warning',
+            ctx: { file: path.relative(process.cwd(), file), bytes: st.size },
+          });
+        }
         if (verbose) {
           console.warn(
             chalk.yellow(`⚠️  Skipping large file:`),
@@ -79,6 +93,13 @@ export async function scanFileListAsync(
         results.push({ file, matches });
       }
     } catch (error) {
+      if (options.bus) {
+        options.bus.add({
+          code: 'file.read_error',
+          severity: 'error',
+          ctx: { file: path.relative(process.cwd(), file), detail: String(error) },
+        });
+      }
       if (verbose) {
         console.error(chalk.red('❌ Error scanning file:'), chalk.white(path.relative(process.cwd(), file)));
         console.error(chalk.gray(String(error)));
@@ -147,7 +168,7 @@ export async function scanFilesAsync(
       filesToScan = [targetPath];
     } else if (stat.isDirectory()) {
       // Use async getFilesToScan to get proper .gitignore filtering
-      filesToScan = await getFilesToScanAsync(targetPath, verbose);
+      filesToScan = await getFilesToScanAsync(targetPath, verbose, options.bus);
     } else {
       if (verbose) {
         console.error(chalk.red('❌ Error:'), chalk.white(`Invalid path: ${targetPath}`));
@@ -166,6 +187,13 @@ export async function scanFilesAsync(
         // Check file size
         const fileStat = await fs.promises.stat(file);
         if (fileStat.size > maxSize) {
+          if (options.bus) {
+            options.bus.add({
+              code: 'file.too_large',
+              severity: 'warning',
+              ctx: { file: path.relative(process.cwd(), file), bytes: fileStat.size },
+            });
+          }
           if (verbose) {
             console.warn(
               chalk.yellow(`⚠️  Skipping large file:`),
@@ -182,6 +210,13 @@ export async function scanFilesAsync(
           results.push({ file, matches });
         }
       } catch (error) {
+        if (options.bus) {
+          options.bus.add({
+            code: 'file.read_error',
+            severity: 'error',
+            ctx: { file: path.relative(process.cwd(), file), detail: String(error) },
+          });
+        }
         if (verbose) {
           console.error(
             chalk.red('❌ Error scanning file:'),
@@ -246,7 +281,7 @@ export function scanFiles(
       filesToScan = [targetPath];
     } else if (stat.isDirectory()) {
       // Use getFilesToScan to get proper .gitignore filtering
-      filesToScan = getFilesToScan(targetPath, verbose);
+      filesToScan = getFilesToScan(targetPath, verbose, options.bus);
     } else {
       if (verbose) {
         console.error(chalk.red('❌ Error:'), chalk.white(`Invalid path: ${targetPath}`));
@@ -265,6 +300,13 @@ export function scanFiles(
         // Check file size
         const fileStat = fs.statSync(file);
         if (fileStat.size > maxSize) {
+          if (options.bus) {
+            options.bus.add({
+              code: 'file.too_large',
+              severity: 'warning',
+              ctx: { file: path.relative(process.cwd(), file), bytes: fileStat.size },
+            });
+          }
           if (verbose) {
             console.warn(
               chalk.yellow(`⚠️  Skipping large file:`),
@@ -281,6 +323,13 @@ export function scanFiles(
           results.push({ file, matches });
         }
       } catch (error) {
+        if (options.bus) {
+          options.bus.add({
+            code: 'file.read_error',
+            severity: 'error',
+            ctx: { file: path.relative(process.cwd(), file), detail: String(error) },
+          });
+        }
         if (verbose) {
           console.error(
             chalk.red('❌ Error scanning file:'),

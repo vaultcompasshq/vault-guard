@@ -14,7 +14,8 @@
   "engines": { "node": ">=18.0.0" },
   "scripts": {
     "build": "tsc",
-    "test": "jest"
+    "test": "jest",
+    "test:coverage": "jest --coverage"
   },
   "license": "MIT",
   "dependencies": {

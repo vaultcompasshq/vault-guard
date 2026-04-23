@@ -6,6 +6,8 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
+    "test:coverage": "pnpm -r --workspace-concurrency=1 run test:coverage",
+    "gen:rules-doc": "node scripts/gen-rules-doc.cjs",
     "lint": "eslint .",
     "prepublishOnly": "pnpm build",
     "release": "pnpm publish -r --access public"

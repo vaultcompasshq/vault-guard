@@ -65,7 +65,7 @@ describe('Feature', () => {
 });
 ```
 
-Current test coverage: 78 passing tests
+The monorepo currently runs **213** Jest tests across published packages (`pnpm -r test` shows the exact total on your branch).
 
 ## PR Process
 

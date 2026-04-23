@@ -38,8 +38,42 @@ releases with **npm provenance** enabled where configured in CI.
 ## `vault-guard proxy` (MVP)
 
 The optional local forwarder only targets **`https://api.anthropic.com`** (fixed
-hostname — not a generic open proxy). Bind to **`127.0.0.1`** for workstation use;
-binding to `0.0.0.0` or a LAN interface exposes the process to others who could
-relay traffic through your machine. Request and non-stream response bodies are
-capped to avoid accidental memory exhaustion; streaming responses are piped
-without buffering the full body.
+hostname — not a generic open proxy).
+
+### Defaults are fail-closed
+
+The proxy refuses two configurations by default. Both refusals exist because
+the previous defaults made it trivial for a local process or a phishing page's
+`fetch()` to spend the operator's Anthropic budget without consent
+(*"confused-deputy via local LAN"*).
+
+1. **Non-loopback bind.** Binding `0.0.0.0`, a LAN IP, or any address other
+   than `127.0.0.1` / `localhost` / `::1` is refused unless you pass
+   `--allow-public`. Combined with the fallback below, exposing the proxy on
+   a network interface lets anyone reachable on that network use your API key.
+2. **Env-key fallback.** If the inbound request omits `x-api-key`, the proxy
+   returns `401 missing_api_key`. To opt into the legacy behaviour (read
+   `ANTHROPIC_API_KEY` from the proxy host's environment when the caller does
+   not present one), pass `--allow-env-fallback`.
+
+Use `--allow-env-fallback` together with `--allow-public` only on a host
+where you control every other process and the network is fully trusted; in
+practice this is almost never the case on a developer workstation.
+
+### Memory + lifecycle
+
+- Inbound request bodies are capped at 32 MB.
+- Non-streaming upstream responses are **piped** to the client immediately
+  (no full-body buffer on the wire). A separate **1 MB tee** is used to parse
+  `usage` for telemetry; on tee overflow the wire pipe is unaffected and a
+  `proxy-tee-overflow` row is recorded so the operator can see usage data is
+  missing for that request.
+- Streaming responses are forwarded byte-for-byte; per-frame SSE usage parsing
+  is a planned follow-up — until then streaming requests are logged with
+  `0/0` token counts (`source: 'proxy-stream'`).
+- `SIGINT`/`SIGTERM` triggers a graceful shutdown: stop accepting new
+  connections, drain inflight (5 s grace, then force-close), checkpoint and
+  close the local SQLite store.
+
+See `docs/THREAT_MODEL.md` for the full per-component threat model and
+`docs/PRIVACY.md` for the local telemetry data flow.

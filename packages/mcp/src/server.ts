@@ -5,6 +5,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   SecretScanner,
   loadConfig,
+  ConfigError,
   TokenCounter,
   formatJson,
   formatSarif,
@@ -13,9 +14,31 @@ import {
 import { TelemetryStore } from '@vaultcompass/vault-guard-telemetry';
 import { scanWorkspaceDirectory } from './workspace-scan';
 
+/**
+ * Build a scanner for the current MCP request.
+ *
+ * Policy: the MCP server runs as a stdio child of an editor / agent. If the
+ * user has a typo in `.vault-guard.json` we must not take the host down —
+ * log to stderr (visible in the editor's MCP output channel) and fall back
+ * to default config. The CLI surface, by contrast, hard-fails on
+ * `ConfigError` because a human is at the terminal to read the message.
+ */
 function makeScanner(): SecretScanner {
   const cwd = process.cwd();
-  return new SecretScanner(loadConfig(cwd));
+  let cfg;
+  try {
+    cfg = loadConfig(cwd);
+  } catch (e) {
+    if (e instanceof ConfigError) {
+      process.stderr.write(
+        `vault-guard MCP: ignoring broken config at ${e.filePath} — ${e.message}\n`,
+      );
+      cfg = {};
+    } else {
+      throw e;
+    }
+  }
+  return new SecretScanner(cfg);
 }
 
 function toolPayload(obj: unknown): { content: Array<{ type: 'text'; text: string }> } {

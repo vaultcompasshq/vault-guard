@@ -1,8 +1,80 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import Database from 'better-sqlite3';
+import { createRequire } from 'module';
 import { TokenCounter } from '@vaultcompass/vault-guard-core';
+
+// Lazy native-binding loader uses createRequire so that:
+// (a) the native binding is not loaded at module import time (saves startup
+//     cost and allows graceful degradation on platforms without pre-built binaries)
+// (b) @typescript-eslint/no-require-imports is not violated
+const _require = createRequire(__filename);
+
+// ---------------------------------------------------------------------------
+// TelemetryUnavailableError
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown when `better-sqlite3` native bindings are missing or incompatible.
+ *
+ * This happens when:
+ *   - The package was installed with `--ignore-scripts` (skips node-gyp compile)
+ *   - The Node.js ABI changed after install (e.g. nvm version switch)
+ *   - The pre-built binary is missing for the current platform/arch
+ *
+ * Callers that don't strictly need telemetry should catch this and degrade
+ * gracefully (e.g. `statusline` and `suggest-model`). The `proxy` command
+ * intentionally lets this propagate — it is the primary telemetry writer and
+ * should fail loudly rather than silently discard usage data.
+ *
+ * @example
+ * ```ts
+ * try {
+ *   const store = new TelemetryStore();
+ *   const payload = store.getStatuslinePayload();
+ *   console.log(payload);
+ * } catch (err) {
+ *   if (err instanceof TelemetryUnavailableError) {
+ *     console.error('Telemetry unavailable:', err.message);
+ *   } else {
+ *     throw err;
+ *   }
+ * }
+ * ```
+ */
+export class TelemetryUnavailableError extends Error {
+  constructor(cause: unknown) {
+    const msg =
+      `better-sqlite3 native bindings could not be loaded.\n` +
+      `Re-install to rebuild them: npm install -g @vaultcompass/vault-guard\n` +
+      `Underlying error: ${String(cause)}`;
+    super(msg);
+    this.name = 'TelemetryUnavailableError';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Lazy DB loader
+// ---------------------------------------------------------------------------
+
+type DatabaseType = import('better-sqlite3').Database;
+type DatabaseConstructor = typeof import('better-sqlite3');
+
+let _DbClass: DatabaseConstructor | null = null;
+
+function getDbClass(): DatabaseConstructor {
+  if (_DbClass) return _DbClass;
+  try {
+    // Dynamic import to defer native binding load until first use.
+    // We need synchronous access here (TelemetryStore constructor is sync),
+    // so we use createRequire from the module system rather than top-level await.
+    const mod = _require('better-sqlite3') as DatabaseConstructor;
+    _DbClass = mod;
+    return _DbClass;
+  } catch (err) {
+    throw new TelemetryUnavailableError(err);
+  }
+}
 
 export interface UsageRecordInput {
   createdAt?: Date;
@@ -57,14 +129,15 @@ function utcDayStart(d = new Date()): string {
 }
 
 export class TelemetryStore {
-  private readonly db: Database.Database;
+  private readonly db: DatabaseType;
   private readonly counter = new TokenCounter();
 
   constructor(dbPath?: string) {
     const resolved = dbPath ?? defaultDbPath();
     const dir = path.dirname(resolved);
     fs.mkdirSync(dir, { recursive: true });
-    this.db = new Database(resolved);
+    // getDbClass() throws TelemetryUnavailableError if bindings missing.
+    this.db = new (getDbClass())(resolved);
     this.db.pragma('journal_mode = WAL');
     this.initSchema();
   }
@@ -103,6 +176,32 @@ export class TelemetryStore {
 
   close(): void {
     this.db.close();
+  }
+
+  /**
+   * Force a WAL checkpoint (TRUNCATE) and close the database.
+   *
+   * Why: in WAL mode the main DB file lags behind the `-wal` sidecar until a
+   * checkpoint runs. If the process is killed (SIGINT/SIGTERM during proxy
+   * shutdown) without checkpointing, recent rows live only in the WAL and
+   * survive only as long as that file does. TRUNCATE both checkpoints and
+   * shrinks the WAL to zero so the next reader sees an up-to-date main file
+   * with no recovery surprises.
+   *
+   * Best-effort: if the pragma fails (e.g. handle already closed by another
+   * shutdown path) we still attempt to close the underlying handle.
+   */
+  closeAndCheckpoint(): void {
+    try {
+      this.db.pragma('wal_checkpoint(TRUNCATE)');
+    } catch {
+      // Handle may already be in a shutting-down state; safe to ignore.
+    }
+    try {
+      this.db.close();
+    } catch {
+      // Best-effort: nothing useful we can do on shutdown if close throws.
+    }
   }
 
   recordUsage(input: UsageRecordInput): void {

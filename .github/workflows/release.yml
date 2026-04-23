@@ -34,8 +34,11 @@ jobs:
     - name: Build packages
       run: pnpm build
 
-    - name: Run tests
-      run: pnpm test
+    - name: Regenerate docs/RULES.md and check for drift
+      run: node scripts/gen-rules-doc.cjs && git diff --exit-code docs/RULES.md
+
+    - name: Run tests with coverage
+      run: pnpm test:coverage
 
     - name: Publish to npm
       run: pnpm publish -r --access public --no-git-checks

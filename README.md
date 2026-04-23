@@ -98,9 +98,9 @@ Forwards **`POST /v1/messages`** to `api.anthropic.com` and logs **`usage`** for
 
 See **[docs/MCP.md](./docs/MCP.md)**. Run: `npx -y @vaultcompass/vault-guard-mcp` (stdio).
 
-### VS Code / Cursor extension
+### VS Code / Cursor extension (Developer build)
 
-Workspace package **`packages/vscode-extension`**: `pnpm --filter vault-guard-vscode build`, then **Run Extension** from VS Code for local tryout.
+Workspace package **`packages/vscode-extension`**: `pnpm --filter vault-guard-vscode build`, then **Run Extension** from VS Code for local tryout. This extension is currently a developer-only build and is not published to the marketplace.
 
 ## What it detects
 

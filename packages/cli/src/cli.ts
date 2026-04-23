@@ -4,7 +4,6 @@ import { Command } from 'commander';
 import { scanCommand, OutputFormat } from './commands/scan';
 import { installHookCommand } from './commands/install-hook';
 import { tokensCommand } from './commands/tokens';
-import { monitorCommand } from './commands/monitor';
 import { fixCommand } from './commands/fix';
 import { checkCommand } from './commands/check';
 import { statuslineCommand } from './commands/statusline';
@@ -70,14 +69,6 @@ export function buildCli(): Command {
       await tokensCommand();
     });
 
-  // Monitor command
-  program
-    .command('monitor')
-    .description('Start status monitor')
-    .action(async () => {
-      await monitorCommand();
-    });
-
   // Fix command
   program
     .command('fix')
@@ -133,17 +124,55 @@ export function buildCli(): Command {
       '--listen <host:port>',
       'Bind address, e.g. 127.0.0.1:8765',
     )
-    .action(async (options: { listen: string }) => {
-      try {
-        await proxyCommand(options.listen);
-        await new Promise(() => {
-          /* keep process alive while server runs */
-        });
-      } catch (e) {
-        console.error(String(e));
-        process.exit(1);
-      }
-    });
+    .option(
+      '--allow-env-fallback',
+      'Permit fallback to ANTHROPIC_API_KEY when caller omits x-api-key. ' +
+        'Off by default — see SECURITY.md before enabling.',
+      false,
+    )
+    .option(
+      '--allow-public',
+      'Permit binding a non-loopback address. Off by default — exposing this ' +
+        'proxy on the network combined with --allow-env-fallback is a credit-card ' +
+        'draining footgun.',
+      false,
+    )
+    .action(
+      async (options: {
+        listen: string;
+        allowEnvFallback?: boolean;
+        allowPublic?: boolean;
+      }) => {
+        try {
+          const handle = await proxyCommand({
+            listen: options.listen,
+            allowEnvFallback: Boolean(options.allowEnvFallback),
+            allowPublic: Boolean(options.allowPublic),
+          });
+
+          let signalled = false;
+          const onSignal = (signal: NodeJS.Signals): void => {
+            if (signalled) return;
+            signalled = true;
+            void handle
+              .shutdown(signal)
+              .catch(() => {
+                /* shutdown is best-effort */
+              })
+              .finally(() => process.exit(0));
+          };
+          process.on('SIGINT', onSignal);
+          process.on('SIGTERM', onSignal);
+
+          await new Promise(() => {
+            /* keep process alive until a signal triggers shutdown */
+          });
+        } catch (e) {
+          console.error(String(e));
+          process.exit(1);
+        }
+      },
+    );
 
   return program;
 }

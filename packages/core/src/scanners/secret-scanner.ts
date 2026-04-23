@@ -2,6 +2,10 @@ import fs from 'fs';
 import { SecretMatch } from '../types';
 import { VaultGuardConfig } from '../config';
 import { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from '../utils/entropy';
+import {
+  validateRegexLength,
+  validateRegexSafety,
+} from '../utils/regex-safety';
 
 // ---------------------------------------------------------------------------
 // Pattern registry
@@ -99,6 +103,29 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   ['password-in-code',{ regex: /password["']?\s*[:=]\s*["']([a-zA-Z0-9_\-!@#$%^&*]{12,})/gi,   severity: 'high',   minEntropy: 3.2 }],
 ]);
 
+/**
+ * Read-only metadata for built-in patterns (docs / codegen). Exposes
+ * `RegExp#source` and flags only — not live `RegExp` instances.
+ */
+export interface BuiltinPatternDocEntry {
+  id: string;
+  severity: SecretMatch['severity'];
+  minEntropy?: number;
+  regexSource: string;
+  regexFlags: string;
+}
+
+/** Stable insertion order of {@link BUILTIN_PATTERNS}. */
+export function getBuiltinPatternDocEntries(): BuiltinPatternDocEntry[] {
+  return [...BUILTIN_PATTERNS.entries()].map(([id, entry]) => ({
+    id,
+    severity: entry.severity,
+    ...(entry.minEntropy !== undefined ? { minEntropy: entry.minEntropy } : {}),
+    regexSource: entry.regex.source,
+    regexFlags: entry.regex.flags,
+  }));
+}
+
 // ---------------------------------------------------------------------------
 // Severity ranking (higher = worse)
 // ---------------------------------------------------------------------------
@@ -140,20 +167,71 @@ export class SecretScanner {
     }
 
     // Compile and append extra patterns from config.
+    //
+    // Security policy: every user-supplied regex passes through
+    // `validateRegexSafety` (heuristic ReDoS check). Patterns that fail are
+    // **not** silently skipped — that is exactly the behaviour the audit
+    // flagged (Audit §14: silent error swallows). They are reported via
+    // `extraPatternRejections` for the caller (CLI / MCP) to surface to the
+    // user, then dropped.
+    //
+    // `extra_patterns_unsafe: true` opts out of the heuristic, but the length
+    // cap still runs as a memory-use backstop.
     if (config?.extra_patterns) {
+      const unsafe = config.extra_patterns_unsafe === true;
+
       for (const ep of config.extra_patterns) {
+        const lengthCheck = validateRegexLength(ep.regex);
+        if (!lengthCheck.ok) {
+          this.extraPatternRejections.push({
+            id: ep.id,
+            reason: lengthCheck.reason ?? 'too_long',
+            detail: lengthCheck.detail ?? 'pattern exceeds length cap',
+          });
+          continue;
+        }
+
+        if (!unsafe) {
+          const safety = validateRegexSafety(ep.regex);
+          if (!safety.ok) {
+            this.extraPatternRejections.push({
+              id: ep.id,
+              reason: safety.reason ?? 'invalid_syntax',
+              detail: safety.detail ?? 'pattern failed ReDoS safety check',
+            });
+            continue;
+          }
+        }
+
         try {
           this.patterns.set(ep.id, {
             regex: new RegExp(ep.regex, 'g'),
             severity: ep.severity,
             ...(ep.min_entropy !== undefined ? { minEntropy: ep.min_entropy } : {}),
           });
-        } catch {
-          // Skip patterns with invalid regex.
+        } catch (e) {
+          this.extraPatternRejections.push({
+            id: ep.id,
+            reason: 'invalid_syntax',
+            detail: e instanceof Error ? e.message : String(e),
+          });
         }
       }
     }
   }
+
+  /**
+   * Rejected `extra_patterns` from the most recent constructor call.
+   *
+   * Callers should surface these to the user (stderr today, structured
+   * `diagnostics[]` channel post Phase 2.2). A non-empty list means the
+   * user's `.vault-guard.json` declared rules that are not active.
+   */
+  readonly extraPatternRejections: Array<{
+    id: string;
+    reason: string;
+    detail: string;
+  }> = [];
 
   /**
    * Scan a file and return deduplicated, ignore-directive-filtered matches.
