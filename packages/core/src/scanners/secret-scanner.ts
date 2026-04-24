@@ -233,6 +233,11 @@ export class SecretScanner {
     detail: string;
   }> = [];
 
+  /** Number of built-in + extra patterns active after config (severity "off" removes rules). */
+  getActivePatternCount(): number {
+    return this.patterns.size;
+  }
+
   /**
    * Scan a file and return deduplicated, ignore-directive-filtered matches.
    */
@@ -245,6 +250,10 @@ export class SecretScanner {
   /**
    * Scan arbitrary UTF-8 text (editor buffer, pasted snippet, MCP payload).
    * Line numbers and byte offsets are relative to this string.
+   *
+   * Each call uses fresh `RegExp` instances so overlapping `scanContent` work
+   * (e.g. after an `await` in a concurrent worker pool) cannot corrupt
+   * `lastIndex` on shared patterns.
    */
   scanContent(content: string): SecretMatch[] {
     const lineIndex = this.buildLineIndex(content);
@@ -252,7 +261,17 @@ export class SecretScanner {
 
     const raw: SecretMatch[] = [];
 
-    for (const [type, entry] of this.patterns) {
+    // Fresh `RegExp` per invocation so concurrent or interleaved `scanContent`
+    // calls (e.g. across `await` in a worker pool) never share `lastIndex`.
+    const patternsForRun = new Map<string, PatternEntry>();
+    for (const [k, v] of this.patterns) {
+      patternsForRun.set(k, {
+        ...v,
+        regex: new RegExp(v.regex.source, v.regex.flags),
+      });
+    }
+
+    for (const [type, entry] of patternsForRun) {
       const { regex, severity, minEntropy } = entry;
       regex.lastIndex = 0;
 
@@ -282,6 +301,14 @@ export class SecretScanner {
     }
 
     return this.deduplicateMatches(raw);
+  }
+
+  /**
+   * Merge matches produced from chunked reads (e.g. line-by-line streaming)
+   * using the same overlap / severity rules as a full-file scan.
+   */
+  mergeChunkedMatches(matches: SecretMatch[]): SecretMatch[] {
+    return this.deduplicateMatches(matches);
   }
 
   // ---------------------------------------------------------------------------

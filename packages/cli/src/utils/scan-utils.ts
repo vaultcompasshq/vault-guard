@@ -4,25 +4,37 @@ import {
   SecretScanner,
   getFilesToScan,
   getFilesToScanAsync,
+  scanTextFileAsync,
+  scanTextFileSync,
   formatJson as formatJsonResults,
   formatSarif as formatSarifResults,
   type JsonOutput,
+  type JsonRunMetadata,
   type FileScanResult,
   type Diagnostic,
   type DiagnosticBus,
 } from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
 
-export type { JsonOutput };
+export type { JsonOutput, JsonRunMetadata };
 export interface ScanFormatOptions {
   diagnostics?: Diagnostic[];
+  run?: JsonRunMetadata;
 }
 
 export function formatJson(results: ScanResult[], opts: ScanFormatOptions = {}): string {
-  return formatJsonResults(results, { cwd: process.cwd(), diagnostics: opts.diagnostics });
+  return formatJsonResults(results, {
+    cwd: process.cwd(),
+    diagnostics: opts.diagnostics,
+    run: opts.run,
+  });
 }
 export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {}): string {
-  return formatSarifResults(results, { cwd: process.cwd(), diagnostics: opts.diagnostics });
+  return formatSarifResults(results, {
+    cwd: process.cwd(),
+    diagnostics: opts.diagnostics,
+    run: opts.run,
+  });
 }
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -34,6 +46,12 @@ const BINARY_EXTENSIONS = [
 
 export type ScanResult = FileScanResult;
 
+/** Filled by scan runners when provided (files opened for secret scanning, bytes read). */
+export interface ScanTelemetryStats {
+  filesScanned: number;
+  bytesScanned: number;
+}
+
 export interface ScanOptions {
   verbose?: boolean;
   maxSize?: number;
@@ -41,6 +59,7 @@ export interface ScanOptions {
   progress?: boolean;
   concurrency?: number; // Number of files to scan in parallel
   bus?: DiagnosticBus;
+  stats?: ScanTelemetryStats;
 }
 
 /**
@@ -70,25 +89,23 @@ export async function scanFileListAsync(
 
       if (skipBinary && isBinaryFile(file)) return;
 
-      if (st.size > maxSize) {
-        if (options.bus) {
-          options.bus.add({
-            code: 'file.too_large',
-            severity: 'warning',
-            ctx: { file: path.relative(process.cwd(), file), bytes: st.size },
-          });
-        }
-        if (verbose) {
-          console.warn(
-            chalk.yellow(`⚠️  Skipping large file:`),
-            chalk.white(path.relative(process.cwd(), file)),
-            chalk.gray(`(${(st.size / 1024 / 1024).toFixed(2)}MB)`),
-          );
-        }
-        return;
+      if (st.size > maxSize && verbose) {
+        console.warn(
+          chalk.yellow(`⚠️  Large file (streaming line-by-line):`),
+          chalk.white(path.relative(process.cwd(), file)),
+          chalk.gray(`(${(st.size / 1024 / 1024).toFixed(2)}MB)`),
+        );
       }
 
-      const matches = scanner.scan(file);
+      if (options.stats) {
+        options.stats.filesScanned += 1;
+        options.stats.bytesScanned += st.size;
+      }
+
+      const matches =
+        st.size > maxSize
+          ? await scanTextFileAsync(scanner, file, { maxFileBytes: maxSize, bus: options.bus })
+          : scanner.scan(file);
       if (matches.length > 0) {
         results.push({ file, matches });
       }
@@ -186,26 +203,23 @@ export async function scanFilesAsync(
 
         // Check file size
         const fileStat = await fs.promises.stat(file);
-        if (fileStat.size > maxSize) {
-          if (options.bus) {
-            options.bus.add({
-              code: 'file.too_large',
-              severity: 'warning',
-              ctx: { file: path.relative(process.cwd(), file), bytes: fileStat.size },
-            });
-          }
-          if (verbose) {
-            console.warn(
-              chalk.yellow(`⚠️  Skipping large file:`),
-              chalk.white(path.relative(process.cwd(), file)),
-              chalk.gray(`(${(fileStat.size / 1024 / 1024).toFixed(2)}MB)`)
-            );
-          }
-          return;
+        if (fileStat.size > maxSize && verbose) {
+          console.warn(
+            chalk.yellow(`⚠️  Large file (streaming line-by-line):`),
+            chalk.white(path.relative(process.cwd(), file)),
+            chalk.gray(`(${(fileStat.size / 1024 / 1024).toFixed(2)}MB)`),
+          );
         }
 
-        // Scan the file
-        const matches = scanner.scan(file);
+        if (options.stats) {
+          options.stats.filesScanned += 1;
+          options.stats.bytesScanned += fileStat.size;
+        }
+
+        const matches =
+          fileStat.size > maxSize
+            ? await scanTextFileAsync(scanner, file, { maxFileBytes: maxSize, bus: options.bus })
+            : scanner.scan(file);
         if (matches.length > 0) {
           results.push({ file, matches });
         }
@@ -299,26 +313,20 @@ export function scanFiles(
 
         // Check file size
         const fileStat = fs.statSync(file);
-        if (fileStat.size > maxSize) {
-          if (options.bus) {
-            options.bus.add({
-              code: 'file.too_large',
-              severity: 'warning',
-              ctx: { file: path.relative(process.cwd(), file), bytes: fileStat.size },
-            });
-          }
-          if (verbose) {
-            console.warn(
-              chalk.yellow(`⚠️  Skipping large file:`),
-              chalk.white(path.relative(process.cwd(), file)),
-              chalk.gray(`(${(fileStat.size / 1024 / 1024).toFixed(2)}MB)`)
-            );
-          }
-          continue;
+        if (fileStat.size > maxSize && verbose) {
+          console.warn(
+            chalk.yellow(`⚠️  Large file (sync read only ≤ ${(maxSize / 1024 / 1024).toFixed(0)} MB; use async scan):`),
+            chalk.white(path.relative(process.cwd(), file)),
+            chalk.gray(`(${(fileStat.size / 1024 / 1024).toFixed(2)}MB)`),
+          );
         }
 
-        // Scan the file
-        const matches = scanner.scan(file);
+        if (options.stats) {
+          options.stats.filesScanned += 1;
+          options.stats.bytesScanned += fileStat.size;
+        }
+
+        const matches = scanTextFileSync(scanner, file, { maxFileBytes: maxSize, bus: options.bus });
         if (matches.length > 0) {
           results.push({ file, matches });
         }

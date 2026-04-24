@@ -10,8 +10,10 @@ describe('scanWorkspaceDirectory', () => {
     try {
       fs.writeFileSync(path.join(dir, 'readme.txt'), 'hello world\n', 'utf8');
       const scanner = new SecretScanner();
-      const results = await scanWorkspaceDirectory(dir, scanner);
+      const { results, filesScanned, bytesScanned } = await scanWorkspaceDirectory(dir, scanner);
       expect(results).toEqual([]);
+      expect(filesScanned).toBe(1);
+      expect(bytesScanned).toBeGreaterThan(0);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

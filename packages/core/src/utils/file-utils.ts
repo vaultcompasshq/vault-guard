@@ -1,26 +1,193 @@
-import fs from 'fs';
+import fs, { promises as fsPromises } from 'fs';
 import path from 'path';
-import { promises as fsPromises } from 'fs';
+import ignore from 'ignore';
 
 import { DiagnosticBus } from '../diagnostics';
 
-// Cache for .gitignore patterns to avoid re-reading files
-const gitignoreCache = new Map<string, { ignore: GitignorePattern[]; negate: GitignorePattern[] }>();
+const GITIGNORE_CACHE_MAX = 32;
+
+type CachedIgnoreFilter = {
+  lastUsed: number;
+  /** Returns true if `filePath` should be excluded by `.gitignore` rules. */
+  tester: (filePath: string) => boolean;
+  /** Absolute paths of `.gitignore` files whose mtimes are tracked. */
+  watchPaths: string[];
+  /** Expected `mtimeMs` for each path in `watchPaths` (same order). */
+  mtimesMs: number[];
+};
+
+const gitignoreCache = new Map<string, CachedIgnoreFilter>();
 
 /**
- * Gitignore pattern interface
+ * Drop all cached `.gitignore` matchers. Call after long-lived processes
+ * detect an out-of-band change that `mtime` cannot observe, or in tests.
  */
-interface GitignorePattern {
-  pattern: string;
-  isNegation: boolean;
-  isDirectory: boolean;
-  regex: RegExp;
+export function clearGitignoreCache(): void {
+  gitignoreCache.clear();
+}
+
+function touchCache(key: string, entry: CachedIgnoreFilter): void {
+  gitignoreCache.delete(key);
+  gitignoreCache.set(key, { ...entry, lastUsed: Date.now() });
+  while (gitignoreCache.size > GITIGNORE_CACHE_MAX) {
+    const oldest = gitignoreCache.keys().next().value;
+    if (oldest === undefined) break;
+    gitignoreCache.delete(oldest);
+  }
+}
+
+function isStale(entry: CachedIgnoreFilter): boolean {
+  for (let i = 0; i < entry.watchPaths.length; i++) {
+    const p = entry.watchPaths[i];
+    const expected = entry.mtimesMs[i];
+    try {
+      if (fs.statSync(p).mtimeMs !== expected) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+function findGitRoot(startDir: string): string | null {
+  let dir = path.resolve(startDir);
+  while (true) {
+    if (fs.existsSync(path.join(dir, '.git'))) {
+      return dir;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+function filesystemRootFor(resolvedPath: string): string {
+  return path.parse(resolvedPath).root;
+}
+
+interface GitignoreChainEntry {
+  readonly dir: string;
+  readonly absGitignore: string;
+  readonly content: string;
+}
+
+/** Prefix a single `.gitignore` line for rules defined in a subdirectory. */
+function qualifyGitignoreLine(line: string, posixPrefix: string): string {
+  if (!posixPrefix) return line;
+  const trimmed = line.trimEnd();
+  if (!trimmed || trimmed.startsWith('#')) return line;
+
+  const neg = trimmed.startsWith('!');
+  const body = neg ? trimmed.slice(1) : trimmed;
+  if (!body) return line;
+
+  let out: string;
+  if (body.startsWith('/')) {
+    out = `${posixPrefix}${body}`;
+  } else if (body.includes('/')) {
+    out = `${posixPrefix}/${body}`;
+  } else {
+    out = `${posixPrefix}/**/${body}`;
+  }
+  return neg ? `!${out}` : out;
+}
+
+function qualifyGitignoreContent(content: string, posixPrefix: string): string {
+  if (!posixPrefix) return content;
+  return content.split('\n').map(l => qualifyGitignoreLine(l, posixPrefix)).join('\n');
+}
+
+/**
+ * Walk upward from `resolvedScan` through `stopAt` (inclusive), collect each
+ * `.gitignore`, then return entries in shallow-to-deep order for merging.
+ */
+function collectGitignoreChain(resolvedScan: string, stopAt: string): GitignoreChainEntry[] {
+  const stop = path.resolve(stopAt);
+  const raw: GitignoreChainEntry[] = [];
+  let dir = path.resolve(resolvedScan);
+
+  while (true) {
+    const absGitignore = path.join(dir, '.gitignore');
+    if (fs.existsSync(absGitignore)) {
+      try {
+        raw.push({
+          dir,
+          absGitignore,
+          content: fs.readFileSync(absGitignore, 'utf-8'),
+        });
+      } catch {
+        /* unreadable .gitignore — treat as absent */
+      }
+    }
+    if (dir === stop) break;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  raw.reverse();
+  return raw;
+}
+
+function buildIgnoreFilter(resolvedScanRoot: string): CachedIgnoreFilter {
+  const gitRoot = findGitRoot(resolvedScanRoot);
+  const stopAt = gitRoot ?? filesystemRootFor(resolvedScanRoot);
+  const chain = collectGitignoreChain(resolvedScanRoot, stopAt);
+
+  const ig = ignore();
+  for (const { dir, content } of chain) {
+    const relDir = path.relative(stopAt, dir).split(path.sep).join('/');
+    const posixPrefix = relDir === '' || relDir === '.' ? '' : relDir;
+    ig.add(qualifyGitignoreContent(content, posixPrefix));
+  }
+
+  const watchPaths = chain.map(c => c.absGitignore);
+  const mtimesMs = watchPaths.map(p => {
+    try {
+      return fs.statSync(p).mtimeMs;
+    } catch {
+      return -1;
+    }
+  });
+
+  const tester = (filePath: string): boolean => {
+    const rel = path.relative(stopAt, path.resolve(filePath)).split(path.sep).join('/');
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      return false;
+    }
+    const posixPath = rel === '' ? '.' : rel;
+    return ig.ignores(posixPath);
+  };
+
+  return {
+    lastUsed: Date.now(),
+    tester,
+    watchPaths,
+    mtimesMs,
+  };
+}
+
+function getGitignoreTester(scanRoot: string): (filePath: string) => boolean {
+  const key = path.resolve(scanRoot);
+  const hit = gitignoreCache.get(key);
+  if (hit && !isStale(hit)) {
+    touchCache(key, hit);
+    return hit.tester;
+  }
+  const built = buildIgnoreFilter(key);
+  touchCache(key, built);
+  return built.tester;
 }
 
 /**
  * Get all files in directory recursively (async version)
  */
-export async function getAllFilesAsync(dirPath: string, visited = new Set<string>(), verbose = false, bus?: DiagnosticBus): Promise<string[]> {
+export async function getAllFilesAsync(
+  dirPath: string,
+  visited = new Set<string>(),
+  verbose = false,
+  bus?: DiagnosticBus,
+): Promise<string[]> {
   const files: string[] = [];
 
   try {
@@ -37,7 +204,6 @@ export async function getAllFilesAsync(dirPath: string, visited = new Set<string
       return files;
     }
 
-    // Prevent infinite recursion from circular symlinks
     const realPath = fs.realpathSync(dirPath);
     if (visited.has(realPath)) {
       return files;
@@ -51,7 +217,6 @@ export async function getAllFilesAsync(dirPath: string, visited = new Set<string
         const fullPath = path.join(dirPath, item);
         const lstat = await fsPromises.lstat(fullPath);
 
-        // Skip symlinks to prevent infinite recursion
         if (lstat.isSymbolicLink()) {
           continue;
         }
@@ -63,7 +228,6 @@ export async function getAllFilesAsync(dirPath: string, visited = new Set<string
           files.push(fullPath);
         }
       } catch (error) {
-        // Skip files/directories we can't read (permission errors, etc.)
         if (bus) {
           bus.add({
             code: 'fs.permission_denied',
@@ -77,7 +241,6 @@ export async function getAllFilesAsync(dirPath: string, visited = new Set<string
       }
     }
   } catch (error) {
-    // If we can't read the directory at all, return empty array
     if (bus) {
       bus.add({
         code: 'fs.permission_denied',
@@ -96,7 +259,12 @@ export async function getAllFilesAsync(dirPath: string, visited = new Set<string
 /**
  * Get all files in directory recursively (sync version for backwards compatibility)
  */
-export function getAllFiles(dirPath: string, visited = new Set<string>(), verbose = false, bus?: DiagnosticBus): string[] {
+export function getAllFiles(
+  dirPath: string,
+  visited = new Set<string>(),
+  verbose = false,
+  bus?: DiagnosticBus,
+): string[] {
   const files: string[] = [];
 
   try {
@@ -111,7 +279,6 @@ export function getAllFiles(dirPath: string, visited = new Set<string>(), verbos
       return files;
     }
 
-    // Prevent infinite recursion from circular symlinks
     const realPath = fs.realpathSync(dirPath);
     if (visited.has(realPath)) {
       return files;
@@ -125,7 +292,6 @@ export function getAllFiles(dirPath: string, visited = new Set<string>(), verbos
         const fullPath = path.join(dirPath, item);
         const lstat = fs.lstatSync(fullPath);
 
-        // Skip symlinks to prevent infinite recursion
         if (lstat.isSymbolicLink()) {
           continue;
         }
@@ -136,7 +302,6 @@ export function getAllFiles(dirPath: string, visited = new Set<string>(), verbos
           files.push(fullPath);
         }
       } catch (error) {
-        // Skip files/directories we can't read (permission errors, etc.)
         if (bus) {
           bus.add({
             code: 'fs.permission_denied',
@@ -150,7 +315,6 @@ export function getAllFiles(dirPath: string, visited = new Set<string>(), verbos
       }
     }
   } catch (error) {
-    // If we can't read the directory at all, return empty array
     if (bus) {
       bus.add({
         code: 'fs.permission_denied',
@@ -169,19 +333,27 @@ export function getAllFiles(dirPath: string, visited = new Set<string>(), verbos
 /**
  * Get files to scan (filters out ignored directories/files) - async version
  */
-export async function getFilesToScanAsync(targetPath: string, verbose = false, bus?: DiagnosticBus): Promise<string[]> {
+export async function getFilesToScanAsync(
+  targetPath: string,
+  verbose = false,
+  bus?: DiagnosticBus,
+): Promise<string[]> {
   const allFiles = await getAllFilesAsync(targetPath, new Set(), verbose, bus);
-  const gitignorePatterns = loadGitignorePatterns(targetPath, verbose);
-  return allFiles.filter(file => !shouldIgnoreFile(file, gitignorePatterns));
+  const gitignoreTester = getGitignoreTester(targetPath);
+  return allFiles.filter(file => !shouldIgnoreFile(file, gitignoreTester));
 }
 
 /**
  * Get files to scan (filters out ignored directories/files) - sync version
  */
-export function getFilesToScan(targetPath: string, verbose = false, bus?: DiagnosticBus): string[] {
+export function getFilesToScan(
+  targetPath: string,
+  verbose = false,
+  bus?: DiagnosticBus,
+): string[] {
   const allFiles = getAllFiles(targetPath, new Set(), verbose, bus);
-  const gitignorePatterns = loadGitignorePatterns(targetPath, verbose);
-  return allFiles.filter(file => !shouldIgnoreFile(file, gitignorePatterns));
+  const gitignoreTester = getGitignoreTester(targetPath);
+  return allFiles.filter(file => !shouldIgnoreFile(file, gitignoreTester));
 }
 
 function shouldIgnoreDirectory(name: string): boolean {
@@ -189,7 +361,10 @@ function shouldIgnoreDirectory(name: string): boolean {
   return ignoreDirs.includes(name);
 }
 
-function shouldIgnoreFile(filePath: string, gitignorePatterns: GitignorePattern[] = []): boolean {
+function shouldIgnoreFile(
+  filePath: string,
+  gitignoreTester?: (filePath: string) => boolean,
+): boolean {
   const ext = path.extname(filePath);
   const ignoreExts = [
     '.png',
@@ -202,7 +377,7 @@ function shouldIgnoreFile(filePath: string, gitignorePatterns: GitignorePattern[
     '.tar',
     '.gz',
     '.lock',
-    '.log'
+    '.log',
   ];
 
   if (ignoreExts.includes(ext)) {
@@ -214,134 +389,9 @@ function shouldIgnoreFile(filePath: string, gitignorePatterns: GitignorePattern[
     return true;
   }
 
-  // Check against .gitignore patterns with proper negation support
-  if (gitignorePatterns.length > 0) {
-    const relativePath = path.relative(process.cwd(), filePath);
-    let isIgnored = false;
-
-    // First pass: check if file matches any ignore pattern
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    for (const { pattern, isNegation, regex } of gitignorePatterns) {
-      if (!isNegation && regex.test(relativePath)) {
-        isIgnored = true;
-      }
-    }
-
-    // Second pass: check if file matches any negation pattern (only if already ignored)
-    if (isIgnored) {
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      for (const { pattern, isNegation, regex } of gitignorePatterns) {
-        if (isNegation && regex.test(relativePath)) {
-          return false; // File is re-included by negation pattern
-        }
-      }
-      return true; // File is ignored and no negation pattern applies
-    }
+  if (gitignoreTester && gitignoreTester(filePath)) {
+    return true;
   }
 
   return false;
-}
-
-/**
- * Load .gitignore patterns from directory and parent directories
- * Returns both ignore and negation patterns with proper regex compilation
- */
-function loadGitignorePatterns(dirPath: string, verbose = false): GitignorePattern[] {
-  const cacheKey = dirPath;
-  const cached = gitignoreCache.get(cacheKey);
-  if (cached) {
-    return cached.ignore.concat(cached.negate);
-  }
-
-  const ignorePatterns: GitignorePattern[] = [];
-  const negatePatterns: GitignorePattern[] = [];
-  let currentDir = dirPath;
-
-  // Walk up directory tree to collect all .gitignore patterns
-  while (currentDir !== path.parse(currentDir).root) {
-    const gitignorePath = path.join(currentDir, '.gitignore');
-    if (fs.existsSync(gitignorePath)) {
-      try {
-        const content = fs.readFileSync(gitignorePath, 'utf-8');
-        const lines = content.split('\n')
-          .map(line => line.trim())
-          .filter(line => line && !line.startsWith('#'));
-
-        for (const line of lines) {
-          const pattern = compileGitignorePattern(line);
-          if (pattern.isNegation) {
-            negatePatterns.push(pattern);
-          } else {
-            ignorePatterns.push(pattern);
-          }
-        }
-      } catch (error) {
-        // Ignore .gitignore read errors
-        if (verbose) {
-          console.error(`Warning: Cannot read .gitignore in ${currentDir}:`, error);
-        }
-      }
-    }
-
-    const parentDir = path.dirname(currentDir);
-    if (parentDir === currentDir) {
-      break;
-    }
-    currentDir = parentDir;
-  }
-
-  gitignoreCache.set(cacheKey, { ignore: ignorePatterns, negate: negatePatterns });
-  return [...ignorePatterns, ...negatePatterns];
-}
-
-/**
- * Compile a .gitignore pattern into a regex pattern object
- */
-function compileGitignorePattern(line: string): GitignorePattern {
-  let pattern = line;
-  const isNegation = pattern.startsWith('!');
-
-  if (isNegation) {
-    pattern = pattern.substring(1);
-  }
-
-  // Handle directory patterns (ending with /)
-  const isDirectory = pattern.endsWith('/');
-  if (isDirectory) {
-    pattern = pattern.slice(0, -1);
-  }
-
-  // Remove leading slash for matching
-  const hasLeadingSlash = pattern.startsWith('/');
-  if (hasLeadingSlash) {
-    pattern = pattern.substring(1);
-  }
-
-  // Handle recursive globbing (**)
-  pattern = pattern
-    .replace(/\*\*/g, '(.*/)?')  // ** matches any number of directories
-    .replace(/\*/g, '[^/]*')     // * matches within a directory
-    .replace(/\?/g, '[^/]');      // ? matches single character
-
-  // Escape special regex characters
-  pattern = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-
-  // Convert to regex
-  let regexPattern: string;
-  if (hasLeadingSlash) {
-    // Pattern starting with / matches from root
-    regexPattern = `^${pattern}.*`;
-  } else {
-    // Pattern without / matches anywhere
-    regexPattern = `(?:^|/)${pattern}(?:/|$)`;
-  }
-
-  const regex = new RegExp(regexPattern);
-
-  return {
-    pattern: line,
-    isNegation,
-    isDirectory,
-    regex
-  };
 }

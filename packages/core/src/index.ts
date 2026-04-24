@@ -3,6 +3,9 @@ export * from './errors';
 export * from './scanners';
 export * from './utils/file-utils';
 export * from './config';
+export * from './config-validate';
+export * from './baseline';
+export { fingerprintForMatch } from './match-fingerprint';
 export * from './scan-output';
 export * from './diagnostics';
 export { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from './utils/entropy';
@@ -17,5 +20,4 @@ export {
   REGEX_MAX_QUANTIFIERS,
 } from './utils/regex-safety';
 
-// Re-export async functions for convenience
-export { getAllFilesAsync, getFilesToScanAsync } from './utils/file-utils';
+export { scanTextFileAsync, scanTextFileSync } from './utils/scan-file';

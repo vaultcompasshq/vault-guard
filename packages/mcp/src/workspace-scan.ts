@@ -1,6 +1,11 @@
 import fs from 'fs';
 import path from 'path';
-import { getFilesToScanAsync, SecretScanner, type FileScanResult } from '@vaultcompass/vault-guard-core';
+import {
+  getFilesToScanAsync,
+  scanTextFileAsync,
+  SecretScanner,
+  type FileScanResult,
+} from '@vaultcompass/vault-guard-core';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
@@ -13,20 +18,30 @@ function isBinaryFile(filePath: string): boolean {
   return BINARY_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
+export interface WorkspaceScanOutcome {
+  results: FileScanResult[];
+  filesScanned: number;
+  bytesScanned: number;
+}
+
 export async function scanWorkspaceDirectory(
   root: string,
   scanner: SecretScanner,
   concurrency = 10,
-): Promise<FileScanResult[]> {
+): Promise<WorkspaceScanOutcome> {
   const files = await getFilesToScanAsync(root, false);
   const results: FileScanResult[] = [];
+  let filesScanned = 0;
+  let bytesScanned = 0;
 
   const scanOne = async (file: string): Promise<void> => {
     try {
       if (isBinaryFile(file)) return;
       const st = await fs.promises.stat(file);
-      if (!st.isFile() || st.size > MAX_FILE_SIZE) return;
-      const matches = scanner.scan(file);
+      if (!st.isFile()) return;
+      filesScanned += 1;
+      bytesScanned += st.size;
+      const matches = await scanTextFileAsync(scanner, file, { maxFileBytes: MAX_FILE_SIZE });
       if (matches.length > 0) {
         results.push({ file, matches });
       }
@@ -40,5 +55,5 @@ export async function scanWorkspaceDirectory(
     await Promise.all(batch.map(scanOne));
   }
 
-  return results;
+  return { results, filesScanned, bytesScanned };
 }

@@ -9,6 +9,8 @@ import { checkCommand } from './commands/check';
 import { statuslineCommand } from './commands/statusline';
 import { suggestModelCommand } from './commands/suggest-model';
 import { proxyCommand } from './commands/proxy';
+import { dataStatusCommand, dataResetCommand, dataExportCommand } from './commands/data';
+import { configValidateCommand } from './commands/config';
 
 function readCliVersion(): string {
   const pkgPath = path.join(__dirname, '..', 'package.json');
@@ -23,6 +25,16 @@ export function buildCli(): Command {
     .name('vault-guard')
     .description('Security and optimization layer for AI-native coding')
     .version(readCliVersion());
+
+  const configCmd = program.command('config').description('Inspect and validate Vault Guard configuration');
+
+  configCmd
+    .command('validate')
+    .description('Validate the nearest .vault-guard.json (structure + scanner load)')
+    .action(async () => {
+      const exitCode = await configValidateCommand(process.cwd());
+      if (exitCode !== 0) process.exit(exitCode);
+    });
 
   // Scan command
   program
@@ -137,17 +149,32 @@ export function buildCli(): Command {
         'draining footgun.',
       false,
     )
+    .option(
+      '--max-rpm <n>',
+      'Optional cap on forwarded POST /v1/messages requests per rolling 60s window (per process)',
+    )
     .action(
       async (options: {
         listen: string;
         allowEnvFallback?: boolean;
         allowPublic?: boolean;
+        maxRpm?: string;
       }) => {
         try {
+          let maxRpm: number | undefined;
+          if (options.maxRpm !== undefined && options.maxRpm !== '') {
+            const n = Number(options.maxRpm);
+            if (!Number.isFinite(n) || n < 1) {
+              console.error('--max-rpm must be a positive number');
+              process.exit(1);
+            }
+            maxRpm = Math.floor(n);
+          }
           const handle = await proxyCommand({
             listen: options.listen,
             allowEnvFallback: Boolean(options.allowEnvFallback),
             allowPublic: Boolean(options.allowPublic),
+            maxRpm,
           });
 
           let signalled = false;
@@ -173,6 +200,48 @@ export function buildCli(): Command {
         }
       },
     );
+
+  // `data` parent command — inspects, exports, and resets the local
+  // telemetry database at `~/.vault-guard/usage.sqlite`. No subcommand
+  // shows help; this avoids an empty command landing.
+  const dataCmd = program
+    .command('data')
+    .description('Inspect, export, or reset local telemetry (~/.vault-guard/usage.sqlite)');
+
+  dataCmd
+    .command('status')
+    .description('Show a privacy-respecting summary of the local telemetry database')
+    .option('--json', 'Print JSON', false)
+    .action(async (options: { json?: boolean }) => {
+      const exitCode = await dataStatusCommand({ json: Boolean(options.json) });
+      if (exitCode !== 0) process.exit(exitCode);
+    });
+
+  dataCmd
+    .command('reset')
+    .description('Delete the local telemetry database and its WAL/SHM sidecars')
+    .option('-y, --yes', 'Skip the interactive confirmation prompt', false)
+    .option('--dry-run', 'Print what would be deleted without touching the filesystem', false)
+    .option('--json', 'Print JSON', false)
+    .action(async (options: { yes?: boolean; dryRun?: boolean; json?: boolean }) => {
+      const exitCode = await dataResetCommand({
+        yes: Boolean(options.yes),
+        dryRun: Boolean(options.dryRun),
+        json: Boolean(options.json),
+      });
+      if (exitCode !== 0) process.exit(exitCode);
+    });
+
+  dataCmd
+    .command('export')
+    .description('Dump usage_events and session_events to a local file')
+    .requiredOption('-o, --output <file>', 'Output file path (will be created with mode 0600)')
+    .option('--format <format>', 'Output format: json | jsonl', 'json')
+    .action(async (options: { output: string; format?: string }) => {
+      const fmt = options.format === 'jsonl' ? 'jsonl' : 'json';
+      const exitCode = await dataExportCommand({ output: options.output, format: fmt });
+      if (exitCode !== 0) process.exit(exitCode);
+    });
 
   return program;
 }

@@ -77,6 +77,15 @@ function ascendInclusive(startDir: string, root: string): string[] {
 }
 
 /**
+ * Directories searched for `.vault-guard.json` / baseline files, in order
+ * (nearest to `startDir` first). Same policy as {@link loadConfig}.
+ */
+export function listConfigSearchDirs(startDir: string = process.cwd()): string[] {
+  const repoRoot = findRepoRoot(startDir);
+  return repoRoot ? ascendInclusive(startDir, repoRoot) : [startDir];
+}
+
+/**
  * Load the nearest Vault Guard config file.
  *
  * Search policy (security-relevant):
@@ -91,9 +100,22 @@ function ascendInclusive(startDir: string, root: string): string[] {
  * Throws `ConfigError` on JSON parse failure (do not fail silent — a typo in
  * `.vault-guard.json` is indistinguishable from "no config" if we swallow it).
  */
+/**
+ * First existing config path on the {@link listConfigSearchDirs} walk, or `null`.
+ */
+export function findVaultGuardConfigPath(startDir: string = process.cwd()): string | null {
+  const dirs = listConfigSearchDirs(startDir);
+  for (const dir of dirs) {
+    for (const filename of CONFIG_FILENAMES) {
+      const filePath = path.join(dir, filename);
+      if (fs.existsSync(filePath)) return filePath;
+    }
+  }
+  return null;
+}
+
 export function loadConfig(startDir: string = process.cwd()): VaultGuardConfig {
-  const repoRoot = findRepoRoot(startDir);
-  const dirs = repoRoot ? ascendInclusive(startDir, repoRoot) : [startDir];
+  const dirs = listConfigSearchDirs(startDir);
 
   for (const dir of dirs) {
     for (const filename of CONFIG_FILENAMES) {

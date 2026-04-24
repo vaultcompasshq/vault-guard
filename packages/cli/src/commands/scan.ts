@@ -7,6 +7,8 @@ import {
   getGitStagedFilePaths,
   isInsideGitWorkTree,
   DiagnosticBus,
+  loadBaseline,
+  filterResultsByBaseline,
 } from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
 import {
@@ -91,6 +93,9 @@ export async function scanCommand(
     console.log(chalk.blue('🔍 Scanning'), chalk.cyan(targetPath));
   }
 
+  const stats = { filesScanned: 0, bytesScanned: 0 };
+  const t0 = Date.now();
+
   try {
     let results;
 
@@ -130,6 +135,7 @@ export async function scanCommand(
         skipBinary: true,
         progress: format === 'text',
         bus,
+        stats,
       });
     } else {
       results = await scanFilesAsync([targetPath], scanner, {
@@ -137,20 +143,54 @@ export async function scanCommand(
         skipBinary: true,
         progress: format === 'text',
         bus,
+        stats,
       });
     }
 
     // Merge bus diagnostics
     diagnostics.push(...bus.drain());
 
+    const baselineLoad = loadBaseline(cwd);
+    if (baselineLoad.parseError) {
+      diagnostics.push({
+        code: 'baseline.invalid',
+        severity: 'warning',
+        ctx: { path: baselineLoad.sourcePath ?? '', detail: baselineLoad.parseError },
+      });
+      if (format === 'text') {
+        console.error(
+          chalk.yellow('⚠️  Baseline file invalid:'),
+          chalk.white(baselineLoad.parseError),
+          chalk.gray(baselineLoad.sourcePath ? `(${baselineLoad.sourcePath})` : ''),
+        );
+      }
+    }
+
+    const { results: afterBaseline, suppressed: baselineSuppressed } = filterResultsByBaseline(
+      process.cwd(),
+      results,
+      baselineLoad.fingerprints,
+    );
+    results = afterBaseline;
+
+    const durationMs = Date.now() - t0;
+    const run = {
+      duration_ms: durationMs,
+      files_scanned: stats.filesScanned,
+      bytes_scanned: stats.bytesScanned,
+      patterns_active: scanner.getActivePatternCount(),
+      diagnostics_count: diagnostics.length,
+      ...(baselineSuppressed > 0 ? { baseline_suppressed: baselineSuppressed } : {}),
+    };
+
     if (format === 'json') {
-      process.stdout.write(formatJson(results, { diagnostics }) + '\n');
-      return results.length === 0 ? 0 : 1;
+      process.stdout.write(formatJson(results, { diagnostics, run }) + '\n');
+      return results.reduce((n, r) => n + r.matches.length, 0) === 0 ? 0 : 1;
     }
 
     if (format === 'sarif') {
-      process.stdout.write(formatSarif(results, { diagnostics }) + '\n');
-      return results.length === 0 ? 0 : 1;
+      process.stdout.write(formatSarif(results, { diagnostics, run }) + '\n');
+      return results.reduce((n, r) => n + r.matches.length, 0) === 0 ? 0 : 1;
     }
 
     // Text mode: print one-line diagnostic summary when any non-fatal issues occurred

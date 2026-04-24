@@ -61,5 +61,29 @@ describe('scan-output formatters', () => {
       expect(out.results[0].matches[0].value).toBe('sk-a…(37c)');
       expect(JSON.stringify(out)).not.toContain('verylongkeyhere');
     });
+
+    it('JSON matches include a 64-char sha256 fingerprint', () => {
+      const results: FileScanResult[] = [{ file: '/tmp/x.ts', matches: [makeMatch()] }];
+      const out = JSON.parse(formatJson(results, { cwd: null }));
+      const fp = out.results[0].matches[0].fingerprint as string;
+      expect(fp).toMatch(/^[a-f0-9]{64}$/);
+    });
+
+    it('formatSarif embeds run metadata under runs[0].properties when opts.run is set', () => {
+      const results: FileScanResult[] = [{ file: '/tmp/x.ts', matches: [makeMatch()] }];
+      const sarif = JSON.parse(
+        formatSarif(results, {
+          cwd: null,
+          run: {
+            duration_ms: 12,
+            files_scanned: 3,
+            bytes_scanned: 99,
+            patterns_active: 40,
+          },
+        }),
+      );
+      expect(sarif.runs[0].properties.vault_guard_run.patterns_active).toBe(40);
+      expect(sarif.runs[0].properties.vault_guard_run.bytes_scanned).toBe(99);
+    });
   });
 });

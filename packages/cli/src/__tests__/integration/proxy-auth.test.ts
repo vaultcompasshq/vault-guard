@@ -235,4 +235,25 @@ describe('proxy auth + bind security', () => {
       await handle.shutdown('test-cleanup');
     }
   });
+
+  it('returns 429 when --max-rpm is exceeded within the rolling window', async () => {
+    setupUpstreamMock(mockHttps, {
+      body: JSON.stringify({ model: 'claude-3', usage: { input_tokens: 1, output_tokens: 1 } }),
+    });
+    const handle = await proxyCommand({ listen: '127.0.0.1:0', maxRpm: 2 });
+    const { port } = handle.server.address() as { port: number };
+    try {
+      const headers = { 'x-api-key': 'k' };
+      const r1 = await postToProxy(port, '/v1/messages', { model: 'claude-3' }, headers);
+      const r2 = await postToProxy(port, '/v1/messages', { model: 'claude-3' }, headers);
+      const r3 = await postToProxy(port, '/v1/messages', { model: 'claude-3' }, headers);
+      expect(r1.status).toBe(200);
+      expect(r2.status).toBe(200);
+      expect(r3.status).toBe(429);
+      const parsed = JSON.parse(r3.body) as { error: string };
+      expect(parsed.error).toBe('rate_limited');
+    } finally {
+      await handle.shutdown('test-cleanup');
+    }
+  });
 });

@@ -60,6 +60,12 @@ Use `--allow-env-fallback` together with `--allow-public` only on a host
 where you control every other process and the network is fully trusted; in
 practice this is almost never the case on a developer workstation.
 
+3. **Optional `--max-rpm`.** When set, the proxy returns HTTP `429` if more than
+   that many `POST /v1/messages` requests arrive within a rolling 60-second
+   window (per process). This is a coarse client-side guardrail against runaway
+   loops or accidental parallel fan-out; it is not a substitute for Anthropic
+   account limits or org-wide API governance.
+
 ### Memory + lifecycle
 
 - Inbound request bodies are capped at 32 MB.

@@ -7,19 +7,27 @@ branding:
 
 inputs:
   version:
-    description: npm dist-tag or semver for @vaultcompass/vault-guard
+    description: |
+      npm dist-tag or semver for @vaultcompass/vault-guard. Validated against
+      `^(latest|next|beta|[0-9A-Za-z.+-]{1,64})$` to prevent npm-tag / shell
+      injection via attacker-controlled workflow inputs.
     required: false
     default: latest
   path:
-    description: Path to scan (relative to the workspace root)
+    description: |
+      Path to scan, relative to the workspace root. Validated against
+      `^[A-Za-z0-9._/-]{1,256}$` and rejected if it contains `..` so it cannot
+      escape `GITHUB_WORKSPACE`.
     required: false
     default: .
   format:
-    description: Output format for vault-guard scan (text, json, sarif)
+    description: Output format (one of `text`, `json`, `sarif`)
     required: false
     default: sarif
   sarif-output:
-    description: Path of the SARIF or JSON file written under the workspace root
+    description: |
+      Output file path, relative to the workspace root. Validated against
+      `^[A-Za-z0-9._/-]{1,256}$` and rejected if it contains `..`.
     required: false
     default: vault-guard-results.sarif
 
@@ -38,17 +46,92 @@ runs:
       with:
         node-version: '20'
 
+    # Validate every input before letting it touch the shell.
+    #
+    # Why a dedicated step (and not just inline regex in `run`):
+    #   - GitHub Actions `${{ inputs.* }}` is template-substituted *before* the
+    #     shell parses the script, so attacker-controlled input bypasses any
+    #     amount of quoting in the script body.
+    #   - The fix is to pass values via `env:` (which the shell expands at
+    #     runtime), and then validate them with bash regex before use.
+    - name: Validate inputs
+      shell: bash
+      env:
+        VG_VERSION: ${{ inputs.version }}
+        VG_PATH: ${{ inputs.path }}
+        VG_FORMAT: ${{ inputs.format }}
+        VG_SARIF_OUTPUT: ${{ inputs.sarif-output }}
+      run: |
+        set -euo pipefail
+
+        # version: dist-tag or semver. Allow `latest`, `next`, `beta`, or any
+        # 1..64 char string of [0-9A-Za-z.+-]. Rejects spaces, quotes, $, `,
+        # backslashes, semicolons, etc.
+        if [[ ! "${VG_VERSION}" =~ ^(latest|next|beta|[0-9A-Za-z.+-]{1,64})$ ]]; then
+          printf '::error::vault-guard: invalid `version` input: %q\n' "${VG_VERSION}"
+          printf '::error::Allowed: latest | next | beta | semver-like (1..64 chars of [0-9A-Za-z.+-])\n'
+          exit 1
+        fi
+
+        # format: closed enum.
+        case "${VG_FORMAT}" in
+          text|json|sarif) ;;
+          *)
+            printf '::error::vault-guard: invalid `format` input: %q\n' "${VG_FORMAT}"
+            printf '::error::Allowed: text | json | sarif\n'
+            exit 1
+            ;;
+        esac
+
+        # path / sarif-output: relative paths within the workspace. No `..`
+        # segments (path traversal), no leading `/` (absolute escape).
+        validate_path() {
+          local name="$1"
+          local value="$2"
+          if [[ ! "${value}" =~ ^[A-Za-z0-9._/-]{1,256}$ ]]; then
+            printf '::error::vault-guard: invalid `%s` input: %q\n' "${name}" "${value}"
+            printf '::error::Allowed: 1..256 chars of [A-Za-z0-9._/-]\n'
+            exit 1
+          fi
+          # Reject any `..` segment. We do this as a separate check (not in the
+          # regex) so the error message is precise.
+          if [[ "${value}" == *".."* ]]; then
+            printf '::error::vault-guard: `%s` must not contain `..`: %q\n' "${name}" "${value}"
+            exit 1
+          fi
+          # Reject absolute paths.
+          if [[ "${value}" == /* ]]; then
+            printf '::error::vault-guard: `%s` must be relative to the workspace: %q\n' "${name}" "${value}"
+            exit 1
+          fi
+        }
+
+        validate_path "path" "${VG_PATH}"
+        validate_path "sarif-output" "${VG_SARIF_OUTPUT}"
+
     - name: Run vault-guard
       id: run
       shell: bash
+      env:
+        VG_VERSION: ${{ inputs.version }}
+        VG_PATH: ${{ inputs.path }}
+        VG_FORMAT: ${{ inputs.format }}
+        VG_SARIF_OUTPUT: ${{ inputs.sarif-output }}
       run: |
         set -euo pipefail
+
         ROOT="${GITHUB_WORKSPACE}"
-        OUT="${ROOT}/${{ inputs.sarif-output }}"
-        REL="${{ inputs.path }}"
+        OUT="${ROOT}/${VG_SARIF_OUTPUT}"
+        REL="${VG_PATH}"
+
         cd "${ROOT}"
-        if [[ "${REL}" != "." && "${REL}" != ./ ]]; then
+        if [[ "${REL}" != "." && "${REL}" != "./" ]]; then
           cd "${ROOT}/${REL}"
         fi
-        npx --yes "@vaultcompass/vault-guard@${{ inputs.version }}" scan . --format "${{ inputs.format }}" | tee "${OUT}"
+
+        # `--` after the package spec stops npx from interpreting any later
+        # token as one of its own flags, regardless of what `VG_VERSION`
+        # passed validation.
+        npx --yes "@vaultcompass/vault-guard@${VG_VERSION}" -- scan . --format "${VG_FORMAT}" | tee "${OUT}"
+
         echo "results_file=${OUT}" >> "${GITHUB_OUTPUT}"

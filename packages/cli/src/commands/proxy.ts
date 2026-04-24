@@ -60,6 +60,12 @@ export interface ProxyOptions {
    * by default and require explicit opt-in.
    */
   allowPublic?: boolean;
+
+  /**
+   * Optional cap on forwarded requests per rolling 60-second window (per process).
+   * When exceeded, the proxy responds with HTTP 429 until the window slides.
+   */
+  maxRpm?: number;
 }
 
 /**
@@ -112,6 +118,7 @@ export async function proxyCommand(opts: ProxyOptions | string): Promise<ProxyHa
   }
 
   const store = new TelemetryStore();
+  const takeRateSlot = createRollingMinuteLimiter(options.maxRpm);
 
   // Track inflight requests so shutdown() can drain them before force-closing.
   let inflightCount = 0;
@@ -132,7 +139,7 @@ export async function proxyCommand(opts: ProxyOptions | string): Promise<ProxyHa
     res.on('finish', onDone);
     res.on('close', onDone);
 
-    handleRequest(req, res, store, options).catch(err => {
+    handleRequest(req, res, store, options, takeRateSlot).catch(err => {
       // Defence-in-depth: surface unexpected handler errors as 502 rather than
       // crashing the server. The handler should not throw on its own; if it
       // does, that's a bug we want to know about (logged) but not one that
@@ -207,11 +214,32 @@ export async function proxyCommand(opts: ProxyOptions | string): Promise<ProxyHa
   return { server, store, shutdown };
 }
 
+function createRollingMinuteLimiter(maxRpm: number | undefined): () => boolean {
+  if (maxRpm === undefined || !Number.isFinite(maxRpm) || maxRpm < 1) {
+    return () => true;
+  }
+  const cap = Math.floor(maxRpm);
+  const windowMs = 60_000;
+  const stamps: number[] = [];
+  return (): boolean => {
+    const now = Date.now();
+    while (stamps.length > 0) {
+      const head = stamps[0];
+      if (head === undefined || now - head < windowMs) break;
+      stamps.shift();
+    }
+    if (stamps.length >= cap) return false;
+    stamps.push(now);
+    return true;
+  };
+}
+
 async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   store: TelemetryStore,
   options: ProxyOptions,
+  takeRateSlot: () => boolean,
 ): Promise<void> {
   const u = req.url ?? '/';
   if (req.method !== 'POST' || !u.startsWith('/v1/messages')) {
@@ -219,6 +247,18 @@ async function handleRequest(
     res.setHeader('content-type', 'text/plain; charset=utf-8');
     res.end(
       'vault-guard proxy (MVP): only POST /v1/messages is forwarded to https://api.anthropic.com\n',
+    );
+    return;
+  }
+
+  if (!takeRateSlot()) {
+    res.statusCode = 429;
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    res.end(
+      JSON.stringify({
+        error: 'rate_limited',
+        message: `Exceeded --max-rpm (${options.maxRpm}) for the rolling 60s window`,
+      }),
     );
     return;
   }

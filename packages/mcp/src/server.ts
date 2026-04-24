@@ -10,6 +10,7 @@ import {
   formatJson,
   formatSarif,
   type FileScanResult,
+  type JsonRunMetadata,
 } from '@vaultcompass/vault-guard-core';
 import { TelemetryStore } from '@vaultcompass/vault-guard-telemetry';
 import { scanWorkspaceDirectory } from './workspace-scan';
@@ -75,14 +76,21 @@ export function createMcpServer(): McpServer {
     async ({ root }) => {
       const scanner = makeScanner();
       const dir = path.resolve(process.cwd(), root ?? '.');
-      const results = await scanWorkspaceDirectory(dir, scanner);
+      const t0 = Date.now();
+      const { results, filesScanned, bytesScanned } = await scanWorkspaceDirectory(dir, scanner);
+      const run: JsonRunMetadata = {
+        duration_ms: Date.now() - t0,
+        files_scanned: filesScanned,
+        bytes_scanned: bytesScanned,
+        patterns_active: scanner.getActivePatternCount(),
+      };
       return toolPayload({
         summary: {
           files_with_secrets: results.length,
           total_matches: results.reduce((n, r) => n + r.matches.length, 0),
         },
-        json: JSON.parse(formatJson(results, { cwd: dir })) as unknown,
-        sarif: formatSarif(results, { cwd: dir }),
+        json: JSON.parse(formatJson(results, { cwd: dir, run })) as unknown,
+        sarif: formatSarif(results, { cwd: dir, run }),
         results,
       });
     },
@@ -103,12 +111,20 @@ export function createMcpServer(): McpServer {
       if (!fs.existsSync(fp) || !fs.statSync(fp).isFile()) {
         return toolPayload({ error: 'not_a_file', path: fp });
       }
+      const t0 = Date.now();
       const matches = scanner.scan(fp);
+      const st = fs.statSync(fp);
+      const run: JsonRunMetadata = {
+        duration_ms: Date.now() - t0,
+        files_scanned: 1,
+        bytes_scanned: st.size,
+        patterns_active: scanner.getActivePatternCount(),
+      };
       const results: FileScanResult[] = matches.length ? [{ file: fp, matches }] : [];
       return toolPayload({
         summary: { files_with_secrets: results.length, total_matches: matches.length },
-        json: JSON.parse(formatJson(results, { cwd: process.cwd() })) as unknown,
-        sarif: formatSarif(results, { cwd: process.cwd() }),
+        json: JSON.parse(formatJson(results, { cwd: process.cwd(), run })) as unknown,
+        sarif: formatSarif(results, { cwd: process.cwd(), run }),
       });
     },
   );
@@ -129,14 +145,22 @@ export function createMcpServer(): McpServer {
     },
     async ({ text, virtual_path }) => {
       const scanner = makeScanner();
+      const t0 = Date.now();
       const matches = scanner.scanContent(text);
       const label = virtual_path ?? 'inline://snippet';
       const results: FileScanResult[] = matches.length ? [{ file: label, matches }] : [];
+      const bytes = Buffer.byteLength(text, 'utf8');
+      const run: JsonRunMetadata = {
+        duration_ms: Date.now() - t0,
+        files_scanned: 1,
+        bytes_scanned: bytes,
+        patterns_active: scanner.getActivePatternCount(),
+      };
       return toolPayload({
         summary: { total_matches: matches.length },
         // virtual_path is a label, not a real path; skip relativization to preserve it verbatim.
-        json: JSON.parse(formatJson(results, { cwd: null })) as unknown,
-        sarif: formatSarif(results, { cwd: null }),
+        json: JSON.parse(formatJson(results, { cwd: null, run })) as unknown,
+        sarif: formatSarif(results, { cwd: null, run }),
       });
     },
   );

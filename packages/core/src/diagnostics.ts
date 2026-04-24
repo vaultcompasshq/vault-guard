@@ -23,9 +23,11 @@ export type DiagnosticCode =
   | 'pattern.too_long'
   | 'pattern.redos_unsafe'
   | 'file.too_large'
+  | 'file.line_too_long'
   | 'file.read_error'
   | 'fs.permission_denied'
-  | 'git.staged_files_failed';
+  | 'git.staged_files_failed'
+  | 'baseline.invalid';
 
 /**
  * Structured non-fatal warning/error emitted during a scan.
