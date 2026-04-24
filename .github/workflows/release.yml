@@ -52,3 +52,69 @@ jobs:
         generate_release_notes: true
         body: |
           Published `@vaultcompass/vault-guard`, `@vaultcompass/vault-guard-core`, `@vaultcompass/vault-guard-mcp`, and `@vaultcompass/vault-guard-telemetry` to npm (private workspace packages are skipped). See [CHANGELOG.md](https://github.com/vaultcompasshq/vault-guard/blob/main/CHANGELOG.md).
+
+  smoke-published:
+    name: Smoke test published CLI
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (fixture only)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20.x
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install published package and assert scan fails on fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "Smoke testing @vaultcompass/vault-guard@${VERSION}"
+
+          FOUND=0
+          for i in $(seq 1 12); do
+            if [[ "$(npm view "@vaultcompass/vault-guard@${VERSION}" version 2>/dev/null)" == "${VERSION}" ]]; then
+              echo "Package visible on registry."
+              FOUND=1
+              break
+            fi
+            echo "Waiting for npm registry (attempt ${i}/12)…"
+            sleep 10
+          done
+          if [[ "${FOUND}" -ne 1 ]]; then
+            echo "::error::Timed out waiting for @vaultcompass/vault-guard@${VERSION} on the npm registry."
+            exit 1
+          fi
+
+          WORK="${GITHUB_WORKSPACE}"
+          FIXTURE="${WORK}/fixtures/release-smoke"
+          TMP=$(mktemp -d)
+          cd "${TMP}"
+          npm init -y >/dev/null 2>&1
+          npm install "@vaultcompass/vault-guard@${VERSION}"
+
+          set +e
+          ./node_modules/.bin/vault-guard scan "${FIXTURE}" --format json > smoke-out.json 2>smoke-err.log
+          EC=$?
+          set -e
+
+          if [[ "${EC}" -eq 0 ]]; then
+            echo "::error::Expected vault-guard scan to exit non-zero (fixture contains a synthetic secret pattern)."
+            cat smoke-err.log || true
+            exit 1
+          fi
+
+          node -e "
+            const fs = require('fs');
+            const j = JSON.parse(fs.readFileSync('smoke-out.json', 'utf8'));
+            const n = j.summary && j.summary.secrets;
+            if (!(typeof n === 'number' && n > 0)) {
+              console.error('Bad JSON summary', j);
+              process.exit(1);
+            }
+          "
+          echo "Release smoke passed."

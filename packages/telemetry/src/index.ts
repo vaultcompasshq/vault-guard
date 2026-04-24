@@ -1,8 +1,15 @@
 export {
   TelemetryStore,
   TelemetryUnavailableError,
+  getDefaultDbPath,
+  getDbSidecarPaths,
+  getOrCreateTelemetrySalt,
+  getTelemetryRetentionDays,
   type UsageRecordInput,
   type SessionRecordInput,
   type StatuslineJson,
   type ModelSuggestion,
+  type DataStatusJson,
+  type UsageEventRow,
+  type SessionEventRow,
 } from './store';

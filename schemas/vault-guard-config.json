@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/vaultcompasshq/vault-guard/blob/main/schemas/vault-guard-config.json",
+  "title": "Vault Guard repository config",
+  "description": "Shape of .vault-guard.json / .vault-guard.local.json. Validate with: vault-guard config validate",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "ignore": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "paths": { "type": "array", "items": { "type": "string" } },
+        "patterns": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "severity_overrides": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "enum": ["critical", "high", "medium", "low", "off"]
+      }
+    },
+    "extra_patterns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "regex", "severity"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "regex": { "type": "string", "minLength": 1 },
+          "severity": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
+          "description": { "type": "string" },
+          "min_entropy": { "type": "number" }
+        }
+      }
+    },
+    "extra_patterns_unsafe": { "type": "boolean" },
+    "entropy_threshold": { "type": "number" }
+  }
+}

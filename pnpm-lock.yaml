@@ -65,6 +65,10 @@ importers:
         version: 5.9.3
 
   packages/core:
+    dependencies:
+      ignore:
+        specifier: ^5.3.2
+        version: 5.3.2
     devDependencies:
       '@types/jest':
         specifier: ^29.5.0

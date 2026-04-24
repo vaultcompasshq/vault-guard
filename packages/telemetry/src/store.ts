@@ -2,6 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { createRequire } from 'module';
+import { createHmac, randomBytes } from 'crypto';
 import { TokenCounter } from '@vaultcompass/vault-guard-core';
 
 // Lazy native-binding loader uses createRequire so that:
@@ -124,6 +125,152 @@ function defaultDbPath(): string {
   return path.join(dir, 'usage.sqlite');
 }
 
+/** 64-char lowercase hex = SHA-256 digest written to the `cwd` column. */
+const HASHED_CWD_RE = /^[a-f0-9]{64}$/;
+
+function telemetrySaltPath(): string {
+  return path.join(os.homedir(), '.vault-guard', 'salt');
+}
+
+/**
+ * Per-machine random salt (32 bytes, hex-encoded on disk, mode `0600`).
+ * Used only to hash `cwd` before persistence — not a secret, but treated as
+ * private local state alongside `usage.sqlite`.
+ */
+export function getOrCreateTelemetrySalt(): Buffer {
+  const p = telemetrySaltPath();
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  if (fs.existsSync(p)) {
+    const hex = fs.readFileSync(p, 'utf8').trim();
+    if (/^[a-f0-9]{64}$/i.test(hex)) {
+      return Buffer.from(hex, 'hex');
+    }
+  }
+  const b = randomBytes(32);
+  fs.writeFileSync(p, b.toString('hex'), { mode: 0o600 });
+  return b;
+}
+
+function hashCwdForStore(plain: string | null | undefined, salt: Buffer): string | null {
+  if (plain == null || plain === '') return null;
+  return createHmac('sha256', salt).update(plain, 'utf8').digest('hex');
+}
+
+function isStoredCwdDigest(v: string | null): boolean {
+  return v != null && v !== '' && HASHED_CWD_RE.test(v);
+}
+
+/**
+ * Default **90** days. Set `VG_TELEMETRY_RETENTION_DAYS=0` to disable automatic
+ * deletion (database still grows unbounded).
+ */
+export function getTelemetryRetentionDays(): number {
+  const raw = process.env.VG_TELEMETRY_RETENTION_DAYS;
+  if (raw === undefined || raw === '') return 90;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(n, 3650);
+}
+
+const MIN_MS_BETWEEN_RETENTION_PURGES = 3600 * 1000;
+
+function retentionThrottleMs(): number {
+  if (process.env.VG_TELEMETRY_RETENTION_TEST_NO_THROTTLE === '1') return 0;
+  return MIN_MS_BETWEEN_RETENTION_PURGES;
+}
+
+/**
+ * Resolve the default `~/.vault-guard/usage.sqlite` path without instantiating
+ * a {@link TelemetryStore}. Useful for `vault-guard data reset` which needs
+ * the path even when telemetry native bindings are unavailable.
+ */
+export function getDefaultDbPath(): string {
+  return defaultDbPath();
+}
+
+/**
+ * SQLite WAL mode produces two sidecar files alongside the main DB. They must
+ * be deleted as a set during `vault-guard data reset`, otherwise the next
+ * reader recovers stale rows from the WAL.
+ */
+export function getDbSidecarPaths(dbPath: string): readonly string[] {
+  return [`${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`];
+}
+
+/**
+ * Raw row shape for the `usage_events` table. Returned by
+ * {@link TelemetryStore.exportUsageEvents}. The `cwd` column stores a
+ * **64-char hex HMAC-SHA256** of the original path (see `docs/PRIVACY.md`), not
+ * the plaintext working directory.
+ */
+export interface UsageEventRow {
+  id: number;
+  created_at: string;
+  provider: string | null;
+  model: string | null;
+  cwd: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  est_cost_usd: number;
+  source: string | null;
+}
+
+/**
+ * Raw row shape for the `session_events` table. Returned by
+ * {@link TelemetryStore.exportSessionEvents}. The `cwd` column is an HMAC digest
+ * (same scheme as {@link UsageEventRow}); `extra_json` is stored as provided.
+ */
+export interface SessionEventRow {
+  id: number;
+  created_at: string;
+  event_type: string;
+  model: string | null;
+  cwd: string | null;
+  language: string | null;
+  lines_accepted: number | null;
+  lines_suggested: number | null;
+  lines_reverted: number | null;
+  extra_json: string | null;
+}
+
+/**
+ * Privacy-respecting summary of `~/.vault-guard/usage.sqlite`.
+ *
+ * **What this intentionally does NOT expose:** raw `cwd` strings (which
+ * include OS username and project names — see `docs/PRIVACY.md`),
+ * `extra_json` payloads, model prompts, or token totals (those are already
+ * available via `vault-guard statusline --json`).
+ *
+ * Only counts and aggregates land here, so the JSON output is safe to paste
+ * into a support ticket or screenshot.
+ */
+export interface DataStatusJson {
+  /** Absolute path to the SQLite database file. */
+  db_path: string;
+  /** True if the database file exists on disk. */
+  db_exists: boolean;
+  /** File size in bytes (0 when `db_exists` is false). */
+  db_size_bytes: number;
+  /** Last write time of the database file as ISO timestamp, or null. */
+  last_write_iso: string | null;
+  /** Sidecar files (WAL, SHM, journal) that exist alongside the main DB. */
+  sidecars: Array<{ path: string; size_bytes: number }>;
+  /** Row count in `usage_events`. */
+  usage_events: number;
+  /** Row count in `session_events`. */
+  session_events: number;
+  /** Earliest `created_at` across both tables (ISO), or null when empty. */
+  earliest_event_iso: string | null;
+  /** Latest `created_at` across both tables (ISO), or null when empty. */
+  latest_event_iso: string | null;
+  /** Distinct non-null `cwd` values across both tables (count only — never the values). */
+  distinct_cwd_count: number;
+  /** Distinct non-null `model` values across both tables (count only). */
+  distinct_model_count: number;
+  /** Most recently observed model name, or null when no usage rows exist. */
+  last_model: string | null;
+}
+
 function utcDayStart(d = new Date()): string {
   return d.toISOString().slice(0, 10);
 }
@@ -131,15 +278,67 @@ function utcDayStart(d = new Date()): string {
 export class TelemetryStore {
   private readonly db: DatabaseType;
   private readonly counter = new TokenCounter();
+  private readonly saltBuf: Buffer;
+  private lastRetentionPurgeMs = 0;
 
   constructor(dbPath?: string) {
     const resolved = dbPath ?? defaultDbPath();
     const dir = path.dirname(resolved);
     fs.mkdirSync(dir, { recursive: true });
+    this.saltBuf = getOrCreateTelemetrySalt();
     // getDbClass() throws TelemetryUnavailableError if bindings missing.
     this.db = new (getDbClass())(resolved);
     this.db.pragma('journal_mode = WAL');
     this.initSchema();
+    this.applyTelemetryMigrations();
+    this.maybePurgeStaleRows();
+  }
+
+  /**
+   * One-time migration (pragma `user_version` &lt; 2): replace plaintext `cwd`
+   * values with HMAC-SHA256 hex digests using the current salt file.
+   */
+  private applyTelemetryMigrations(): void {
+    const ver = Number(this.db.pragma('user_version', { simple: true }));
+    if (ver >= 2) return;
+
+    const salt = this.saltBuf;
+    const uRows = this.db
+      .prepare(`SELECT id, cwd FROM usage_events WHERE cwd IS NOT NULL AND cwd != ''`)
+      .all() as Array<{ id: number; cwd: string }>;
+    const uUpd = this.db.prepare(`UPDATE usage_events SET cwd = ? WHERE id = ?`);
+    for (const r of uRows) {
+      if (isStoredCwdDigest(r.cwd)) continue;
+      uUpd.run(hashCwdForStore(r.cwd, salt), r.id);
+    }
+
+    const sRows = this.db
+      .prepare(`SELECT id, cwd FROM session_events WHERE cwd IS NOT NULL AND cwd != ''`)
+      .all() as Array<{ id: number; cwd: string }>;
+    const sUpd = this.db.prepare(`UPDATE session_events SET cwd = ? WHERE id = ?`);
+    for (const r of sRows) {
+      if (isStoredCwdDigest(r.cwd)) continue;
+      sUpd.run(hashCwdForStore(r.cwd, salt), r.id);
+    }
+
+    this.db.pragma('user_version = 2');
+  }
+
+  /**
+   * Delete rows older than {@link getTelemetryRetentionDays}. Throttled to at
+   * most once per hour per process to avoid hammering SQLite on hot paths.
+   */
+  private maybePurgeStaleRows(): void {
+    const days = getTelemetryRetentionDays();
+    if (days <= 0) return;
+
+    const now = Date.now();
+    if (now - this.lastRetentionPurgeMs < retentionThrottleMs()) return;
+    this.lastRetentionPurgeMs = now;
+
+    const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+    this.db.prepare(`DELETE FROM usage_events WHERE created_at < ?`).run(cutoff);
+    this.db.prepare(`DELETE FROM session_events WHERE created_at < ?`).run(cutoff);
   }
 
   private initSchema(): void {
@@ -205,6 +404,7 @@ export class TelemetryStore {
   }
 
   recordUsage(input: UsageRecordInput): void {
+    this.maybePurgeStaleRows();
     const created = (input.createdAt ?? new Date()).toISOString();
     let cost = input.estCostUsd;
     if (cost === undefined) {
@@ -223,7 +423,7 @@ export class TelemetryStore {
       created,
       input.provider ?? 'unknown',
       input.model ?? null,
-      input.cwd ?? null,
+      hashCwdForStore(input.cwd, this.saltBuf),
       input.inputTokens,
       input.outputTokens,
       cost,
@@ -232,6 +432,7 @@ export class TelemetryStore {
   }
 
   recordSession(input: SessionRecordInput): void {
+    this.maybePurgeStaleRows();
     const created = (input.createdAt ?? new Date()).toISOString();
     const extra =
       input.extra && Object.keys(input.extra).length > 0 ? JSON.stringify(input.extra) : null;
@@ -245,7 +446,7 @@ export class TelemetryStore {
       created,
       input.eventType,
       input.model ?? null,
-      input.cwd ?? null,
+      hashCwdForStore(input.cwd, this.saltBuf),
       input.language ?? null,
       input.linesAccepted ?? null,
       input.linesSuggested ?? null,
@@ -374,6 +575,139 @@ export class TelemetryStore {
       suggested_model: best.model,
       reason,
       by_model,
+    };
+  }
+
+  /**
+   * Read all rows from `usage_events` ordered by `id ASC`.
+   *
+   * Intended for `vault-guard data export`. Returns raw `cwd` strings — see
+   * {@link DataStatusJson} for the privacy-respecting alternative.
+   */
+  exportUsageEvents(): UsageEventRow[] {
+    return this.db
+      .prepare(
+        `SELECT id, created_at, provider, model, cwd, input_tokens, output_tokens, est_cost_usd, source
+         FROM usage_events ORDER BY id ASC`,
+      )
+      .all() as UsageEventRow[];
+  }
+
+  /**
+   * Read all rows from `session_events` ordered by `id ASC`.
+   *
+   * Intended for `vault-guard data export`. Returns raw `cwd` strings and
+   * the `extra_json` payload as stored.
+   */
+  exportSessionEvents(): SessionEventRow[] {
+    return this.db
+      .prepare(
+        `SELECT id, created_at, event_type, model, cwd, language,
+                lines_accepted, lines_suggested, lines_reverted, extra_json
+         FROM session_events ORDER BY id ASC`,
+      )
+      .all() as SessionEventRow[];
+  }
+
+  /**
+   * Compute a privacy-respecting summary of the local telemetry database
+   * (file location, size, row counts, distinct-value *counts*). Never
+   * returns raw `cwd` strings or `extra_json`.
+   *
+   * Used by `vault-guard data status`. Safe to paste into a support ticket.
+   */
+  getDataStatus(dbFilePath: string): DataStatusJson {
+    let dbExists = false;
+    let dbSize = 0;
+    let lastWriteIso: string | null = null;
+
+    try {
+      const stat = fs.statSync(dbFilePath);
+      dbExists = true;
+      dbSize = stat.size;
+      lastWriteIso = stat.mtime.toISOString();
+    } catch {
+      // File missing is a valid state — open() can create it; status reports it.
+    }
+
+    const sidecars = getDbSidecarPaths(dbFilePath)
+      .map(p => {
+        try {
+          const s = fs.statSync(p);
+          return { path: p, size_bytes: s.size };
+        } catch {
+          return null;
+        }
+      })
+      .filter((x): x is { path: string; size_bytes: number } => x !== null);
+
+    // COUNT(*) on indexed tables is cheap; we don't need to bound it.
+    const usageEvents = (
+      this.db.prepare('SELECT COUNT(*) AS n FROM usage_events').get() as { n: number }
+    ).n;
+    const sessionEvents = (
+      this.db.prepare('SELECT COUNT(*) AS n FROM session_events').get() as { n: number }
+    ).n;
+
+    // Earliest / latest across the union of both tables. NULL when both tables
+    // are empty, in which case MIN/MAX return NULL on the union.
+    const range = this.db
+      .prepare(
+        `SELECT MIN(created_at) AS earliest, MAX(created_at) AS latest
+         FROM (
+           SELECT created_at FROM usage_events
+           UNION ALL
+           SELECT created_at FROM session_events
+         )`,
+      )
+      .get() as { earliest: string | null; latest: string | null };
+
+    const distinctCwd = (
+      this.db
+        .prepare(
+          `SELECT COUNT(DISTINCT cwd) AS n FROM (
+             SELECT cwd FROM usage_events WHERE cwd IS NOT NULL AND cwd != ''
+             UNION
+             SELECT cwd FROM session_events WHERE cwd IS NOT NULL AND cwd != ''
+           )`,
+        )
+        .get() as { n: number }
+    ).n;
+
+    const distinctModel = (
+      this.db
+        .prepare(
+          `SELECT COUNT(DISTINCT model) AS n FROM (
+             SELECT model FROM usage_events WHERE model IS NOT NULL AND model != ''
+             UNION
+             SELECT model FROM session_events WHERE model IS NOT NULL AND model != ''
+           )`,
+        )
+        .get() as { n: number }
+    ).n;
+
+    const lastModelRow = this.db
+      .prepare(
+        `SELECT model FROM usage_events
+         WHERE model IS NOT NULL AND model != ''
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      )
+      .get() as { model: string } | undefined;
+
+    return {
+      db_path: dbFilePath,
+      db_exists: dbExists,
+      db_size_bytes: dbSize,
+      last_write_iso: lastWriteIso,
+      sidecars,
+      usage_events: usageEvents,
+      session_events: sessionEvents,
+      earliest_event_iso: range.earliest,
+      latest_event_iso: range.latest,
+      distinct_cwd_count: distinctCwd,
+      distinct_model_count: distinctModel,
+      last_model: lastModelRow?.model ?? null,
     };
   }
 }

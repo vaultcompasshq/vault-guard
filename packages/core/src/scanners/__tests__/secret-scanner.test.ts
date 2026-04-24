@@ -15,6 +15,12 @@ describe('SecretScanner', () => {
     if (fs.existsSync(testFilePath)) fs.unlinkSync(testFilePath);
   });
 
+  it('getActivePatternCount reflects disabled rules', () => {
+    const full = new SecretScanner().getActivePatternCount();
+    const minusOne = new SecretScanner({ severity_overrides: { anthropic: 'off' } }).getActivePatternCount();
+    expect(minusOne).toBe(full - 1);
+  });
+
   // ---------------------------------------------------------------------------
   // True positives — vendor-specific prefixes
   // ---------------------------------------------------------------------------

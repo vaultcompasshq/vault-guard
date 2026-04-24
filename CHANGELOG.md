@@ -7,8 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`engines.npm` / `engines.pnpm`** (`>=9`) on all publishable packages
+  (`@vaultcompass/vault-guard-core`, `@vaultcompass/vault-guard`,
+  `@vaultcompass/vault-guard-mcp`, `@vaultcompass/vault-guard-telemetry`)
+  alongside existing `engines.node` (`>=18`).
+- **Release workflow smoke job** — after a tag publish, installs
+  `@vaultcompass/vault-guard@<version>` from the public registry (with retry),
+  runs `vault-guard scan` on `fixtures/release-smoke/`, and asserts a non-zero
+  exit and `summary.secrets > 0` in JSON output.
+- **Telemetry `cwd` privacy** — `usage_events.cwd` and `session_events.cwd`
+  now store **HMAC-SHA256** digests (hex) using a per-machine key in
+  `~/.vault-guard/salt` (mode `0600`). One-time migration rewrites legacy
+  plaintext paths when the SQLite `user_version` pragma is below `2`.
+- **Telemetry retention** — deletes rows older than **`VG_TELEMETRY_RETENTION_DAYS`**
+  (default **90**; set to **`0`** to disable). Purge is throttled to at most
+  once per hour per process; tests can set **`VG_TELEMETRY_RETENTION_TEST_NO_THROTTLE=1`**
+  to disable the throttle.
+- **`ignore` (npm) for `.gitignore` handling** in `@vaultcompass/vault-guard-core`
+  — replaces the hand-rolled regex compiler in `file-utils.ts`. Nested
+  ignore files are merged relative to the Git work tree (or filesystem root
+  when no `.git/` is present). Cache entries are LRU-bounded and invalidated
+  when any contributing `.gitignore` mtime changes; `clearGitignoreCache()` is
+  exported for tests and long-lived hosts.
+- **`scanTextFileAsync` / `scanTextFileSync`** — async scans stream UTF-8
+  line-by-line when a file exceeds the size threshold so multi‑MB text files
+  are not fully buffered (multi-line secrets may be missed in streaming mode).
+  CLI and MCP use the async helper; sync returns empty matches for oversized
+  files with a `file.too_large` diagnostic.
+- **`SecretScanner.mergeChunkedMatches`** — dedupe helper for streamed scans.
+- **`vault-guard data` command group** for managing the local telemetry
+  database at `~/.vault-guard/usage.sqlite`:
+  - `data status` — privacy-respecting summary (file path/size, row counts,
+    distinct-value *counts*; never raw `cwd` strings). `--json` for
+    machine-readable output.
+  - `data reset` — deletes the SQLite database and its WAL/SHM/journal
+    sidecars. Interactive `y/N` prompt by default; `--yes` for
+    non-interactive use; `--dry-run` to preview. Refuses to proceed when
+    stdin is not a TTY and `--yes` was not passed.
+  - `data export` — dumps `usage_events` and `session_events` to a JSON or
+    JSONL file with mode `0o600` (user-only).
+- **Scan run metadata** — JSON and SARIF include optional `run` (`duration_ms`,
+  `files_scanned`, `bytes_scanned`, `patterns_active`, `diagnostics_count`,
+  optional `baseline_suppressed`); SARIF mirrors this under
+  `runs[0].properties.vault_guard_run`. MCP scan tools emit the same fields.
+- **`SecretScanner#getActivePatternCount()`** — reports how many built-in +
+  extra patterns are active after `severity_overrides` / rejections.
+- **Baseline file** — optional `.vault-guard.baseline.json` (version `1`,
+  `fingerprints[]`) discovered with the same directory walk as config; JSON
+  output includes a per-match **`fingerprint`** (SHA-256 of path + rule +
+  span; no raw secret) for populating the baseline.
+- **`vault-guard config validate`** — structural validation plus
+  `SecretScanner` construction (fails if any `extra_patterns` are rejected).
+- **`schemas/vault-guard-config.json`** — JSON Schema for `.vault-guard.json`.
+- **`docs/PRODUCT_SCOPE.md`** — in-scope vs out-of-scope; README links and
+  “compose with Gitleaks / TruffleHog” guidance.
+- **`vault-guard proxy --max-rpm`** — optional rolling 60s cap; returns HTTP 429
+  when exceeded.
+
 ### Security
 
+- **`action.yml` input validation.** All four GitHub Action inputs
+  (`version`, `path`, `format`, `sarif-output`) are now passed through
+  `env:` (which the shell expands at runtime) instead of `${{ ... }}`
+  template substitution (which happens before the shell parses, defeating
+  any amount of quoting). A dedicated validation step regex-checks each
+  value before the `npx` invocation, rejects path-traversal (`..`) and
+  absolute paths, and `--` separates `npx`'s flags from package args.
+  Tracked threat: shell injection / npm dist-tag injection via attacker-
+  controlled workflow inputs.
 - **`DiagnosticBus`** — every previously silent `catch {}` in the scanner, file
   walker, git helpers, and config loader now emits a typed diagnostic
   (`config.parse_error`, `file.too_large`, `fs.permission_denied`,

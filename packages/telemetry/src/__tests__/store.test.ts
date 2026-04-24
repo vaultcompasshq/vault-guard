@@ -15,6 +15,9 @@ describe('TelemetryStore', () => {
         outputTokens: 500,
         source: 'test',
       });
+      const exported = store.exportUsageEvents();
+      expect(exported[0].cwd).toMatch(/^[a-f0-9]{64}$/);
+      expect(exported[0].cwd).not.toContain('proj');
       const line = store.getStatuslinePayload();
       expect(line.tokens_today_input).toBe(1000);
       expect(line.tokens_today_output).toBe(500);

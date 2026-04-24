@@ -19,6 +19,16 @@ describe('CLI Installation Integration', () => {
     expect(commands).toContain('statusline');
     expect(commands).toContain('suggest-model');
     expect(commands).toContain('proxy');
+    expect(commands).toContain('data');
+  });
+
+  it('should expose data subcommands', () => {
+    const dataCmd = program.commands.find(cmd => cmd.name() === 'data');
+    expect(dataCmd).toBeDefined();
+    const sub = dataCmd?.commands.map(c => c.name()) ?? [];
+    expect(sub).toContain('status');
+    expect(sub).toContain('reset');
+    expect(sub).toContain('export');
   });
 
   it('should have scan command', () => {

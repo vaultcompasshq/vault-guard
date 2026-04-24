@@ -1,6 +1,7 @@
 import path from 'path';
 import type { SecretMatch } from './types';
 import type { Diagnostic } from './diagnostics';
+import { fingerprintForMatch } from './match-fingerprint';
 
 /** One file's scan outcome — shared by CLI, MCP, and SARIF/JSON formatters. */
 export interface FileScanResult {
@@ -8,10 +9,26 @@ export interface FileScanResult {
   matches: SecretMatch[];
 }
 
+/** Optional machine-readable scan run metadata (JSON + SARIF driver properties). */
+export interface JsonRunMetadata {
+  duration_ms: number;
+  /** Files opened and scanned for secrets (excludes skipped binaries). */
+  files_scanned: number;
+  /** Total bytes read from disk for those scans (capped at per-file read limit when streaming). */
+  bytes_scanned: number;
+  /** Active regex rules after config (built-ins minus "off", plus accepted extra_patterns). */
+  patterns_active: number;
+  diagnostics_count?: number;
+  /** Matches removed because they appeared in `.vault-guard.baseline.json`. */
+  baseline_suppressed?: number;
+}
+
 export interface JsonOutput {
   version: string;
   scannedAt: string;
   summary: { files: number; secrets: number };
+  /** Present when the caller passes {@link FormatOptions.run}. */
+  run?: JsonRunMetadata;
   results: Array<{
     file: string;
     matches: Array<{
@@ -21,6 +38,8 @@ export interface JsonOutput {
       column: number;
       /** Redacted form, e.g. `sk-a…(37c)`. Never the raw secret. */
       value: string;
+      /** SHA-256 hex of `relPath|type|line|column|matchLength` for baselines (no raw secret). */
+      fingerprint: string;
     }>;
   }>;
   /** Non-fatal scan warnings (skipped files, rejected patterns, git issues). */
@@ -40,6 +59,8 @@ export interface FormatOptions {
   cwd?: string | null;
   /** Non-fatal diagnostics to include in structured output. */
   diagnostics?: Diagnostic[];
+  /** Scan timing / coverage stats for JSON and SARIF `runs[].properties`. */
+  run?: JsonRunMetadata;
 }
 
 /**
@@ -60,6 +81,7 @@ function normalizeFilePath(file: string, cwd: string | null | undefined): string
 }
 
 export function formatJson(results: FileScanResult[], opts: FormatOptions = {}): string {
+  const fpCwd = opts.cwd === undefined ? process.cwd() : opts.cwd;
   const output: JsonOutput = {
     version: '1',
     scannedAt: new Date().toISOString(),
@@ -67,6 +89,7 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
       files: results.length,
       secrets: results.reduce((n, r) => n + r.matches.length, 0),
     },
+    ...(opts.run ? { run: opts.run } : {}),
     results: results.map(({ file, matches }) => ({
       file: normalizeFilePath(file, opts.cwd),
       matches: matches.map(m => ({
@@ -75,6 +98,7 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
         line: m.line,
         column: m.column,
         value: m.value,
+        fingerprint: fingerprintForMatch(fpCwd, file, m),
       })),
     })),
   };
@@ -138,11 +162,30 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
         }))
       : undefined;
 
+  const runProps =
+    opts.run !== undefined
+      ? {
+          vault_guard_run: {
+            duration_ms: opts.run.duration_ms,
+            files_scanned: opts.run.files_scanned,
+            bytes_scanned: opts.run.bytes_scanned,
+            patterns_active: opts.run.patterns_active,
+            ...(opts.run.diagnostics_count !== undefined
+              ? { diagnostics_count: opts.run.diagnostics_count }
+              : {}),
+            ...(opts.run.baseline_suppressed !== undefined
+              ? { baseline_suppressed: opts.run.baseline_suppressed }
+              : {}),
+          },
+        }
+      : undefined;
+
   const sarif = {
     $schema: 'https://json.schemastore.org/sarif-2.1.0',
     version: '2.1.0',
     runs: [
       {
+        ...(runProps ? { properties: runProps } : {}),
         tool: {
           driver: {
             name: 'vault-guard',

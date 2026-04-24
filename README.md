@@ -31,6 +31,28 @@ vault-guard scan . --format sarif
 vault-guard scan . --format json
 ```
 
+Structured JSON/SARIF includes a **`run`** block (timing, files/bytes scanned, active pattern count, optional baseline suppression counts). See **[docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md)** for what Vault Guard is meant to do versus dedicated history scanners.
+
+**Validate config** (structure + `extra_patterns` compile / safety):
+
+```bash
+vault-guard config validate
+```
+
+JSON Schema for editors and external validators: **[schemas/vault-guard-config.json](./schemas/vault-guard-config.json)**.
+
+**Baseline** (fingerprinted accepted findings — optional `.vault-guard.baseline.json` next to config):
+
+```json
+{ "version": 1, "fingerprints": ["<64-char sha256 hex from scan JSON>", "…"] }
+```
+
+Each `--format json` match includes a **`fingerprint`** field (SHA-256 of path + rule + location span; no raw secret). Copy values you accept into `fingerprints` to grandfather known findings while still failing on new ones.
+
+### Compose with dedicated secret scanners
+
+Vault Guard targets **fast working-tree** checks (IDE, pre-commit, CI on the checkout). For **credentials in Git history**, **verified** leaks, or **deeper** repos, run **[Gitleaks](https://github.com/gitleaks/gitleaks)** or **[TruffleHog](https://github.com/trufflesecurity/trufflehog)** (or both) in the same pipeline — Vault Guard complements them; it does not replace them.
+
 ### Install pre-commit hook
 
 ```bash
@@ -86,10 +108,26 @@ vault-guard suggest-model --json
 
 Uses recent local telemetry to suggest a model label (heuristic).
 
+### Inspect / wipe local telemetry
+
+```bash
+vault-guard data status            # human-readable summary (no raw cwd values)
+vault-guard data status --json     # same, machine-readable
+vault-guard data reset             # interactive y/N prompt, then deletes the DB + WAL/SHM
+vault-guard data reset --yes       # non-interactive (CI / scripts)
+vault-guard data reset --dry-run   # preview without touching the filesystem
+vault-guard data export -o ./my-telemetry.json
+```
+
+`status` reports counts only — never raw `cwd` strings. `export` writes a
+mode-`0600` file. See **[docs/PRIVACY.md](./docs/PRIVACY.md)**.
+
 ### Anthropic proxy (opt-in)
 
 ```bash
 vault-guard proxy --listen 127.0.0.1:8765
+# optional: cap sustained POST /v1/messages to N requests per rolling 60s window
+vault-guard proxy --listen 127.0.0.1:8765 --max-rpm 120
 ```
 
 Forwards **`POST /v1/messages`** to `api.anthropic.com` and logs **`usage`** for non-stream JSON responses into the local SQLite DB. Point clients at `ANTHROPIC_BASE_URL=http://127.0.0.1:8765` when you explicitly want this behavior.
