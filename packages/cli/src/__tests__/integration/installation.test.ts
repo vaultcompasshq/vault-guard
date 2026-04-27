@@ -11,6 +11,7 @@ describe('CLI Installation Integration', () => {
   it('should have all required commands', () => {
     const commands = program.commands.map(cmd => cmd.name());
 
+    expect(commands).toContain('config');
     expect(commands).toContain('scan');
     expect(commands).toContain('install-hook');
     expect(commands).toContain('tokens');
@@ -20,6 +21,13 @@ describe('CLI Installation Integration', () => {
     expect(commands).toContain('suggest-model');
     expect(commands).toContain('proxy');
     expect(commands).toContain('data');
+  });
+
+  it('should expose config validate subcommand', () => {
+    const configCmd = program.commands.find(cmd => cmd.name() === 'config');
+    expect(configCmd).toBeDefined();
+    const sub = configCmd?.commands.map(c => c.name()) ?? [];
+    expect(sub).toContain('validate');
   });
 
   it('should expose data subcommands', () => {

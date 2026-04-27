@@ -37,7 +37,7 @@
     "@types/node": "^20.11.16",
     "@types/vscode": "^1.85.0",
     "@vaultcompass/vault-guard-core": "workspace:*",
-    "esbuild": "^0.24.2",
+    "esbuild": "^0.25.0",
     "typescript": "^5.3.3"
   },
   "license": "MIT"
