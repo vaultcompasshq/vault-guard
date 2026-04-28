@@ -65,6 +65,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   “compose with Gitleaks / TruffleHog” guidance.
 - **`vault-guard proxy --max-rpm`** — optional rolling 60s cap; returns HTTP 429
   when exceeded.
+- **CLI integration tests (`json-output`)** — contract coverage for `--format json`:
+  invoking the built `packages/cli/dist/cli-entry.js`, stdout must be a single
+  parseable JSON object for `fixtures/release-smoke/` (findings) and for a clean
+  temporary directory (no findings).
+
+### Documentation
+
+- **README** — scripting / CI: stable JSON via `node packages/cli/dist/cli-entry.js`,
+  `pnpm exec` variant, avoiding mixed global vs workspace CLI versions, and
+  guidance when many matches remain after manual audits (baseline / ignore).
 
 ### Security
 

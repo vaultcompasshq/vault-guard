@@ -12,7 +12,7 @@ pnpm test
 
 **Requirements:**
 - Node.js >= 18.0.0
-- pnpm >= 8.0.0
+- pnpm >= 9.0.0
 
 ## Project Structure
 
@@ -65,7 +65,7 @@ describe('Feature', () => {
 });
 ```
 
-The monorepo currently runs **213** Jest tests across published packages (`pnpm -r test` shows the exact total on your branch).
+The monorepo currently runs **253** Jest tests across published packages (`pnpm -r test` shows the exact total on your branch).
 
 ## PR Process
 

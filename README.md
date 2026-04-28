@@ -33,7 +33,31 @@ vault-guard scan . --format json
 
 Structured JSON/SARIF includes a **`run`** block (timing, files/bytes scanned, active pattern count, optional baseline suppression counts). See **[docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md)** for what Vault Guard is meant to do versus dedicated history scanners.
 
-**Validate config** (structure + `extra_patterns` compile / safety):
+#### Scripting & CI (stable JSON output)
+
+For pipelines and scripts, **`--format json`** prints **one JSON object on stdout** (diagnostics may appear on stderr—parse stdout only). After `pnpm build`, invoke the **built** CLI so you always hit this workspace’s binary:
+
+```bash
+node packages/cli/dist/cli-entry.js scan /path/to/project --format json
+```
+
+From the monorepo root you can also use:
+
+```bash
+pnpm --filter @vaultcompass/vault-guard exec vault-guard -- scan /path/to/project --format json
+```
+
+If you use a **global** install (`npm install -g …`) *and* hack on this repo, check **`vault-guard --version`** — an older global binary can look like a formatting bug when stdout isn’t pure JSON.
+
+Parse **`summary.secrets`**, **`results`**, and **`run`** as documented in **[docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md)**.
+
+#### Many findings after an audit?
+
+Vault Guard matches **credential-shaped strings** everywhere in the tree (including docs and `.example` files). A clean security review doesn’t always mean zero matches. Reduce intentional noise with **baseline fingerprints** (below), **`ignore`** in `.vault-guard.json`, and **[schemas/vault-guard-config.json](./schemas/vault-guard-config.json)**.
+
+### Validate config
+
+Structure plus `extra_patterns` compile / safety checks:
 
 ```bash
 vault-guard config validate
@@ -181,7 +205,7 @@ Details: **`docs/GITHUB_ACTION.md`**. Branch protection and org checklist: **`do
 
 ## Development
 
-Requires **Node.js 18+** and **pnpm 8+**.
+Requires **Node.js 18+** and **pnpm 9+** (see root `package.json` `engines`).
 
 ```bash
 git clone https://github.com/vaultcompasshq/vault-guard.git
