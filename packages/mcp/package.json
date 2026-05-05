@@ -1,13 +1,17 @@
 {
   "name": "@vaultcompass/vault-guard-mcp",
   "version": "1.0.0",
-  "description": "MCP server for Vault Guard — scan tools + local telemetry hooks",
+  "description": "MCP server for Vault Guard \u2014 scan tools + local telemetry hooks",
   "main": "dist/index.js",
   "bin": {
     "vault-guard-mcp": "./dist/index.js"
   },
-  "files": ["dist"],
-  "publishConfig": { "access": "public" },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/vaultcompasshq/vault-guard.git",
@@ -33,7 +37,7 @@
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
-    "@types/node": "^20.11.16",
+    "@types/node": "^25.6.0",
     "esbuild": "^0.25.0",
     "jest": "^30.3.0",
     "ts-jest": "^29.1.2",
