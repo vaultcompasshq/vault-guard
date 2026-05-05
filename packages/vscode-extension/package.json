@@ -34,8 +34,8 @@
     "vscode:prepublish": "pnpm run build"
   },
   "devDependencies": {
-    "@types/node": "^20.11.16",
-    "@types/vscode": "^1.85.0",
+    "@types/node": "^25.6.0",
+    "@types/vscode": "^1.118.0",
     "@vaultcompass/vault-guard-core": "workspace:*",
     "esbuild": "^0.25.0",
     "typescript": "^5.3.3"
