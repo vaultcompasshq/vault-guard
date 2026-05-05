@@ -225,7 +225,7 @@ export function createMcpServer(): McpServer {
         lines_accepted: z.number().int().optional(),
         lines_suggested: z.number().int().optional(),
         lines_reverted: z.number().int().optional(),
-        extra: z.record(z.any()).optional(),
+        extra: z.record(z.string(), z.any()).optional(),
       },
     },
     async args => {
