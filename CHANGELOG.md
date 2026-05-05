@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (BREAKING)
+
+- **`engines.node` raised to `>=20.0.0`** on all publishable packages and the
+  workspace root. CI matrix narrowed to Node **20.x / 22.x**. Reason:
+  `better-sqlite3@12` (telemetry store) stopped shipping prebuilt binaries for
+  Node 18 on Linux x64, leaving CI / installs broken without a build toolchain.
+
+### Fixed
+
+- **CI green again.** `pnpm/action-setup@v6` errors when both `with: version`
+  and `package.json` `packageManager` are set; dropped `with.version: 9` from
+  every workflow step. Also corrected a malformed
+  `softprops/action-gh-release` SHA comment in `release.yml`.
+
 ### Added
 
 - **`engines.npm` / `engines.pnpm`** (`>=9`) on all publishable packages
