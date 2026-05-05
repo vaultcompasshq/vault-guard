@@ -205,7 +205,7 @@ Details: **`docs/GITHUB_ACTION.md`**. Branch protection and org checklist: **`do
 
 ## Development
 
-Requires **Node.js 18+** and **pnpm 9+** (see root `package.json` `engines`).
+Requires **Node.js 20+** and **pnpm 9+** (see root `package.json` `engines`). Node 18 was dropped after `better-sqlite3@12` (used by the optional telemetry store) stopped shipping prebuilt binaries for it.
 
 ```bash
 git clone https://github.com/vaultcompasshq/vault-guard.git
