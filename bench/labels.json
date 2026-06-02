@@ -1,0 +1,20 @@
+{
+  "_comment": "shouldDetect:true = at least one finding expected. severity:null = any severity accepted.",
+  "fixtures/secrets/anthropic.ts":    { "shouldDetect": true,  "note": "Anthropic API key" },
+  "fixtures/secrets/openai.ts":       { "shouldDetect": true,  "note": "OpenAI API key" },
+  "fixtures/secrets/aws.ts":          { "shouldDetect": true,  "note": "AWS access key + secret" },
+  "fixtures/secrets/github.ts":       { "shouldDetect": true,  "note": "GitHub classic + fine-grained PAT" },
+  "fixtures/secrets/stripe.ts":       { "shouldDetect": true,  "note": "Stripe live key" },
+  "fixtures/secrets/database.ts":     { "shouldDetect": true,  "note": "PostgreSQL + MongoDB URLs with credentials" },
+  "fixtures/secrets/slack.ts":        { "shouldDetect": true,  "note": "Slack webhook" },
+  "fixtures/clean/example-keys.ts":   { "shouldDetect": false, "note": "AWS EXAMPLE key + placeholder tokens" },
+  "fixtures/clean/test-passwords.ts": { "shouldDetect": false, "note": "Test passwords in test file — path-aware severity (may still flag; checked separately)" },
+  "fixtures/clean/doc-urls.ts":       { "shouldDetect": false, "note": "Documentation URLs with generic user:pass" },
+  "fixtures/clean/git-shas.ts":       { "shouldDetect": false, "note": "Git SHAs, UUIDs, checksums" },
+  "fixtures/clean/i18n-keys.json":    { "shouldDetect": false, "note": "i18n keys with -password suffix" },
+  "fixtures/secrets/stripe-test-key.ts": { "shouldDetect": true,  "note": "Stripe test key — real credential (sandbox scope)" },
+  "fixtures/secrets/remote-dsn.ts":      { "shouldDetect": true,  "note": "Real remote DB DSN with real password" },
+  "fixtures/clean/stripe-placeholders.ts": { "shouldDetect": false, "note": "Stripe redacted + placeholder strings" },
+  "fixtures/clean/connection-strings-local.ts": { "shouldDetect": false, "note": "Local/docker/placeholder DSNs (config, not leaks)" },
+  "fixtures/clean/sample-jwt.ts":        { "shouldDetect": false, "note": "Canonical jwt.io sample token" }
+}

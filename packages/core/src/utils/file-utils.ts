@@ -4,6 +4,28 @@ import ignore from 'ignore';
 
 import { DiagnosticBus } from '../diagnostics';
 
+/**
+ * Build a filter from `config.ignore.paths` / `config.ignore.patterns` entries.
+ *
+ * Patterns follow gitignore syntax (handled by the `ignore` package). Paths are
+ * matched against file paths relative to `root` so that patterns like
+ * `packages/**\/__tests__\/**` work as expected from the repo root.
+ *
+ * @returns A predicate that returns `true` when a file should be **excluded**.
+ */
+export function buildConfigIgnoreFilter(
+  patterns: string[],
+  root: string,
+): (filePath: string) => boolean {
+  if (patterns.length === 0) return () => false;
+  const ig = ignore().add(patterns);
+  return (filePath: string): boolean => {
+    const rel = path.relative(root, path.resolve(filePath)).split(path.sep).join('/');
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return false;
+    return ig.ignores(rel);
+  };
+}
+
 const GITIGNORE_CACHE_MAX = 32;
 
 type CachedIgnoreFilter = {
@@ -332,33 +354,80 @@ export function getAllFiles(
 
 /**
  * Get files to scan (filters out ignored directories/files) - async version
+ *
+ * @param configIgnorePatterns - gitignore-style patterns from `config.ignore.paths`
+ *   / `config.ignore.patterns`. Matched relative to `targetPath`.
  */
 export async function getFilesToScanAsync(
   targetPath: string,
   verbose = false,
   bus?: DiagnosticBus,
+  configIgnorePatterns: string[] = [],
 ): Promise<string[]> {
   const allFiles = await getAllFilesAsync(targetPath, new Set(), verbose, bus);
   const gitignoreTester = getGitignoreTester(targetPath);
-  return allFiles.filter(file => !shouldIgnoreFile(file, gitignoreTester));
+  const configIgnoreTester = buildConfigIgnoreFilter(configIgnorePatterns, targetPath);
+  return allFiles.filter(
+    file => !shouldIgnoreFile(file, gitignoreTester) && !configIgnoreTester(file),
+  );
 }
 
 /**
  * Get files to scan (filters out ignored directories/files) - sync version
+ *
+ * @param configIgnorePatterns - gitignore-style patterns from `config.ignore.paths`
+ *   / `config.ignore.patterns`. Matched relative to `targetPath`.
  */
 export function getFilesToScan(
   targetPath: string,
   verbose = false,
   bus?: DiagnosticBus,
+  configIgnorePatterns: string[] = [],
 ): string[] {
   const allFiles = getAllFiles(targetPath, new Set(), verbose, bus);
   const gitignoreTester = getGitignoreTester(targetPath);
-  return allFiles.filter(file => !shouldIgnoreFile(file, gitignoreTester));
+  const configIgnoreTester = buildConfigIgnoreFilter(configIgnorePatterns, targetPath);
+  return allFiles.filter(
+    file => !shouldIgnoreFile(file, gitignoreTester) && !configIgnoreTester(file),
+  );
 }
 
 function shouldIgnoreDirectory(name: string): boolean {
-  const ignoreDirs = ['node_modules', '.git', 'dist', 'build', 'coverage', '.next', '.turbo'];
+  const ignoreDirs = [
+    'node_modules',
+    '.git',
+    'dist',
+    'build',
+    'coverage',
+    '.next',
+    '.turbo',
+    // Vendored / generated trees: third-party or tool-managed content where
+    // matches are not the user's secrets and the volume drowns real findings.
+    '.yarn',
+    'vendor',
+    '.venv',
+    'venv',
+    '__pycache__',
+    '.mypy_cache',
+    '.pytest_cache',
+    '.gradle',
+    '.svelte-kit',
+  ];
   return ignoreDirs.includes(name);
+}
+
+/**
+ * Minified / bundled / generated single-file artifacts. These are never
+ * hand-authored, routinely committed, and a major false-positive source:
+ * broad key shapes (e.g. `AKIA…`) occur by chance inside large minified blobs.
+ */
+function isGeneratedArtifact(basename: string): boolean {
+  return (
+    /\.min\.(js|mjs|cjs|css)$/.test(basename) ||
+    /\.bundle\.(js|mjs|cjs)$/.test(basename) ||
+    basename === '.pnp.cjs' ||
+    basename === '.pnp.loader.mjs'
+  );
 }
 
 function shouldIgnoreFile(
@@ -378,6 +447,7 @@ function shouldIgnoreFile(
     '.gz',
     '.lock',
     '.log',
+    '.map',
   ];
 
   if (ignoreExts.includes(ext)) {
@@ -386,6 +456,10 @@ function shouldIgnoreFile(
 
   const basename = path.basename(filePath);
   if (basename === 'package-lock.json' || basename === 'pnpm-lock.yaml' || basename === 'yarn.lock') {
+    return true;
+  }
+
+  if (isGeneratedArtifact(basename)) {
     return true;
   }
 

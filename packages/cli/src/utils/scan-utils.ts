@@ -4,6 +4,7 @@ import {
   SecretScanner,
   getFilesToScan,
   getFilesToScanAsync,
+  buildConfigIgnoreFilter,
   scanTextFileAsync,
   scanTextFileSync,
   formatJson as formatJsonResults,
@@ -57,9 +58,16 @@ export interface ScanOptions {
   maxSize?: number;
   skipBinary?: boolean;
   progress?: boolean;
-  concurrency?: number; // Number of files to scan in parallel
+  concurrency?: number;
   bus?: DiagnosticBus;
   stats?: ScanTelemetryStats;
+  /**
+   * Combined gitignore-style patterns from `config.ignore.paths` and
+   * `config.ignore.patterns`. Applied to every file before scanning so that
+   * `.vault-guard.json` `ignore` entries are honoured uniformly across
+   * directory scans and staged-file scans.
+   */
+  configIgnorePatterns?: string[];
 }
 
 /**
@@ -77,7 +85,19 @@ export async function scanFileListAsync(
     skipBinary = true,
     progress = false,
     concurrency = 10,
+    configIgnorePatterns = [],
   } = options;
+
+  // Apply config ignore patterns to the explicit file list (e.g. staged files).
+  // buildConfigIgnoreFilter matches relative to cwd so patterns like
+  // `packages/**/__tests__/**` work identically for staged and directory scans.
+  const configIgnoreTester =
+    configIgnorePatterns.length > 0
+      ? buildConfigIgnoreFilter(configIgnorePatterns, process.cwd())
+      : null;
+  const filteredFiles = configIgnoreTester
+    ? files.filter(f => !configIgnoreTester(f))
+    : files;
 
   const results: ScanResult[] = [];
 
@@ -124,17 +144,17 @@ export async function scanFileListAsync(
     }
   };
 
-  for (let i = 0; i < files.length; i += concurrency) {
-    const batch = files.slice(i, i + concurrency);
+  for (let i = 0; i < filteredFiles.length; i += concurrency) {
+    const batch = filteredFiles.slice(i, i + concurrency);
     await Promise.all(batch.map(scanFile));
 
-    if (progress && files.length > 10) {
-      const percent = Math.round(((i + batch.length) / files.length) * 100);
+    if (progress && filteredFiles.length > 10) {
+      const percent = Math.round(((i + batch.length) / filteredFiles.length) * 100);
       process.stderr.write(`\r${chalk.gray(`Scanning... ${percent}%`)}`);
     }
   }
 
-  if (progress && files.length > 10) {
+  if (progress && filteredFiles.length > 10) {
     process.stderr.write('\r');
   }
 
@@ -184,8 +204,12 @@ export async function scanFilesAsync(
     if (stat.isFile()) {
       filesToScan = [targetPath];
     } else if (stat.isDirectory()) {
-      // Use async getFilesToScan to get proper .gitignore filtering
-      filesToScan = await getFilesToScanAsync(targetPath, verbose, options.bus);
+      filesToScan = await getFilesToScanAsync(
+        targetPath,
+        verbose,
+        options.bus,
+        options.configIgnorePatterns ?? [],
+      );
     } else {
       if (verbose) {
         console.error(chalk.red('❌ Error:'), chalk.white(`Invalid path: ${targetPath}`));
@@ -294,8 +318,12 @@ export function scanFiles(
     if (stat.isFile()) {
       filesToScan = [targetPath];
     } else if (stat.isDirectory()) {
-      // Use getFilesToScan to get proper .gitignore filtering
-      filesToScan = getFilesToScan(targetPath, verbose, options.bus);
+      filesToScan = getFilesToScan(
+        targetPath,
+        verbose,
+        options.bus,
+        options.configIgnorePatterns ?? [],
+      );
     } else {
       if (verbose) {
         console.error(chalk.red('❌ Error:'), chalk.white(`Invalid path: ${targetPath}`));

@@ -1,93 +1,51 @@
 # Vault Guard
 
-Security and optimization layer for AI-native coding. Stop committing secrets, track token usage, and code safer with AI tools.
-
-## Install
+**The security layer for AI-assisted coding.** Stop secrets from landing in your repo — whether you typed them or an AI agent pasted them.
 
 ```bash
 npm install -g @vaultcompass/vault-guard
 ```
 
-## Usage
+---
 
-### Scan for secrets
+## Why Vault Guard
 
-```bash
-vault-guard scan .
-```
+AI coding agents (Cursor, Claude Code, Copilot, …) are fast — and they routinely paste API keys, connection strings, and tokens directly into your editor. Vault Guard catches them before they reach a commit or a prompt:
 
-Scans your codebase for API keys, tokens, and other secrets.
+- **MCP server** — scans every proposed edit inside Cursor or Claude Code before it applies. One config line.
+- **Pre-commit hook** — blocks staged files containing secrets across all hook managers (native, Husky, Lefthook, pre-commit).
+- **GitHub Action** — integrates with Code Scanning via SARIF; one workflow step.
 
-**Staged files only** (fast, matches what you are about to commit):
+---
 
-```bash
-vault-guard scan --staged
-```
+## Quickstart
 
-**Machine-readable output** (SARIF for GitHub Code Scanning, or JSON):
+### 1. Protect your AI editor (MCP)
 
-```bash
-vault-guard scan . --format sarif
-vault-guard scan . --format json
-```
-
-Structured JSON/SARIF includes a **`run`** block (timing, files/bytes scanned, active pattern count, optional baseline suppression counts). See **[docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md)** for what Vault Guard is meant to do versus dedicated history scanners.
-
-#### Scripting & CI (stable JSON output)
-
-For pipelines and scripts, **`--format json`** prints **one JSON object on stdout** (diagnostics may appear on stderr—parse stdout only). After `pnpm build`, invoke the **built** CLI so you always hit this workspace’s binary:
-
-```bash
-node packages/cli/dist/cli-entry.js scan /path/to/project --format json
-```
-
-From the monorepo root you can also use:
-
-```bash
-pnpm --filter @vaultcompass/vault-guard exec vault-guard -- scan /path/to/project --format json
-```
-
-If you use a **global** install (`npm install -g …`) *and* hack on this repo, check **`vault-guard --version`** — an older global binary can look like a formatting bug when stdout isn’t pure JSON.
-
-Parse **`summary.secrets`**, **`results`**, and **`run`** as documented in **[docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md)**.
-
-#### Many findings after an audit?
-
-Vault Guard matches **credential-shaped strings** everywhere in the tree (including docs and `.example` files). A clean security review doesn’t always mean zero matches. Reduce intentional noise with **baseline fingerprints** (below), **`ignore`** in `.vault-guard.json`, and **[schemas/vault-guard-config.json](./schemas/vault-guard-config.json)**.
-
-### Validate config
-
-Structure plus `extra_patterns` compile / safety checks:
-
-```bash
-vault-guard config validate
-```
-
-JSON Schema for editors and external validators: **[schemas/vault-guard-config.json](./schemas/vault-guard-config.json)**.
-
-**Baseline** (fingerprinted accepted findings — optional `.vault-guard.baseline.json` next to config):
+Add to your MCP config (`~/.cursor/mcp.json`, `claude_desktop_config.json`, etc.):
 
 ```json
-{ "version": 1, "fingerprints": ["<64-char sha256 hex from scan JSON>", "…"] }
+{
+  "mcpServers": {
+    "vault-guard": {
+      "command": "npx",
+      "args": ["-y", "@vaultcompass/vault-guard-mcp"]
+    }
+  }
+}
 ```
 
-Each `--format json` match includes a **`fingerprint`** field (SHA-256 of path + rule + location span; no raw secret). Copy values you accept into `fingerprints` to grandfather known findings while still failing on new ones.
+Vault Guard exposes `scan_text`, `scan_file`, and `scan_workspace` tools. Your AI agent can call them before applying any edit that touches secrets.
 
-### Compose with dedicated secret scanners
+See **[docs/MCP.md](./docs/MCP.md)** for the full tool reference.
 
-Vault Guard targets **fast working-tree** checks (IDE, pre-commit, CI on the checkout). For **credentials in Git history**, **verified** leaks, or **deeper** repos, run **[Gitleaks](https://github.com/gitleaks/gitleaks)** or **[TruffleHog](https://github.com/trufflesecurity/trufflehog)** (or both) in the same pipeline — Vault Guard complements them; it does not replace them.
-
-### Install pre-commit hook
+### 2. Block secrets at commit time
 
 ```bash
 vault-guard install-hook
 ```
 
-Installs a Git hook that runs **`vault-guard scan --staged`** before each commit. Honors
-`core.hooksPath` (including global `hooksPath` on your machine) so the hook lands where Git
-actually executes it.
-
-**Managers** (optional):
+Installs a hook that runs `vault-guard scan --staged` before every commit. Honors `core.hooksPath` (including globally-configured hook paths). Supports all major managers:
 
 ```bash
 vault-guard install-hook --manager native     # default: Git hooks / hooksPath
@@ -98,85 +56,60 @@ vault-guard install-hook --manager precommit  # .pre-commit-config.yaml (only if
 
 Emergency bypass (discouraged): `git commit --no-verify`.
 
-### Check token usage
+### 3. Scan a repo or file
 
 ```bash
-vault-guard tokens
+vault-guard scan .
+vault-guard scan --staged          # staged files only (fast, for CI / hooks)
+vault-guard check src/api.ts       # single file
 ```
 
-See how many tokens you're using and estimate costs.
-
-### Quick check
+**Machine-readable output** (SARIF for GitHub Code Scanning, or JSON):
 
 ```bash
-vault-guard check src/api.ts
+vault-guard scan . --format sarif
+vault-guard scan . --format json
 ```
 
-Check specific files for secrets.
+Structured output includes a `run` block (timing, files/bytes scanned, active pattern count, diagnostics). See **[docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md)**.
 
-### Statusline JSON
-
-For Cursor CLI / custom status lines:
-
-```bash
-vault-guard statusline --json
-```
-
-Emits `secrets_today`, token totals, estimated spend, and last model from **local** `~/.vault-guard/usage.sqlite`.
-
-### Model hint
-
-```bash
-vault-guard suggest-model --json
-```
-
-Uses recent local telemetry to suggest a model label (heuristic).
-
-### Inspect / wipe local telemetry
-
-```bash
-vault-guard data status            # human-readable summary (no raw cwd values)
-vault-guard data status --json     # same, machine-readable
-vault-guard data reset             # interactive y/N prompt, then deletes the DB + WAL/SHM
-vault-guard data reset --yes       # non-interactive (CI / scripts)
-vault-guard data reset --dry-run   # preview without touching the filesystem
-vault-guard data export -o ./my-telemetry.json
-```
-
-`status` reports counts only — never raw `cwd` strings. `export` writes a
-mode-`0600` file. See **[docs/PRIVACY.md](./docs/PRIVACY.md)**.
-
-### Anthropic proxy (opt-in)
-
-```bash
-vault-guard proxy --listen 127.0.0.1:8765
-# optional: cap sustained POST /v1/messages to N requests per rolling 60s window
-vault-guard proxy --listen 127.0.0.1:8765 --max-rpm 120
-```
-
-Forwards **`POST /v1/messages`** to `api.anthropic.com` and logs **`usage`** for non-stream JSON responses into the local SQLite DB. Point clients at `ANTHROPIC_BASE_URL=http://127.0.0.1:8765` when you explicitly want this behavior.
-
-### MCP server
-
-See **[docs/MCP.md](./docs/MCP.md)**. Run: `npx -y @vaultcompass/vault-guard-mcp` (stdio).
-
-### VS Code / Cursor extension (Developer build)
-
-Workspace package **`packages/vscode-extension`**: `pnpm --filter vault-guard-vscode build`, then **Run Extension** from VS Code for local tryout. This extension is currently a developer-only build and is not published to the marketplace.
+---
 
 ## What it detects
 
 - AI/ML API keys (Anthropic, OpenAI, HuggingFace, Replicate, `sk-proj-*`)
-- Payment processors (Stripe, PayPal)
+- Payment processors (Stripe live + test, PayPal)
 - Cloud providers (AWS access keys, context-anchored AWS secret keys, GCP, Azure storage)
 - Database URLs (PostgreSQL, MySQL, MongoDB, Redis)
 - Version control tokens (GitHub classic + fine-grained PATs, GitLab, Bitbucket)
-- Communication (Slack, Discord webhooks)
+- Communication (Slack webhooks + tokens, Discord webhooks)
 - SSH private keys, JWTs, and entropy-gated generic `api_key` / `secret` assignments
 
-## GitHub Action
+Full rule reference with severities: **[docs/RULES.md](./docs/RULES.md)**.
 
-This repository ships a **composite action** at the repo root (`action.yml`). In your workflow:
+---
+
+## How it compares
+
+Vault Guard is **not** a history miner. It targets fast working-tree checks — the IDE, pre-commit gate, and CI on the checkout — and is designed to be composed with dedicated history scanners, not to replace them.
+
+| Feature | Vault Guard | Gitleaks | TruffleHog | detect-secrets |
+|---|---|---|---|---|
+| Working-tree / staged-file scan | Yes | Yes | Yes | Yes |
+| Git history mining | No | Yes | Yes | No |
+| MCP server (AI editor integration) | **Yes** | No | No | No |
+| GitHub Action (SARIF output) | Yes | Yes | No | No |
+| Pre-commit hook installer | Yes | Partial | No | Yes |
+| Entropy gating on generic patterns | Yes | Partial | Yes | Yes |
+| Config ignore paths / baselines | Yes | Yes | No | Yes |
+| Opt-in local token telemetry (Anthropic) | Yes | No | No | No |
+| Local-only — no remote calls | Yes | Yes | Yes | Yes |
+
+For credentials in Git history use **[Gitleaks](https://github.com/gitleaks/gitleaks)** or **[TruffleHog](https://github.com/trufflesecurity/trufflehog)** alongside Vault Guard — they are complementary, not competing.
+
+---
+
+## CI — GitHub Action
 
 ```yaml
 jobs:
@@ -184,7 +117,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: vaultcompasshq/vault-guard@v1.0.0 # or main / a tag you trust
+      - uses: vaultcompasshq/vault-guard@v1.0.0
         with:
           version: latest
           path: .
@@ -196,16 +129,116 @@ jobs:
           sarif_file: vault-guard-results.sarif
 ```
 
-Details: **`docs/GITHUB_ACTION.md`**. Branch protection and org checklist: **`docs/GITHUB_BRANCH_PROTECTION.md`**.
+Details: **[docs/GITHUB_ACTION.md](./docs/GITHUB_ACTION.md)**. Branch protection setup: **[docs/GITHUB_BRANCH_PROTECTION.md](./docs/GITHUB_BRANCH_PROTECTION.md)**.
+
+---
+
+## Configuration
+
+Create `.vault-guard.json` at your repo root:
+
+```json
+{
+  "ignore": {
+    "paths": ["**/__tests__/**", "fixtures/**"]
+  },
+  "severity_overrides": {
+    "jwt-token": "low"
+  },
+  "extra_patterns": [
+    { "id": "my-internal-key", "regex": "INT-[A-Z0-9]{32}", "severity": "critical" }
+  ]
+}
+```
+
+JSON Schema for editor autocomplete: **[schemas/vault-guard-config.json](./schemas/vault-guard-config.json)**.
+
+**Baseline** — fingerprint accepted findings so new issues still fail the gate:
+
+```json
+{ "version": 1, "fingerprints": ["<sha256 hex from scan JSON>", "…"] }
+```
+
+Each `--format json` match includes a `fingerprint` field. Copy values you accept into `.vault-guard.baseline.json`. See **[docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md)**.
+
+**Inline suppression:**
+
+```ts
+const key = "sk-ant-..."; // vault-guard: ignore-line
+// vault-guard: ignore-next-line
+const alsoFine = "...";
+```
+
+---
+
+## Opt-in token telemetry (Anthropic only)
+
+Vault Guard can log Anthropic token usage locally — useful if you want to see what the proxy costs day-to-day.
+
+```bash
+vault-guard proxy --listen 127.0.0.1:8765
+```
+
+Forwards `POST /v1/messages` to `api.anthropic.com` and logs `model`, `input_tokens`, `output_tokens`, and estimated cost to **`~/.vault-guard/usage.sqlite`** (local only — nothing is sent to Vault & Compass servers).
+
+Set `ANTHROPIC_BASE_URL=http://127.0.0.1:8765` to route a client through it. See **[docs/PRIVACY.md](./docs/PRIVACY.md)** for the full schema, opt-out steps, and data retention policy.
+
+**Note:** this feature is Anthropic-specific. Token usage from Cursor's built-in models, Copilot, and other providers is not captured.
+
+Inspect or wipe the local data:
+
+```bash
+vault-guard data status             # counts only — no raw paths
+vault-guard data export -o out.json
+vault-guard data reset              # interactive prompt
+vault-guard data reset --yes        # non-interactive (CI)
+```
+
+Statusline JSON (for custom editor status bars):
+
+```bash
+vault-guard statusline --json
+# { secrets_today, tokens_today_input, tokens_today_output, est_cost_usd, model }
+```
+
+Model hint from recent telemetry:
+
+```bash
+vault-guard suggest-model --json
+```
+
+---
+
+## VS Code / Cursor extension
+
+**Developer build only** — not yet published to the marketplace.
+
+`packages/vscode-extension`: `pnpm --filter vault-guard-vscode build`, then **Run Extension** from VS Code for a local tryout.
+
+---
+
+## Scripting & CI (stable JSON output)
+
+`--format json` prints one JSON object on stdout (diagnostics on stderr — parse stdout only):
+
+```bash
+node packages/cli/dist/cli-entry.js scan /path/to/project --format json
+```
+
+Parse `summary.secrets`, `results`, and `run` as documented in **[docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md)**.
+
+---
 
 ## Docker & Homebrew
 
 - **Docker:** `docker/README.md` — image installs the published npm CLI.
 - **Homebrew:** `packaging/homebrew/README.md` — optional tap workflow (npm remains canonical).
 
+---
+
 ## Development
 
-Requires **Node.js 20+** and **pnpm 9+** (see root `package.json` `engines`). Node 18 was dropped after `better-sqlite3@12` (used by the optional telemetry store) stopped shipping prebuilt binaries for it.
+Requires **Node.js 22+** and **pnpm 9+**. (Node 20 reached EOL April 2026.)
 
 ```bash
 git clone https://github.com/vaultcompasshq/vault-guard.git
@@ -216,12 +249,16 @@ pnpm test
 pnpm lint
 ```
 
-The workspace root is **`@vaultcompass/vault-guard-monorepo`** (private). Published npm packages include **`@vaultcompass/vault-guard`** (CLI), **`@vaultcompass/vault-guard-core`**, **`@vaultcompass/vault-guard-mcp`**, and **`@vaultcompass/vault-guard-telemetry`** under `packages/`. The VS Code extension package **`vault-guard-vscode`** is built from source for local or marketplace packaging.
+Published packages: **`@vaultcompass/vault-guard`** (CLI), **`@vaultcompass/vault-guard-core`**, **`@vaultcompass/vault-guard-mcp`**, **`@vaultcompass/vault-guard-telemetry`**.
 
-## License
+Run the precision/recall benchmark against the labeled fixture corpus:
 
-MIT
+```bash
+node bench/run.cjs
+```
 
 ---
 
-Vault Guard is built and maintained by [Vault & Compass](https://vaultcompass.io)
+## License
+
+MIT — built and maintained by [Vault & Compass](https://vaultcompass.io)

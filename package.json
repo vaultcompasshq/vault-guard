@@ -10,7 +10,8 @@
     "gen:rules-doc": "node scripts/gen-rules-doc.cjs",
     "lint": "eslint .",
     "prepublishOnly": "pnpm build",
-    "release": "pnpm publish -r --access public"
+    "release": "pnpm publish -r --access public",
+    "bench": "node bench/run.cjs"
   },
   "keywords": [
     "cli",
@@ -40,7 +41,7 @@
     }
   },
   "engines": {
-    "node": ">=20.0.0",
+    "node": ">=22.0.0",
     "pnpm": ">=9.0.0"
   }
 }
