@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`config.ignore.paths` / `config.ignore.patterns` now actually work.** These
+  fields were declared in the config schema and type but were never consumed by
+  the scan pipeline — a silent no-op since the feature was first added. Both
+  fields now accept gitignore-style glob patterns and are applied uniformly to
+  directory scans (`vault-guard scan <path>`) and staged-file scans
+  (`vault-guard scan --staged`). Patterns are matched relative to the scanned
+  root so that e.g. `packages/**/__tests__/**` works as expected from the repo
+  root. `buildConfigIgnoreFilter` is exported from
+  `@vaultcompass/vault-guard-core` for use in custom tooling.
+- Added repo-root `.vault-guard.json` so `vault-guard` dogfoods its own ignore
+  config on this repo (excludes `packages/**/__tests__/**` and `fixtures/**`
+  from scans, preventing the pre-commit hook from blocking on synthetic test
+  fixtures).
+
+### Fixed (false positives)
+
+- **Placeholder / example-value suppression.** Matched values that are obvious
+  documentation samples or test fixtures are now dropped. A *standard* tier
+  (markers such as `EXAMPLE`, `changeme`, `your_token_here`, plus pure
+  character-repetition padding) applies to every pattern — this suppresses
+  AWS's documented `AKIAIOSFODNN7EXAMPLE` key, for example. An *aggressive* tier
+  (`test`, `sample`, `password`, …) applies only to the low-precision generic /
+  password-assignment patterns so vendor-anchored keys keep full recall.
+  Exposed as `isPlaceholderSecret()` from `@vaultcompass/vault-guard-core`.
+- **Vendored / generated trees skipped by default.** File discovery now ignores
+  `.yarn`, `vendor`, `.venv`/`venv`, `__pycache__`, `.mypy_cache`,
+  `.pytest_cache`, `.gradle`, and `.svelte-kit` directories, plus minified /
+  bundled single-file artifacts (`*.min.{js,mjs,cjs,css}`, `*.bundle.{js,mjs,cjs}`,
+  `*.map`, `.pnp.cjs`, `.pnp.loader.mjs`). These are never hand-authored and were
+  a major false-positive source (broad key shapes occur by chance inside large
+  minified blobs). On a real `strapi` checkout this cut findings from 72 to 20
+  with no loss of true positives.
+- **Local / dev / example connection strings no longer flagged.** Database and
+  Redis DSN patterns (`postgresql-url`, `mysql-url`, `mongodb-url`, `redis-url`)
+  now suppress matches whose host is local/non-routable (`localhost`,
+  `127.0.0.1`, a bare docker-compose service name like `mysql`, or a reserved
+  TLD such as `.local`/`.test`), or whose password is an obvious
+  placeholder/default (`pass`, `PASSWORD`, `root:root`, `${DB_PASSWORD}`, …).
+  A real remote host with a real password is still flagged. This was the single
+  largest real-world FP source: on a `prisma` checkout it cut findings from
+  **147 (146 critical)** to **4**, all `low`. Exposed as
+  `isNonSecretConnectionString()`.
+- **Canonical jwt.io sample token suppressed.** The ubiquitous RFC 7519 / jwt.io
+  example JWT (decodes to `sub: "1234567890"`, `name: "John Doe"`,
+  `iat: 1516239022`) that appears in countless API docs is no longer reported.
+  Real JWTs are unaffected. Exposed as `isSampleJwt()`.
+- **Path-aware severity for credential-shaped strings in test/fixture paths.**
+  Findings from generic-assignment, connection-string, and key/token patterns
+  (`password-in-code`, `postgresql-url`, `ssh-private-key`, `jwt-token`, …) are
+  downgraded to `low` severity — not suppressed — when the file lives in a test
+  or fixture path (`__tests__/`, `tests/`, `*.test.ts`, `fixtures/`, `spec/`,
+  …). Hard vendor-anchored API-key patterns (Anthropic, AWS, Stripe, GitHub, …)
+  keep full severity everywhere. Previously this only applied to files over
+  10 MB; it now applies on the normal scan path too. Exposed as
+  `applyPathAwareSeverity()` / `isTestFilePath()`.
+- **`password-in-code` no longer fires on compound identifiers.** A negative
+  lookbehind prevents matching when `password` is the suffix of a larger key
+  name (e.g. `email-reset-password: "…"` in i18n files). Only standalone
+  `password = …` / `password: …` assignments match.
+
+### Added
+
+- **`bench/` precision/recall harness.** A labeled fixture corpus (real-world
+  true positives + false-positive candidates) plus `node bench/run.cjs`
+  (`pnpm bench`) reporting Precision / Recall / F1 / Grade, with an optional
+  `--gitleaks` side-by-side. Current score on the corpus: **100% / 100% / A**.
+
 ### Changed (BREAKING)
 
 - **`engines.node` raised to `>=20.0.0`** on all publishable packages and the

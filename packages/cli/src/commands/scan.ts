@@ -55,6 +55,12 @@ export async function scanCommand(
 
   const scanner = new SecretScanner(config);
 
+  // Merge config ignore paths and patterns into a single list for file filtering.
+  const configIgnorePatterns: string[] = [
+    ...(config.ignore?.paths ?? []),
+    ...(config.ignore?.patterns ?? []),
+  ];
+
   const bus = new DiagnosticBus();
   const diagnostics: Diagnostic[] = [];
   const extraPatternDiagnostics: ExtraPatternDiagnosticCtx[] = [];
@@ -136,6 +142,7 @@ export async function scanCommand(
         progress: format === 'text',
         bus,
         stats,
+        configIgnorePatterns,
       });
     } else {
       results = await scanFilesAsync([targetPath], scanner, {
@@ -144,6 +151,7 @@ export async function scanCommand(
         progress: format === 'text',
         bus,
         stats,
+        configIgnorePatterns,
       });
     }
 

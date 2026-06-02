@@ -1,0 +1,10 @@
+{
+  "ignore": {
+    "paths": [
+      "packages/**/__tests__/**",
+      "packages/**/src/__tests__/**",
+      "fixtures/**",
+      "bench/fixtures/**"
+    ]
+  }
+}

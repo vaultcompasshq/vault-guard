@@ -9,6 +9,7 @@ export { fingerprintForMatch } from './match-fingerprint';
 export * from './scan-output';
 export * from './diagnostics';
 export { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from './utils/entropy';
+export { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt } from './utils/placeholder';
 export { getGitStagedFilePaths, isInsideGitWorkTree } from './utils/git-utils';
 export {
   validateRegexSafety,
@@ -21,3 +22,4 @@ export {
 } from './utils/regex-safety';
 
 export { scanTextFileAsync, scanTextFileSync } from './utils/scan-file';
+export { applyPathAwareSeverity, isTestFilePath } from './utils/path-severity';

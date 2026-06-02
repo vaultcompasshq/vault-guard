@@ -1,0 +1,7 @@
+{
+  "EditForm.inputToggle.label.email-reset-password": "Reset Password Page",
+  "AuthForm.button.label.forgot-password": "Forgot your password?",
+  "Settings.password.description": "Change your account password",
+  "Errors.password.tooShort": "Password must be at least 8 characters",
+  "Page.title.change-password": "Change Password"
+}

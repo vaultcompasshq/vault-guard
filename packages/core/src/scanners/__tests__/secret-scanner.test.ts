@@ -1,6 +1,7 @@
 import { SecretScanner } from '../secret-scanner';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 
 describe('SecretScanner', () => {
   let scanner: SecretScanner;
@@ -87,8 +88,11 @@ describe('SecretScanner', () => {
       expect(matches[0].type).toBe('ssh-private-key');
     });
 
-    it('detects PostgreSQL connection URL', () => {
-      fs.writeFileSync(testFilePath, `const url = "postgresql://user:hunter2@db.local:5432/prod";`);
+    it('detects PostgreSQL connection URL with a real remote host + password', () => {
+      fs.writeFileSync(
+        testFilePath,
+        `const url = "postgresql://svc_app:Xj8kP2mQ9zRv@db.prod.acme-corp.com:5432/main";`,
+      );
       const matches = scanner.scan(testFilePath);
       expect(matches.some(m => m.type === 'postgresql-url')).toBe(true);
     });
@@ -203,6 +207,132 @@ describe('SecretScanner', () => {
 
     it('returns empty array for non-existent file', () => {
       expect(scanner.scan('/does/not/exist.ts')).toHaveLength(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Placeholder / example / test-fixture suppression
+  // ---------------------------------------------------------------------------
+
+  describe('placeholder suppression', () => {
+    it("does NOT flag AWS's documented example access key", () => {
+      fs.writeFileSync(testFilePath, `const k = "AKIAIOSFODNN7EXAMPLE";`);
+      expect(scanner.scan(testFilePath)).toHaveLength(0);
+    });
+
+    it('does NOT flag a test-fixture password assignment', () => {
+      fs.writeFileSync(testFilePath, `const password = 'testPasword1234';`);
+      const matches = scanner.scan(testFilePath);
+      expect(matches.some(m => m.type === 'password-in-code')).toBe(false);
+    });
+
+    it('does NOT flag a documented placeholder api key', () => {
+      fs.writeFileSync(testFilePath, `api_key = "your_api_key_goes_here_xxxx"`);
+      const matches = scanner.scan(testFilePath);
+      expect(matches.some(m => m.type === 'api-key-generic')).toBe(false);
+    });
+
+    it('STILL flags a real-looking password assignment (recall preserved)', () => {
+      fs.writeFileSync(testFilePath, `const password = "Zk9Qp2Lm7Rt4Wx8Bn1";`);
+      const matches = scanner.scan(testFilePath);
+      expect(matches.some(m => m.type === 'password-in-code')).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Connection-string suppression (local / dev / example / placeholder DSNs)
+  // ---------------------------------------------------------------------------
+
+  describe('connection-string suppression', () => {
+    const cases: Array<[string, string]> = [
+      ['localhost host', 'postgres://prisma:prisma@localhost:5432/tests'],
+      ['default root:root creds', 'mysql://root:root@localhost:3306/tests'],
+      ['docker-compose service host', 'mysql://root:root@mysql/tests'],
+      ['literal user:pass placeholder', 'postgres://user:pass@localhost:5432/db'],
+      ['uppercase USER:PASSWORD template', 'mysql://USER:PASSWORD@aws.connect.psdb.cloud/DATABASE'],
+      ['env-var interpolation password', 'postgres://app:${DB_PASSWORD}@db.prod.example-corp.com/main'],
+      ['.local reserved TLD', 'postgresql://svc:s3cr3t@cache.local:5432/app'],
+    ];
+
+    it.each(cases)('does NOT flag %s', (_label, url) => {
+      fs.writeFileSync(testFilePath, `const url = "${url}";`);
+      const matches = scanner.scan(testFilePath);
+      const dsn = matches.filter(m =>
+        ['postgresql-url', 'mysql-url', 'mongodb-url', 'redis-url'].includes(m.type),
+      );
+      expect(dsn).toHaveLength(0);
+    });
+
+    it('STILL flags a real remote DSN with a real password (recall preserved)', () => {
+      fs.writeFileSync(
+        testFilePath,
+        `const url = "postgresql://svc_app:Xj8kP2mQ9zRv@db.prod.acme-corp.com:5432/main";`,
+      );
+      const matches = scanner.scan(testFilePath);
+      expect(matches.some(m => m.type === 'postgresql-url')).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Sample JWT suppression (the ubiquitous jwt.io "John Doe" token)
+  // ---------------------------------------------------------------------------
+
+  describe('sample JWT suppression', () => {
+    it('does NOT flag the canonical jwt.io sample token', () => {
+      const sample =
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9' +
+        '.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ' +
+        '.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+      fs.writeFileSync(testFilePath, `const t = "${sample}";`);
+      const matches = scanner.scan(testFilePath);
+      expect(matches.some(m => m.type === 'jwt-token')).toBe(false);
+    });
+
+    it('STILL flags a non-sample JWT (recall preserved)', () => {
+      const real =
+        'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzdmNfYXBwIiwicm9sZSI6ImFkbWluIn0.Zx9Kp2Lm7Rt4Wx8Bn1Qj5Vc3Df6Gh0';
+      fs.writeFileSync(testFilePath, `const t = "${real}";`);
+      const matches = scanner.scan(testFilePath);
+      expect(matches.some(m => m.type === 'jwt-token')).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Path-aware severity (credential-shaped strings in test/fixture paths)
+  // ---------------------------------------------------------------------------
+
+  describe('path-aware severity', () => {
+    it('downgrades a real remote DSN to low when the file is a test fixture', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-pathsev-'));
+      const testFile = path.join(dir, 'db.test.ts');
+      try {
+        fs.writeFileSync(
+          testFile,
+          `const url = "postgresql://svc_app:Xj8kP2mQ9zRv@db.prod.acme-corp.com:5432/main";`,
+        );
+        const matches = scanner.scan(testFile);
+        const dsn = matches.find(m => m.type === 'postgresql-url');
+        expect(dsn).toBeDefined();
+        expect(dsn?.severity).toBe('low');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('keeps full severity for the same DSN in a non-test path', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-pathsev-'));
+      const srcFile = path.join(dir, 'database.ts');
+      try {
+        fs.writeFileSync(
+          srcFile,
+          `const url = "postgresql://svc_app:Xj8kP2mQ9zRv@db.prod.acme-corp.com:5432/main";`,
+        );
+        const matches = scanner.scan(srcFile);
+        const dsn = matches.find(m => m.type === 'postgresql-url');
+        expect(dsn?.severity).toBe('critical');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 

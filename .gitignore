@@ -1,6 +1,10 @@
 node_modules/
 dist/
 *.log
+
+# Generated benchmark fixtures (contain synthetic secret-shaped strings for
+# recall testing; generated at runtime by bench/generate-fixtures.cjs).
+bench/fixtures/secrets/
 .DS_Store
 .env
 .env.local

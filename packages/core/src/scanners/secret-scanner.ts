@@ -2,6 +2,8 @@ import fs from 'fs';
 import { SecretMatch } from '../types';
 import { VaultGuardConfig } from '../config';
 import { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from '../utils/entropy';
+import { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt } from '../utils/placeholder';
+import { applyPathAwareSeverity } from '../utils/path-severity';
 import {
   validateRegexLength,
   validateRegexSafety,
@@ -20,6 +22,21 @@ interface PatternEntry {
    * this is the primary defence against false positives on broad patterns.
    */
   minEntropy?: number;
+  /**
+   * Apply the *aggressive* placeholder filter (test-fixture words such as
+   * `test`, `password`, `sample`). Only set on low-precision generic /
+   * assignment patterns — vendor-anchored keys always use the standard filter
+   * so recall on real credentials is unaffected.
+   */
+  aggressivePlaceholder?: boolean;
+  /**
+   * Treat the match as a database/Redis connection string and suppress it when
+   * the host is local/docker/reserved-TLD or the password is a placeholder /
+   * default (see {@link isNonSecretConnectionString}). Prevents the dominant
+   * real-world false positive: localhost & example DSNs in docker-compose,
+   * `.env.example`, and test fixtures.
+   */
+  connectionString?: boolean;
 }
 
 /**
@@ -62,10 +79,10 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   ['azure-storage',       { regex: /DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{20,}/g, severity: 'critical' }],
 
   // --- Database connection strings ---
-  ['postgresql-url', { regex: /postgres(?:ql)?:\/\/[^:@\s]+:[^@\s]+@[^:\s/]+(?::\d+)?\/\S+/g,  severity: 'critical' }],
-  ['mysql-url',      { regex: /mysql:\/\/[^:@\s]+:[^@\s]+@[^:\s/]+(?::\d+)?\/\S+/g,             severity: 'critical' }],
-  ['mongodb-url',    { regex: /mongodb(?:\+srv)?:\/\/[^:@\s]+:[^@\s]+@[^:\s/]+(?::\d+)?/g,      severity: 'critical' }],
-  ['redis-url',      { regex: /rediss?:\/\/[^:@\s]+:[^@\s]+@[^:\s/]+(?::\d+)/g,                 severity: 'critical' }],
+  ['postgresql-url', { regex: /postgres(?:ql)?:\/\/[^:@\s]+:[^@\s]+@[^:\s/]+(?::\d+)?\/\S+/g,  severity: 'critical', connectionString: true }],
+  ['mysql-url',      { regex: /mysql:\/\/[^:@\s]+:[^@\s]+@[^:\s/]+(?::\d+)?\/\S+/g,             severity: 'critical', connectionString: true }],
+  ['mongodb-url',    { regex: /mongodb(?:\+srv)?:\/\/[^:@\s]+:[^@\s]+@[^:\s/]+(?::\d+)?/g,      severity: 'critical', connectionString: true }],
+  ['redis-url',      { regex: /rediss?:\/\/[^:@\s]+:[^@\s]+@[^:\s/]+(?::\d+)/g,                 severity: 'critical', connectionString: true }],
 
   // --- Source control tokens ---
   ['github-token',   { regex: /gh[pousor]_[a-zA-Z0-9]{36}/g,                                    severity: 'critical' }],
@@ -96,11 +113,15 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   ['ssh-private-key',{ regex: /-----BEGIN [A-Z ]+ PRIVATE KEY-----/g,                            severity: 'critical' }],
   ['jwt-token',      { regex: /eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g,            severity: 'high' }],
 
-  // Generic patterns — entropy-gated to suppress false positives.
-  ['bearer-token',   { regex: /Bearer [a-zA-Z0-9_-]{20,}/g,                                     severity: 'high',   minEntropy: 3.5 }],
-  ['api-key-generic',{ regex: /api[_-]?key["']?\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})/gi,         severity: 'high',   minEntropy: 3.5 }],
-  ['secret-generic', { regex: /secret["']?\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})/gi,               severity: 'high',   minEntropy: 3.5 }],
-  ['password-in-code',{ regex: /password["']?\s*[:=]\s*["']([a-zA-Z0-9_\-!@#$%^&*]{12,})/gi,   severity: 'high',   minEntropy: 3.2 }],
+  // Generic patterns — entropy-gated AND placeholder-filtered (aggressive) to
+  // suppress false positives on documentation samples and unit-test fixtures.
+  ['bearer-token',   { regex: /Bearer [a-zA-Z0-9_-]{20,}/g,                                     severity: 'high',   minEntropy: 3.5, aggressivePlaceholder: true }],
+  ['api-key-generic',{ regex: /api[_-]?key["']?\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})/gi,         severity: 'high',   minEntropy: 3.5, aggressivePlaceholder: true }],
+  ['secret-generic', { regex: /secret["']?\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})/gi,               severity: 'high',   minEntropy: 3.5, aggressivePlaceholder: true }],
+  // Negative lookbehind prevents matching when `password` is a suffix of a
+  // compound identifier (e.g. `email-reset-password`, `changePassword`).
+  // Only standalone assignments trigger — `password =`, `password:`, etc.
+  ['password-in-code',{ regex: /(?<![a-zA-Z0-9_-])password["']?\s*[:=]\s*["']([a-zA-Z0-9_\-!@#$%^&*]{12,})/gi, severity: 'high', minEntropy: 3.2, aggressivePlaceholder: true }],
 ]);
 
 /**
@@ -244,7 +265,10 @@ export class SecretScanner {
   scan(filePath: string): SecretMatch[] {
     if (!fs.existsSync(filePath)) return [];
     const content = fs.readFileSync(filePath, 'utf-8');
-    return this.scanContent(content);
+    // Path-aware severity is applied here (not in scanContent) because it needs
+    // the file path. scanContent callers that know the path (scanTextFile*)
+    // apply it themselves, so this does not double-apply.
+    return applyPathAwareSeverity(this.scanContent(content), filePath);
   }
 
   /**
@@ -272,7 +296,7 @@ export class SecretScanner {
     }
 
     for (const [type, entry] of patternsForRun) {
-      const { regex, severity, minEntropy } = entry;
+      const { regex, severity, minEntropy, aggressivePlaceholder, connectionString } = entry;
       regex.lastIndex = 0;
 
       let match: RegExpExecArray | null;
@@ -282,6 +306,26 @@ export class SecretScanner {
 
         const threshold = minEntropy ?? (minEntropy === 0 ? 0 : undefined);
         if (threshold !== undefined && shannonEntropy(rawValue) < threshold) {
+          continue;
+        }
+
+        // Suppress documentation samples / test fixtures (e.g. AWS's
+        // `AKIAIOSFODNN7EXAMPLE`, `password: 'testPass1234'`). The aggressive
+        // tier only applies to the low-precision generic patterns.
+        if (isPlaceholderSecret(rawValue, { aggressive: aggressivePlaceholder === true })) {
+          continue;
+        }
+
+        // Suppress local/dev/example/placeholder connection strings — the
+        // dominant FP source on real repos (docker-compose, `.env.example`,
+        // test fixtures all carry `postgres://user:pass@localhost/db`).
+        if (connectionString === true && isNonSecretConnectionString(fullMatch)) {
+          continue;
+        }
+
+        // Suppress the ubiquitous jwt.io sample token (John Doe / sub 1234567890)
+        // that appears in API docs and tutorials everywhere.
+        if (type === 'jwt-token' && isSampleJwt(fullMatch)) {
           continue;
         }
 

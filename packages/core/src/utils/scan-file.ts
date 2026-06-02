@@ -4,6 +4,7 @@ import * as readline from 'readline';
 
 import type { DiagnosticBus } from '../diagnostics';
 import { SecretScanner } from '../scanners/secret-scanner';
+import { applyPathAwareSeverity } from './path-severity';
 import type { SecretMatch } from '../types';
 
 const DEFAULT_MAX_LINE_UTF16 = 1024 * 1024;
@@ -35,7 +36,7 @@ export async function scanTextFileAsync(
   const st = await fs.promises.stat(filePath);
   if (st.size <= options.maxFileBytes) {
     const content = await fs.promises.readFile(filePath, 'utf-8');
-    return scanner.scanContent(content);
+    return applyPathAwareSeverity(scanner.scanContent(content), filePath);
   }
 
   const raw: SecretMatch[] = [];
@@ -78,7 +79,7 @@ export async function scanTextFileAsync(
     rl.close();
   }
 
-  return scanner.mergeChunkedMatches(raw);
+  return applyPathAwareSeverity(scanner.mergeChunkedMatches(raw), filePath);
 }
 
 /**
@@ -94,7 +95,10 @@ export function scanTextFileSync(
 ): SecretMatch[] {
   const st = fs.statSync(filePath);
   if (st.size <= options.maxFileBytes) {
-    return scanner.scanContent(fs.readFileSync(filePath, 'utf-8'));
+    return applyPathAwareSeverity(
+      scanner.scanContent(fs.readFileSync(filePath, 'utf-8')),
+      filePath,
+    );
   }
   options.bus?.add({
     code: 'file.too_large',
