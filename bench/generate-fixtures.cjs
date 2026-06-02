@@ -126,7 +126,6 @@ const fixtures = [
 
 let written = 0;
 for (const f of fixtures) {
-  const content = f.lines(f).join('\n') + '\n';
   write(f.file, f.lines(f));
   written++;
 }

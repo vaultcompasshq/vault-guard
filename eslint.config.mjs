@@ -54,11 +54,12 @@ export default [
     },
   },
   {
-    files: ['scripts/**/*.cjs'],
+    files: ['scripts/**/*.cjs', 'bench/**/*.cjs'],
     languageOptions: {
       sourceType: 'script',
       globals: {
         __dirname: 'readonly',
+        __filename: 'readonly',
         console: 'readonly',
         process: 'readonly',
         require: 'readonly',

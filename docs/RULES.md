@@ -54,4 +54,4 @@ Patterns with a `Min entropy` value drop matches whose Shannon entropy falls bel
 | `bearer-token` | high | 3.5 | `g` | `Bearer [a-zA-Z0-9_-]{20,}` |
 | `api-key-generic` | high | 3.5 | `gi` | `api[_-]?key["']?\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})` |
 | `secret-generic` | high | 3.5 | `gi` | `secret["']?\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})` |
-| `password-in-code` | high | 3.2 | `gi` | `password["']?\s*[:=]\s*["']([a-zA-Z0-9_\-!@#$%^&*]{12,})` |
+| `password-in-code` | high | 3.2 | `gi` | `(?<![a-zA-Z0-9_-])password["']?\s*[:=]\s*["']([a-zA-Z0-9_\-!@#$%^&*]{12,})` |
