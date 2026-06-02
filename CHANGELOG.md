@@ -68,6 +68,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lookbehind prevents matching when `password` is the suffix of a larger key
   name (e.g. `email-reset-password: "…"` in i18n files). Only standalone
   `password = …` / `password: …` assignments match.
+- **Generic-assignment patterns no longer flag function-call results.** The
+  capture-group patterns (`secret-generic`, `api-key-generic`,
+  `password-in-code`) stop their value capture at `(`, so an unquoted value
+  immediately followed by `(` is a callee identifier, not a literal secret.
+  These are now suppressed — e.g. Django's
+  `csrf_secret = _add_new_csrf_cookie(request)` was reported as a `high`
+  hardcoded secret. Verified on Django/Flask/Gin/Caddy checkouts: cleared all
+  remaining Python `secret-generic` false positives with no loss of recall.
 
 ### Added
 

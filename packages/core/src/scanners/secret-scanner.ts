@@ -329,6 +329,15 @@ export class SecretScanner {
           continue;
         }
 
+        // Suppress unquoted assignments whose "value" is actually a function
+        // call — e.g. `csrf_secret = _add_new_csrf_cookie(request)`. The value
+        // capture group stops at `(`, so a `(` immediately following the match
+        // means we captured a callee identifier, not a literal secret. Only the
+        // capture-group (assignment-style) generic patterns are affected.
+        if (match[1] !== undefined && content[match.index + fullMatch.length] === '(') {
+          continue;
+        }
+
         const line = this.lineFromIndex(lineIndex, match.index);
 
         if (ignoredLines.has(line)) continue;

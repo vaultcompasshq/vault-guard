@@ -200,6 +200,27 @@ describe('SecretScanner', () => {
       expect(matches).toHaveLength(0);
     });
 
+    it('does NOT flag an unquoted assignment to a function-call result', () => {
+      // Real Django csrf.py FP: `csrf_secret = _add_new_csrf_cookie(request)`
+      // captured the callee `_add_new_csrf_cookie` as a generic secret.
+      fs.writeFileSync(
+        testFilePath,
+        [
+          'csrf_secret = _add_new_csrf_cookie(request)',
+          'csrf_secret = _unmask_cipher_token(csrf_secret)',
+          'apiKey = buildApiKeyFromEnvironment(config)',
+        ].join('\n'),
+      );
+      const matches = scanner.scan(testFilePath);
+      expect(matches).toHaveLength(0);
+    });
+
+    it('still flags a genuine unquoted secret assignment (no trailing paren)', () => {
+      fs.writeFileSync(testFilePath, `secret = Zg7kP2mQxN4RvT8wYhLs6Fj`);
+      const matches = scanner.scan(testFilePath);
+      expect(matches.some(m => m.type === 'secret-generic')).toBe(true);
+    });
+
     it('returns empty array for clean file', () => {
       fs.writeFileSync(testFilePath, `const msg = "Hello, world!";`);
       expect(scanner.scan(testFilePath)).toHaveLength(0);
