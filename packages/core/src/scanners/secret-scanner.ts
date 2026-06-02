@@ -125,6 +125,14 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
 ]);
 
 /**
+ * Low-precision generic assignment patterns (`<key> = <value>`) whose captured
+ * value may be an unquoted code identifier rather than a literal secret. Only
+ * these are subject to the function-call suppression heuristic; vendor- and
+ * context-anchored detectors are deliberately excluded.
+ */
+const GENERIC_ASSIGNMENT_IDS = new Set(['secret-generic', 'api-key-generic', 'password-in-code']);
+
+/**
  * Read-only metadata for built-in patterns (docs / codegen). Exposes
  * `RegExp#source` and flags only — not live `RegExp` instances.
  */
@@ -332,9 +340,14 @@ export class SecretScanner {
         // Suppress unquoted assignments whose "value" is actually a function
         // call — e.g. `csrf_secret = _add_new_csrf_cookie(request)`. The value
         // capture group stops at `(`, so a `(` immediately following the match
-        // means we captured a callee identifier, not a literal secret. Only the
-        // capture-group (assignment-style) generic patterns are affected.
-        if (match[1] !== undefined && content[match.index + fullMatch.length] === '(') {
+        // means we captured a callee identifier, not a literal secret. Scoped to
+        // the low-precision generic assignment patterns only — vendor-anchored
+        // and context-anchored detectors (incl. critical `aws-secret-context`)
+        // are never weakened by this heuristic.
+        if (
+          GENERIC_ASSIGNMENT_IDS.has(type) &&
+          content[match.index + fullMatch.length] === '('
+        ) {
           continue;
         }
 
