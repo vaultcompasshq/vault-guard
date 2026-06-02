@@ -238,7 +238,7 @@ Parse `summary.secrets`, `results`, and `run` as documented in **[docs/PRODUCT_S
 
 ## Development
 
-Requires **Node.js 20+** and **pnpm 9+**.
+Requires **Node.js 22+** and **pnpm 9+**. (Node 20 reached EOL April 2026.)
 
 ```bash
 git clone https://github.com/vaultcompasshq/vault-guard.git
