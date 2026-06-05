@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-06-05
+
 ### Fixed
 
 - **`config.ignore.paths` / `config.ignore.patterns` now actually work.** These
@@ -269,6 +271,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tests build Stripe/Twilio-shaped strings via **template concatenation** so GitHub push protection does not block commits that contained contiguous `sk_live_*` / `sk_test_*` / `AC…` literals in fixtures.
 - Jest resolves `@vaultcompass/vault-guard-core` from source in the CLI package so tests run without a prior `core` build.
 
-## [1.0.0] - 2026-04-11
+## [0.1.0] - 2026-04-11
 
-Initial published-line baseline (secret scan, pre-commit hook, token helpers).
+Initial development baseline (secret scan, pre-commit hook, token helpers).
