@@ -4,6 +4,7 @@ import { VaultGuardConfig } from '../config';
 import { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from '../utils/entropy';
 import { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt } from '../utils/placeholder';
 import { applyPathAwareSeverity } from '../utils/path-severity';
+import { shouldSuppressDocContextMatch } from '../utils/doc-context';
 import {
   validateRegexLength,
   validateRegexSafety,
@@ -276,18 +277,21 @@ export class SecretScanner {
     // Path-aware severity is applied here (not in scanContent) because it needs
     // the file path. scanContent callers that know the path (scanTextFile*)
     // apply it themselves, so this does not double-apply.
-    return applyPathAwareSeverity(this.scanContent(content), filePath);
+    return applyPathAwareSeverity(this.scanContent(content, { filePath }), filePath);
   }
 
   /**
    * Scan arbitrary UTF-8 text (editor buffer, pasted snippet, MCP payload).
    * Line numbers and byte offsets are relative to this string.
    *
+   * Pass `opts.filePath` when the content comes from a file on disk so
+   * documentation-site suppressions (Algolia search keys, etc.) can apply.
+   *
    * Each call uses fresh `RegExp` instances so overlapping `scanContent` work
    * (e.g. after an `await` in a concurrent worker pool) cannot corrupt
    * `lastIndex` on shared patterns.
    */
-  scanContent(content: string): SecretMatch[] {
+  scanContent(content: string, opts?: { filePath?: string }): SecretMatch[] {
     const lineIndex = this.buildLineIndex(content);
     const ignoredLines = this.parseIgnoreDirectives(content, lineIndex);
 
@@ -352,6 +356,14 @@ export class SecretScanner {
         }
 
         const line = this.lineFromIndex(lineIndex, match.index);
+        const lineContent = this.lineContentAt(content, lineIndex, line);
+
+        if (
+          opts?.filePath &&
+          shouldSuppressDocContextMatch(type, opts.filePath, rawValue, fullMatch, lineContent)
+        ) {
+          continue;
+        }
 
         if (ignoredLines.has(line)) continue;
 
@@ -403,6 +415,13 @@ export class SecretScanner {
       else hi = mid - 1;
     }
     return lo; // 1-based
+  }
+
+  /** Return the full text of a 1-based line number (without trailing newline). */
+  private lineContentAt(content: string, lineIndex: number[], lineNum: number): string {
+    const start = lineIndex[lineNum - 1] ?? 0;
+    const end = lineNum < lineIndex.length ? lineIndex[lineNum] - 1 : content.length;
+    return content.slice(start, end);
   }
 
   /**

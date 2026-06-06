@@ -1,5 +1,6 @@
 import path from 'path';
 import type { SecretMatch } from '../types';
+import { isDocumentationPath } from './doc-context';
 
 /**
  * Pattern IDs whose severity is downgraded to `low` in obvious test / fixture
@@ -127,12 +128,16 @@ export function isTestFilePath(filePath: string): boolean {
  * (aws-access, anthropic, stripe, …) are unaffected — a real key in a test
  * file is still worth a `critical` alert.
  */
+function isLowPrecisionContextPath(filePath: string): boolean {
+  return isTestFilePath(filePath) || isDocumentationPath(filePath);
+}
+
 export function applyPathAwareSeverity(
   matches: SecretMatch[],
   filePath: string,
 ): SecretMatch[] {
   if (matches.length === 0) return matches;
-  if (!isTestFilePath(filePath)) return matches;
+  if (!isLowPrecisionContextPath(filePath)) return matches;
 
   return matches.map(m => {
     if (!TEST_PATH_DOWNGRADE_IDS.has(m.type)) return m;

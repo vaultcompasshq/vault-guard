@@ -53,6 +53,11 @@ describe('isPlaceholderSecret', () => {
       }
     });
 
+    it('flags pydantic-style docstring demo passwords when aggressive', () => {
+      expect(isPlaceholderSecret('IAmSensitive', { aggressive: true })).toBe(true);
+      expect(isPlaceholderSecret('IAmSensitiveBytes', { aggressive: true })).toBe(true);
+    });
+
     it('still passes a realistic generated value under aggressive mode', () => {
       expect(isPlaceholderSecret('Zk9Qp2Lm7Rt4Wx8Bn1Vc', { aggressive: true })).toBe(false);
     });
