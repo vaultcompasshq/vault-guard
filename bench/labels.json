@@ -16,5 +16,7 @@
   "fixtures/secrets/remote-dsn.ts":      { "shouldDetect": true,  "note": "Real remote DB DSN with real password" },
   "fixtures/clean/stripe-placeholders.ts": { "shouldDetect": false, "note": "Stripe redacted + placeholder strings" },
   "fixtures/clean/connection-strings-local.ts": { "shouldDetect": false, "note": "Local/docker/placeholder DSNs (config, not leaks)" },
-  "fixtures/clean/sample-jwt.ts":        { "shouldDetect": false, "note": "Canonical jwt.io sample token" }
+  "fixtures/clean/sample-jwt.ts":        { "shouldDetect": false, "note": "Canonical jwt.io sample token" },
+  "fixtures/clean/docs/algolia-docs.ts": { "shouldDetect": false, "note": "Algolia search-only key in docs config" },
+  "fixtures/clean/docstring-password.py": { "shouldDetect": false, "note": "Pydantic-style docstring demo passwords" }
 }

@@ -401,6 +401,70 @@ describe('SecretScanner', () => {
         fs.rmSync(dir, { recursive: true, force: true });
       }
     });
+
+    it('downgrades generic api-key patterns under docs/ to low', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-pathsev-'));
+      const docFile = path.join(dir, 'docs', 'guide.ts');
+      try {
+        fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
+        fs.writeFileSync(docFile, `api_key = "Zk9Qp2Lm7Rt4Wx8Bn1Vc6Hj";`);
+        const matches = scanner.scan(docFile);
+        const api = matches.find(m => m.type === 'api-key-generic');
+        expect(api?.severity).toBe('low');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Documentation-site false positive suppression
+  // ---------------------------------------------------------------------------
+
+  describe('documentation-site suppression', () => {
+    it('does NOT flag Algolia search keys in docusaurus config', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-docfp-'));
+      const configFile = path.join(dir, 'website', 'docusaurus.config.js');
+      try {
+        fs.mkdirSync(path.join(dir, 'website'), { recursive: true });
+        fs.writeFileSync(
+          configFile,
+          [
+            'module.exports = {',
+            '  themeConfig: {',
+            '    algolia: {',
+            '      apiKey: "ecfff8a35d82ecff7e911d57d7be8510",',
+            '    },',
+            '  },',
+            '};',
+          ].join('\n'),
+        );
+        expect(scanner.scan(configFile)).toHaveLength(0);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('does NOT flag pydantic-style docstring demo passwords', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-docfp-'));
+      const pyFile = path.join(dir, 'pydantic', 'types.py');
+      try {
+        fs.mkdirSync(path.join(dir, 'pydantic'), { recursive: true });
+        fs.writeFileSync(
+          pyFile,
+          [
+            'class Model:',
+            '    """',
+            "    model = Model(password='IAmSensitive', password_bytes=b'IAmSensitiveBytes')",
+            '    """',
+            '    pass',
+          ].join('\n'),
+        );
+        expect(scanner.scan(pyFile).some(m => m.type === 'password-in-code')).toBe(false);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   // ---------------------------------------------------------------------------

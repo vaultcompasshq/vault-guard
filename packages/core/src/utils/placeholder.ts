@@ -61,6 +61,7 @@ const AGGRESSIVE_MARKERS: readonly string[] = [
   'password',
   'passw0rd',
   'secret',
+  'sensitive',
   'hunter2',
   'qwerty',
   'letmein',

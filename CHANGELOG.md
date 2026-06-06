@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-06-02
+
 ### Fixed (false positives)
 
 - **Expanded test/fixture path detection for path-aware severity downgrades.** Go
@@ -18,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SSH/JWT shapes downgrade to `low` instead of `high`/`critical` in these
   locations. Addresses OSS sweep noise on Terraform, Celery, Caddy, Strapi, and
   Gatsby example configs.
+- **Documentation-site false positives.** Algolia search-only keys (32-char hex)
+  and similar `api-key-generic` matches in `docs/`, `website/`, and doc config
+  files (`algolia.js`, `docusaurus.config.js`) are suppressed. Generic patterns
+  in documentation paths downgrade to `low` severity.
+- **Docstring demo passwords.** Pydantic-style documentation literals such as
+  `password='IAmSensitive'` are suppressed via the aggressive placeholder tier.
+
+### Added
+
+- Bench fixtures for Algolia docs config and docstring demo passwords.
+- CLI startup warning when Node.js is below 22.
 
 ## [1.0.0] - 2026-06-05
 

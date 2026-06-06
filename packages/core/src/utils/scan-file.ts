@@ -36,7 +36,7 @@ export async function scanTextFileAsync(
   const st = await fs.promises.stat(filePath);
   if (st.size <= options.maxFileBytes) {
     const content = await fs.promises.readFile(filePath, 'utf-8');
-    return applyPathAwareSeverity(scanner.scanContent(content), filePath);
+    return applyPathAwareSeverity(scanner.scanContent(content, { filePath }), filePath);
   }
 
   const raw: SecretMatch[] = [];
@@ -96,7 +96,7 @@ export function scanTextFileSync(
   const st = fs.statSync(filePath);
   if (st.size <= options.maxFileBytes) {
     return applyPathAwareSeverity(
-      scanner.scanContent(fs.readFileSync(filePath, 'utf-8')),
+      scanner.scanContent(fs.readFileSync(filePath, 'utf-8'), { filePath }),
       filePath,
     );
   }
