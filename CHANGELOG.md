@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (false positives)
+
+- **Expanded test/fixture path detection for path-aware severity downgrades.** Go
+  `*_test.go`, Python `test_*.py` / `*_test.py`, `examples/` (and
+  `example`/`samples`/`sample`), Celery-style `t/unit/` and `t/integration/`
+  trees, directory segments ending in `test` (`caddytest/`, `integrationtest/`
+  — excluding `contest/` and `latest/`), and `.env.example` / `.env.sample`
+  templates are now treated as test/fixture paths. Generic patterns, DSNs, and
+  SSH/JWT shapes downgrade to `low` instead of `high`/`critical` in these
+  locations. Addresses OSS sweep noise on Terraform, Celery, Caddy, Strapi, and
+  Gatsby example configs.
+
 ## [1.0.0] - 2026-06-05
 
 ### Fixed
