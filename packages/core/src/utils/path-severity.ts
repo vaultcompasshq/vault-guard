@@ -45,7 +45,16 @@ const TEST_DIR_SEGMENTS = new Set([
   'testdata',
   'spec',
   'e2e',
+  'examples',
+  'example',
+  'samples',
+  'sample',
 ]);
+
+/**
+ * Directory names ending in `test` that are **not** test roots (e.g. `contest/`).
+ */
+const NON_TEST_TEST_SUFFIX_DIRS = new Set(['contest', 'latest', 'shortest']);
 
 /**
  * File name suffixes / extensions that mark test or fixture files.
@@ -56,15 +65,55 @@ const TEST_FILE_PATTERNS = [
   /\.spec\.[jt]sx?$/,
   /\.test\.api\.[jt]sx?$/,
   /\.fixture\.[jt]sx?$/,
+  /_test\.go$/,
+  /^test_[^/]+\.py$/i,
+  /^[^/]+_test\.py$/i,
 ];
+
+/** Env template basenames — never production secrets. */
+const FIXTURE_ENV_BASENAME = /^\.env\.(example|sample|template|local\.example)$/;
+
+function splitPathParts(filePath: string): string[] {
+  return filePath.split(path.sep).flatMap(p => p.split('/'));
+}
+
+/**
+ * True when a path segment names a test/fixture directory, including common
+ * `*test` suffixes (`caddytest/`, `integrationtest/`) but not `contest/`.
+ */
+function isTestDirectorySegment(seg: string): boolean {
+  if (TEST_DIR_SEGMENTS.has(seg)) return true;
+  return (
+    seg.endsWith('test') &&
+    seg.length >= 7 &&
+    !NON_TEST_TEST_SUFFIX_DIRS.has(seg)
+  );
+}
+
+/**
+ * Celery / Perl-style test root: `t/unit/…`, `t/integration/…`.
+ */
+function isCeleryStyleTestRoot(parts: string[]): boolean {
+  for (let i = 0; i < parts.length - 1; i++) {
+    const next = parts[i + 1];
+    if (parts[i] === 't' && (next === 'unit' || next === 'integration')) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Return `true` when `filePath` looks like a test or fixture file.
  */
 export function isTestFilePath(filePath: string): boolean {
-  const parts = filePath.split(path.sep).flatMap(p => p.split('/'));
-  if (parts.some(seg => TEST_DIR_SEGMENTS.has(seg))) return true;
+  const parts = splitPathParts(filePath);
+  if (parts.some(isTestDirectorySegment)) return true;
+  if (isCeleryStyleTestRoot(parts)) return true;
+
   const basename = path.basename(filePath);
+  if (FIXTURE_ENV_BASENAME.test(basename)) return true;
+
   return TEST_FILE_PATTERNS.some(re => re.test(basename));
 }
 

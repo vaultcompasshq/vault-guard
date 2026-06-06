@@ -355,6 +355,52 @@ describe('SecretScanner', () => {
         fs.rmSync(dir, { recursive: true, force: true });
       }
     });
+
+    it('downgrades SSH keys in Go *_test.go files to low', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-pathsev-'));
+      const testFile = path.join(dir, 'communicator_test.go');
+      try {
+        fs.writeFileSync(
+          testFile,
+          '-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEAx32kL3AXuPTjn0Wd0+wN653+urjWMRkWxU5W2NCCNLUDly3o\n-----END RSA PRIVATE KEY-----\n',
+        );
+        const matches = scanner.scan(testFile);
+        const key = matches.find(m => m.type === 'ssh-private-key');
+        expect(key?.severity).toBe('low');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('downgrades passwords in examples/ paths to low', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-pathsev-'));
+      const exampleFile = path.join(dir, 'examples', 'seed.js');
+      try {
+        fs.mkdirSync(path.join(dir, 'examples'), { recursive: true });
+        fs.writeFileSync(exampleFile, `const password = 'SeedAdmin123456';`);
+        const matches = scanner.scan(exampleFile);
+        const pw = matches.find(m => m.type === 'password-in-code');
+        expect(pw?.severity).toBe('low');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('downgrades MongoDB URLs in Python test_*.py files to low', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-pathsev-'));
+      const testFile = path.join(dir, 'test_mongodb.py');
+      try {
+        fs.writeFileSync(
+          testFile,
+          `url = 'mongodb://uuuu:pwpw@hostname.dom/database'`,
+        );
+        const matches = scanner.scan(testFile);
+        const dsn = matches.find(m => m.type === 'mongodb-url');
+        expect(dsn?.severity).toBe('low');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   // ---------------------------------------------------------------------------
