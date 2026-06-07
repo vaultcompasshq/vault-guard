@@ -50,6 +50,18 @@ describe('shouldSuppressDocContextMatch', () => {
     ).toBe(true);
   });
 
+  it('suppresses your_*_key placeholders in markdown docs', () => {
+    expect(
+      shouldSuppressDocContextMatch(
+        'api-key-generic',
+        'translator-headphones/ANALYTICS_GUIDE.md',
+        'your_posthog_api_key',
+        'your_posthog_api_key',
+        'export const KEY = "your_posthog_api_key";',
+      ),
+    ).toBe(true);
+  });
+
   it('does not suppress the same key outside docs paths', () => {
     const line = 'apiKey = "ecfff8a35d82ecff7e911d57d7be8510"';
     expect(
