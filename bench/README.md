@@ -49,13 +49,11 @@ Each fixture is registered in `labels.json` with `shouldDetect: true/false` and 
 
 **TP fixtures (must trigger):** add an entry to `generate-fixtures.cjs` — store the value as joined fragments (`['sk_live_', 'AbCd…'].join('')`) then add the file to `labels.json`.
 
-**FP fixtures (must not trigger):** create the file under `fixtures/clean/` directly, then add to `labels.json`:
+**FP fixtures (must not trigger):** create the file under `fixtures/clean/`, then add to `labels.json`:
 
-1. Add an entry to `labels.json`:
-   ```json
-   "fixtures/secrets/my-service.ts": { "shouldDetect": true, "note": "My Service API key" }
-   ```
-3. Run the harness to confirm.
+```json
+"fixtures/clean/my-fixture.ts": { "shouldDetect": false, "note": "Why this should stay clean" }
+```
 
 ## Notes
 

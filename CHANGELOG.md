@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-06-07
+
+### Fixed (false positives)
+
+- **`.env.<env>.example` templates** (e.g. `.env.production.example`, `.env.staging.example`)
+  are now treated as fixture paths — fixes CapitalCanvas-style monorepo noise.
+- **All markdown documentation** (`README.md`, `CLAUDE.md`, `*GUIDE*.md`, any `.md`/`.mdx`)
+  is recognized as a documentation path; generic patterns downgrade to `low`, vendor
+  patterns in docs downgrade to `low`, and common placeholders are suppressed.
+- **Template-redacted keys** (`sk-XXXX…`, `replace-with-*`) suppressed globally.
+- **`secret:ENV_VAR_NAME` in CI workflows** — ALL_CAPS env-var names no longer match
+  `secret-generic`.
+- **Python triple-quoted docstring examples** (Ansible `EXAMPLES = r"""…"""`) suppress
+  generic assignment patterns such as `password-in-code`.
+
+### Added
+
+- Bench fixtures for `.env.production.example` templates and README placeholder keys.
+
+### Changed
+
+- Consolidated path parsing and severity downgrade ID lists into shared utils.
+- Removed tracked `todos-local.md`; use gitignored `TODO.local.md` for private notes.
+
 ## [1.0.1] - 2026-06-02
 
 ### Fixed (false positives)

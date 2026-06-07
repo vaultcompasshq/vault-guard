@@ -14,6 +14,12 @@ describe('isDocumentationPath', () => {
     expect(isDocumentationPath('gatsby/docs/tutorial/part-4/index.md')).toBe(true);
   });
 
+  it('recognizes root README and CLAUDE markdown', () => {
+    expect(isDocumentationPath('kidcompass/README.md')).toBe(true);
+    expect(isDocumentationPath('sheetful/CLAUDE.md')).toBe(true);
+    expect(isDocumentationPath('translator-headphones/POSTHOG_SETUP.md')).toBe(true);
+  });
+
   it('does not mark production source', () => {
     expect(isDocumentationPath('src/config.ts')).toBe(false);
   });

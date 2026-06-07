@@ -2,7 +2,10 @@ import {
   isPlaceholderSecret,
   isNonSecretConnectionString,
   isSampleJwt,
+  isRedactedTemplateValue,
+  isEnvVarNameToken,
 } from '../utils/placeholder';
+import { isInsidePythonTripleQuoted } from '../utils/doc-context';
 
 describe('isPlaceholderSecret', () => {
   describe('standard tier (applies to all patterns)', () => {
@@ -128,5 +131,49 @@ describe('isSampleJwt', () => {
   it('returns false for non-JWT input', () => {
     expect(isSampleJwt('not.a.jwt')).toBe(false);
     expect(isSampleJwt('singlepart')).toBe(false);
+  });
+});
+
+describe('isRedactedTemplateValue', () => {
+  it('flags X-redacted vendor key templates', () => {
+    expect(isRedactedTemplateValue('sk-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX')).toBe(true);
+    expect(isRedactedTemplateValue(['sk_live_', 'X'.repeat(48)].join(''))).toBe(true);
+    expect(isRedactedTemplateValue('replace-with-long-random-secret')).toBe(true);
+  });
+
+  it('does not flag realistic generated keys', () => {
+    expect(isRedactedTemplateValue('sk-ant-api03-9f3kLm2qPzXyA8')).toBe(false);
+  });
+});
+
+describe('isEnvVarNameToken', () => {
+  it('flags ALL_CAPS env var names', () => {
+    expect(isEnvVarNameToken('PLAID_TOKEN_ENCRYPTION_KEY')).toBe(true);
+  });
+
+  it('rejects short or mixed-case values', () => {
+    expect(isEnvVarNameToken('short')).toBe(false);
+    expect(isEnvVarNameToken('MySecretPass123')).toBe(false);
+  });
+});
+
+describe('isInsidePythonTripleQuoted', () => {
+  const content = [
+    'EXAMPLES = r"""',
+    '- name: Case insensitive password string match',
+    '  ansible.builtin.expect:',
+    '    responses:',
+    '      (?i)password: "MySekretPa$$word"',
+    '"""',
+  ].join('\n');
+
+  it('detects offsets inside triple-quoted docstring examples', () => {
+    const needle = 'MySekretPa$$word';
+    const idx = content.indexOf(needle);
+    expect(isInsidePythonTripleQuoted(content, idx)).toBe(true);
+  });
+
+  it('returns false outside triple quotes', () => {
+    expect(isInsidePythonTripleQuoted('password = "realSecretValue12"\n', 0)).toBe(false);
   });
 });

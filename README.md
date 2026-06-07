@@ -257,6 +257,8 @@ Run the precision/recall benchmark against the labeled fixture corpus:
 node bench/run.cjs
 ```
 
+**Local-only files (gitignored):** `TODO.local.md`, `.local/`, `docs/PRODUCTION_PLAN.md`, `docs/AWESOME_LISTS.md`, `marketing/`, `audit.md`. Keep launch plans and OSS sweep notes there, not on GitHub.
+
 ---
 
 ## License

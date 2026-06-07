@@ -39,6 +39,8 @@ describe('isTestFilePath', () => {
   it('recognizes .env.example templates', () => {
     expect(isTestFilePath('examples/sendgrid/.env.example')).toBe(true);
     expect(isTestFilePath('.env.sample')).toBe(true);
+    expect(isTestFilePath('backend/.env.production.example')).toBe(true);
+    expect(isTestFilePath('backend/.env.development.example')).toBe(true);
   });
 
   it('does not mark production source paths', () => {

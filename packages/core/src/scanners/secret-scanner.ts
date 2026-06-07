@@ -2,9 +2,9 @@ import fs from 'fs';
 import { SecretMatch } from '../types';
 import { VaultGuardConfig } from '../config';
 import { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from '../utils/entropy';
-import { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt } from '../utils/placeholder';
+import { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken } from '../utils/placeholder';
 import { applyPathAwareSeverity } from '../utils/path-severity';
-import { shouldSuppressDocContextMatch } from '../utils/doc-context';
+import { shouldSuppressDocContextMatch, isInsidePythonTripleQuoted } from '../utils/doc-context';
 import {
   validateRegexLength,
   validateRegexSafety,
@@ -325,6 +325,22 @@ export class SecretScanner {
         // `AKIAIOSFODNN7EXAMPLE`, `password: 'testPass1234'`). The aggressive
         // tier only applies to the low-precision generic patterns.
         if (isPlaceholderSecret(rawValue, { aggressive: aggressivePlaceholder === true })) {
+          continue;
+        }
+
+        if (isRedactedTemplateValue(rawValue)) {
+          continue;
+        }
+
+        if (GENERIC_ASSIGNMENT_IDS.has(type) && isEnvVarNameToken(rawValue)) {
+          continue;
+        }
+
+        if (
+          GENERIC_ASSIGNMENT_IDS.has(type) &&
+          opts?.filePath?.endsWith('.py') &&
+          isInsidePythonTripleQuoted(content, match.index)
+        ) {
           continue;
         }
 

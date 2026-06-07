@@ -1,0 +1,2 @@
+GOOGLE_PLACES_API_KEY=your_google_places_key
+YELP_API_KEY=your_yelp_fusion_key
