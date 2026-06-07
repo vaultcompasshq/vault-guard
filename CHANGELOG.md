@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `secret-generic`.
 - **Python triple-quoted docstring examples** (Ansible `EXAMPLES = r"""…"""`) suppress
   generic assignment patterns such as `password-in-code`.
+- **CodeQL ReDoS findings in `doc-context.ts`**: removed polynomial filename regex
+  (redundant with all-`.md` detection) and replaced `your_*_key` placeholder matching
+  with a bounded string scan.
+- **`scripts/gen-rules-doc.cjs`**: escape backslashes in generated `docs/RULES.md` table
+  cells (CodeQL incomplete-sanitization alert).
 
 ### Added
 
@@ -30,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Consolidated path parsing and severity downgrade ID lists into shared utils.
 - Removed tracked `todos-local.md`; use gitignored `TODO.local.md` for private notes.
+- **`docs/GITHUB_BRANCH_PROTECTION.md`**: required checks now `test (22.x)`, `lint`, and
+  `CodeQL` (drop obsolete `test (20.x)`).
 
 ## [1.0.1] - 2026-06-02
 
