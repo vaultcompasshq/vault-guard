@@ -1,4 +1,4 @@
-# Vault Guard — Privacy
+# Vault Guard: Privacy
 
 Vault Guard is **local-first**. No telemetry leaves your machine unless you
 explicitly point a tool at a remote endpoint (which Vault Guard itself never
@@ -28,7 +28,7 @@ Recorded by `vault-guard proxy` after every forwarded request, and by the MCP
 | `created_at`   | TEXT    | UTC ISO timestamp                                                 | Low                                                    |
 | `provider`     | TEXT    | `'anthropic'` / `'openai'` / `'unknown'`                          | None                                                   |
 | `model`        | TEXT    | Echo of the model name (e.g. `claude-3-5-sonnet-20240620`)        | None                                                   |
-| `cwd`          | TEXT    | HMAC-SHA256 hex (64 chars) of `process.cwd()` — see below          | **Low** — same path on this machine always maps to the same digest |
+| `cwd`          | TEXT    | HMAC-SHA256 hex (64 chars) of `process.cwd()`; see below          | **Low**: same path on this machine always maps to the same digest |
 | `input_tokens` | INTEGER | Token count from upstream `usage` block                           | None                                                   |
 | `output_tokens`| INTEGER | Same                                                              | None                                                   |
 | `est_cost_usd` | REAL    | Computed locally from token counts                                | None                                                   |
@@ -44,12 +44,12 @@ acceptance / revert events.
 | `created_at`      | TEXT    | UTC ISO timestamp                                     | Low                                                    |
 | `event_type`      | TEXT    | Free-form, e.g. `'apply'`, `'revert'`, `'secret_blocked'` | None                                                |
 | `model`           | TEXT    | Model name                                            | None                                                   |
-| `cwd`             | TEXT    | HMAC-SHA256 hex of `process.cwd()`                    | **Low** — digest only; see below                       |
+| `cwd`             | TEXT    | HMAC-SHA256 hex of `process.cwd()`                    | **Low**: digest only; see below                       |
 | `language`        | TEXT    | E.g. `'tsx'`, `'py'`                                  | None                                                   |
 | `lines_accepted`  | INTEGER |                                                       | None                                                   |
 | `lines_suggested` | INTEGER |                                                       | None                                                   |
 | `lines_reverted`  | INTEGER |                                                       | None                                                   |
-| `extra_json`      | TEXT    | Caller-supplied `Record<string, unknown>`             | **Caller-controlled** — anything an editor sends lands here |
+| `extra_json`      | TEXT    | Caller-supplied `Record<string, unknown>`             | **Caller-controlled**: anything an editor sends lands here |
 
 ## Where the data goes
 
@@ -69,7 +69,7 @@ proxy`, don't connect the MCP server, and don't run `statusline` /
 If you have run the optional surface and want to inspect or wipe the data:
 
 ```bash
-# See what's there (file location, size, row counts — no raw cwd values).
+# See what's there (file location, size, row counts: no raw cwd values).
 vault-guard data status
 vault-guard data status --json   # machine-readable
 
@@ -78,7 +78,7 @@ vault-guard data export -o ./my-telemetry.json
 vault-guard data export -o ./my-telemetry.jsonl --format jsonl
 
 # Delete the SQLite database and its WAL/SHM/journal sidecars. Interactive
-# y/N prompt by default; pass --yes for non-interactive use, --dry-run to
+# y/N prompt by default: pass --yes for non-interactive use, --dry-run to
 # preview without touching the filesystem.
 vault-guard data reset
 vault-guard data reset --yes
@@ -86,7 +86,7 @@ vault-guard data reset --dry-run --json
 ```
 
 `data reset` only touches the four files (`usage.sqlite`, `usage.sqlite-wal`,
-`usage.sqlite-shm`, `usage.sqlite-journal`) — never the parent directory or
+`usage.sqlite-shm`, `usage.sqlite-journal`); never the parent directory or
 any other contents of `~/.vault-guard/`.
 
 If `vault-guard` is not on your PATH or telemetry native bindings are
@@ -134,7 +134,7 @@ That means:
 
 ## Vulnerability reporting
 
-If you find a privacy bug — anything in this document is wrong, telemetry is
+If you find a privacy bug (anything in this document is wrong, telemetry is
 collected that we did not document, or the proxy ever sends data anywhere
-other than `api.anthropic.com` — please follow the reporting process in
+other than `api.anthropic.com`; please follow the reporting process in
 [`SECURITY.md`](../SECURITY.md). Do not file a public issue.

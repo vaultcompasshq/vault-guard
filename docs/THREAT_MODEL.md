@@ -1,8 +1,8 @@
-# Vault Guard — Threat Model
+# Vault Guard: Threat Model
 
 This document states what Vault Guard is designed to defend against, what it is
 explicitly **not** designed to defend against, and the trust boundaries of each
-component. Publishing it honestly is itself a defence — security tools that
+component. Publishing it honestly is itself a defence; security tools that
 overstate their scope create a false sense of safety that is worse than no
 tool at all.
 
@@ -80,10 +80,10 @@ Vault Guard does not, and will not, claim to defend against:
 |----------------------------------------------|----------------------------------------------------------|------------------------------|
 | Confused-deputy via env-key fallback         | `401 missing_api_key` if caller omits `x-api-key`        | `--allow-env-fallback`       |
 | Network exposure via non-loopback bind       | Refuses to start on anything other than loopback         | `--allow-public`             |
-| OOM via non-streaming response buffering     | Wire is piped; usage tee capped at 1 MB; overflow drops | (none — this is the policy)  |
-| Inbound payload DoS                          | Request body capped at 32 MB                             | (none — this is the policy)  |
-| Lifecycle leak (DB rows lost on signal)      | `SIGINT`/`SIGTERM` runs `wal_checkpoint(TRUNCATE)`       | (none — this is the policy)  |
-| Open-proxy abuse                             | Hostname pinned to `api.anthropic.com`; no path rewrite  | (none — this is the policy)  |
+| OOM via non-streaming response buffering     | Wire is piped; usage tee capped at 1 MB; overflow drops | (none; this is the policy)  |
+| Inbound payload DoS                          | Request body capped at 32 MB                             | (none; this is the policy)  |
+| Lifecycle leak (DB rows lost on signal)      | `SIGINT`/`SIGTERM` runs `wal_checkpoint(TRUNCATE)`       | (none; this is the policy)  |
+| Open-proxy abuse                             | Hostname pinned to `api.anthropic.com`; no path rewrite  | (none; this is the policy)  |
 
 ### `vault-guard mcp` (MCP server)
 

@@ -19,7 +19,7 @@ Apply these in **GitHub → Settings → Branches → Branch protection rules** 
 ## Tag / release protection
 
 - Restrict who can create matching refs `v*` if your org supports **rulesets** (recommended over classic rules for tags).
-- Ensure **only** GitHub Actions (or trusted maintainers) can run `release.yml` — it publishes npm via **Trusted Publishing (OIDC)**; each `@vaultcompass/*` package must list workflow `release.yml` on npm. No long-lived `NPM_TOKEN` is required when OIDC is configured.
+- Ensure **only** GitHub Actions (or trusted maintainers) can run `release.yml`: it publishes npm via **Trusted Publishing (OIDC)**; each `@vaultcompass/*` package must list workflow `release.yml` on npm. No long-lived `NPM_TOKEN` is required when OIDC is configured.
 
 ## Supply chain (already in-repo)
 

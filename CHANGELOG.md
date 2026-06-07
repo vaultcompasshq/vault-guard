@@ -12,12 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed (false positives)
 
 - **`.env.<env>.example` templates** (e.g. `.env.production.example`, `.env.staging.example`)
-  are now treated as fixture paths — fixes CapitalCanvas-style monorepo noise.
+  are now treated as fixture paths; fixes CapitalCanvas-style monorepo noise.
 - **All markdown documentation** (`README.md`, `CLAUDE.md`, `*GUIDE*.md`, any `.md`/`.mdx`)
   is recognized as a documentation path; generic patterns downgrade to `low`, vendor
   patterns in docs downgrade to `low`, and common placeholders are suppressed.
 - **Template-redacted keys** (`sk-XXXX…`, `replace-with-*`) suppressed globally.
-- **`secret:ENV_VAR_NAME` in CI workflows** — ALL_CAPS env-var names no longer match
+- **`secret:ENV_VAR_NAME` in CI workflows**: ALL_CAPS env-var names no longer match
   `secret-generic`.
 - **Python triple-quoted docstring examples** (Ansible `EXAMPLES = r"""…"""`) suppress
   generic assignment patterns such as `password-in-code`.
@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `*_test.go`, Python `test_*.py` / `*_test.py`, `examples/` (and
   `example`/`samples`/`sample`), Celery-style `t/unit/` and `t/integration/`
   trees, directory segments ending in `test` (`caddytest/`, `integrationtest/`
-  — excluding `contest/` and `latest/`), and `.env.example` / `.env.sample`
+ ; excluding `contest/` and `latest/`), and `.env.example` / `.env.sample`
   templates are now treated as test/fixture paths. Generic patterns, DSNs, and
   SSH/JWT shapes downgrade to `low` instead of `high`/`critical` in these
   locations. Addresses OSS sweep noise on Terraform, Celery, Caddy, Strapi, and
@@ -62,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`config.ignore.paths` / `config.ignore.patterns` now actually work.** These
   fields were declared in the config schema and type but were never consumed by
-  the scan pipeline — a silent no-op since the feature was first added. Both
+  the scan pipeline; a silent no-op since the feature was first added. Both
   fields now accept gitignore-style glob patterns and are applied uniformly to
   directory scans (`vault-guard scan <path>`) and staged-file scans
   (`vault-guard scan --staged`). Patterns are matched relative to the scanned
@@ -79,7 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Placeholder / example-value suppression.** Matched values that are obvious
   documentation samples or test fixtures are now dropped. A *standard* tier
   (markers such as `EXAMPLE`, `changeme`, `your_token_here`, plus pure
-  character-repetition padding) applies to every pattern — this suppresses
+  character-repetition padding) applies to every pattern; this suppresses
   AWS's documented `AKIAIOSFODNN7EXAMPLE` key, for example. An *aggressive* tier
   (`test`, `sample`, `password`, …) applies only to the low-precision generic /
   password-assignment patterns so vendor-anchored keys keep full recall.
@@ -109,7 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Path-aware severity for credential-shaped strings in test/fixture paths.**
   Findings from generic-assignment, connection-string, and key/token patterns
   (`password-in-code`, `postgresql-url`, `ssh-private-key`, `jwt-token`, …) are
-  downgraded to `low` severity — not suppressed — when the file lives in a test
+  downgraded to `low` severity (not suppressed) when the file lives in a test
   or fixture path (`__tests__/`, `tests/`, `*.test.ts`, `fixtures/`, `spec/`,
   …). Hard vendor-anchored API-key patterns (Anthropic, AWS, Stripe, GitHub, …)
   keep full severity everywhere. Previously this only applied to files over
@@ -123,7 +123,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generic assignment patterns (`secret-generic`, `api-key-generic`,
   `password-in-code`) stop their value capture at `(`, so an unquoted value
   immediately followed by `(` is a callee identifier, not a literal secret.
-  These are now suppressed — e.g. Django's
+  These are now suppressed (e.g. Django's
   `csrf_secret = _add_new_csrf_cookie(request)` was reported as a `high`
   hardcoded secret. The heuristic is scoped to those three patterns only;
   vendor- and context-anchored detectors (including the critical
@@ -158,66 +158,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`@vaultcompass/vault-guard-core`, `@vaultcompass/vault-guard`,
   `@vaultcompass/vault-guard-mcp`, `@vaultcompass/vault-guard-telemetry`)
   alongside existing `engines.node` (`>=18`).
-- **Release workflow smoke job** — after a tag publish, installs
+- **Release workflow smoke job**: after a tag publish, installs
   `@vaultcompass/vault-guard@<version>` from the public registry (with retry),
   runs `vault-guard scan` on `fixtures/release-smoke/`, and asserts a non-zero
   exit and `summary.secrets > 0` in JSON output.
-- **Telemetry `cwd` privacy** — `usage_events.cwd` and `session_events.cwd`
+- **Telemetry `cwd` privacy**: `usage_events.cwd` and `session_events.cwd`
   now store **HMAC-SHA256** digests (hex) using a per-machine key in
   `~/.vault-guard/salt` (mode `0600`). One-time migration rewrites legacy
   plaintext paths when the SQLite `user_version` pragma is below `2`.
-- **Telemetry retention** — deletes rows older than **`VG_TELEMETRY_RETENTION_DAYS`**
+- **Telemetry retention**: deletes rows older than **`VG_TELEMETRY_RETENTION_DAYS`**
   (default **90**; set to **`0`** to disable). Purge is throttled to at most
   once per hour per process; tests can set **`VG_TELEMETRY_RETENTION_TEST_NO_THROTTLE=1`**
   to disable the throttle.
 - **`ignore` (npm) for `.gitignore` handling** in `@vaultcompass/vault-guard-core`
-  — replaces the hand-rolled regex compiler in `file-utils.ts`. Nested
+ ; replaces the hand-rolled regex compiler in `file-utils.ts`. Nested
   ignore files are merged relative to the Git work tree (or filesystem root
   when no `.git/` is present). Cache entries are LRU-bounded and invalidated
   when any contributing `.gitignore` mtime changes; `clearGitignoreCache()` is
   exported for tests and long-lived hosts.
-- **`scanTextFileAsync` / `scanTextFileSync`** — async scans stream UTF-8
+- **`scanTextFileAsync` / `scanTextFileSync`**: async scans stream UTF-8
   line-by-line when a file exceeds the size threshold so multi‑MB text files
   are not fully buffered (multi-line secrets may be missed in streaming mode).
   CLI and MCP use the async helper; sync returns empty matches for oversized
   files with a `file.too_large` diagnostic.
-- **`SecretScanner.mergeChunkedMatches`** — dedupe helper for streamed scans.
+- **`SecretScanner.mergeChunkedMatches`**: dedupe helper for streamed scans.
 - **`vault-guard data` command group** for managing the local telemetry
   database at `~/.vault-guard/usage.sqlite`:
-  - `data status` — privacy-respecting summary (file path/size, row counts,
+  - `data status`; privacy-respecting summary (file path/size, row counts,
     distinct-value *counts*; never raw `cwd` strings). `--json` for
     machine-readable output.
-  - `data reset` — deletes the SQLite database and its WAL/SHM/journal
+  - `data reset`; deletes the SQLite database and its WAL/SHM/journal
     sidecars. Interactive `y/N` prompt by default; `--yes` for
     non-interactive use; `--dry-run` to preview. Refuses to proceed when
     stdin is not a TTY and `--yes` was not passed.
-  - `data export` — dumps `usage_events` and `session_events` to a JSON or
+  - `data export`; dumps `usage_events` and `session_events` to a JSON or
     JSONL file with mode `0o600` (user-only).
-- **Scan run metadata** — JSON and SARIF include optional `run` (`duration_ms`,
+- **Scan run metadata**: JSON and SARIF include optional `run` (`duration_ms`,
   `files_scanned`, `bytes_scanned`, `patterns_active`, `diagnostics_count`,
   optional `baseline_suppressed`); SARIF mirrors this under
   `runs[0].properties.vault_guard_run`. MCP scan tools emit the same fields.
-- **`SecretScanner#getActivePatternCount()`** — reports how many built-in +
+- **`SecretScanner#getActivePatternCount()`**: reports how many built-in +
   extra patterns are active after `severity_overrides` / rejections.
-- **Baseline file** — optional `.vault-guard.baseline.json` (version `1`,
+- **Baseline file**: optional `.vault-guard.baseline.json` (version `1`,
   `fingerprints[]`) discovered with the same directory walk as config; JSON
   output includes a per-match **`fingerprint`** (SHA-256 of path + rule +
   span; no raw secret) for populating the baseline.
-- **`vault-guard config validate`** — structural validation plus
+- **`vault-guard config validate`**: structural validation plus
   `SecretScanner` construction (fails if any `extra_patterns` are rejected).
-- **`schemas/vault-guard-config.json`** — JSON Schema for `.vault-guard.json`.
-- **`docs/PRODUCT_SCOPE.md`** — in-scope vs out-of-scope; README links and
+- **`schemas/vault-guard-config.json`**: JSON Schema for `.vault-guard.json`.
+- **`docs/PRODUCT_SCOPE.md`**: in-scope vs out-of-scope; README links and
   “compose with Gitleaks / TruffleHog” guidance.
-- **`vault-guard proxy --max-rpm`** — optional rolling 60s cap; returns HTTP 429
+- **`vault-guard proxy --max-rpm`**: optional rolling 60s cap; returns HTTP 429
   when exceeded.
-- **CLI integration tests (`json-output`)** — contract coverage for `--format json`:
+- **CLI integration tests (`json-output`)**: contract coverage for `--format json`:
   invoking the built `packages/cli/dist/cli-entry.js`, stdout must be a single
   parseable JSON object for `fixtures/release-smoke/` (findings) and for a clean
   temporary directory (no findings).
 
 ### Documentation
 
-- **README** — scripting / CI: stable JSON via `node packages/cli/dist/cli-entry.js`,
+- **README**: scripting / CI: stable JSON via `node packages/cli/dist/cli-entry.js`,
   `pnpm exec` variant, avoiding mixed global vs workspace CLI versions, and
   guidance when many matches remain after manual audits (baseline / ignore).
 
@@ -232,14 +232,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   absolute paths, and `--` separates `npx`'s flags from package args.
   Tracked threat: shell injection / npm dist-tag injection via attacker-
   controlled workflow inputs.
-- **`DiagnosticBus`** — every previously silent `catch {}` in the scanner, file
+- **`DiagnosticBus`**: every previously silent `catch {}` in the scanner, file
   walker, git helpers, and config loader now emits a typed diagnostic
   (`config.parse_error`, `file.too_large`, `fs.permission_denied`,
   `git.staged_files_failed`, `pattern.redos_unsafe`, …). Diagnostics surface in
   JSON output (`diagnostics[]`) and SARIF (tool/driver `notifications`), so a
   swallowed permission error or a corrupt `.vault-guard.json` no longer
   produces a misleading "✅ no secrets found".
-- **Heuristic ReDoS gate on user-supplied `extra_patterns`** — length cap,
+- **Heuristic ReDoS gate on user-supplied `extra_patterns`**: length cap,
   quantifier-density cap, and shape checks for `(…[*+]…)[*+]` and
   `(.|.)[*+]`. Rejected patterns surface as `pattern.redos_unsafe` /
   `pattern.too_long` diagnostics rather than being silently dropped.
@@ -274,23 +274,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`docs/RULES.md`** — generated from `BUILTIN_PATTERNS` via
+- **`docs/RULES.md`**: generated from `BUILTIN_PATTERNS` via
   `scripts/gen-rules-doc.cjs`. CI fails if the file drifts from the source.
-- **`docs/PRIVACY.md`** and **`docs/THREAT_MODEL.md`** — what
+- **`docs/PRIVACY.md`** and **`docs/THREAT_MODEL.md`**: what
   `~/.vault-guard/usage.sqlite` actually stores, and the per-component
   threat model for CLI / proxy / MCP boundaries.
-- `.github/dependabot.yml` — weekly npm + GitHub Actions updates, grouped
+- `.github/dependabot.yml`; weekly npm + GitHub Actions updates, grouped
   by `@types/*`, eslint, and jest.
-- `.gitattributes` — repo-wide `text=auto eol=lf` to keep Windows
+- `.gitattributes`; repo-wide `text=auto eol=lf` to keep Windows
   contributors from accidentally committing CRLF source files.
 - Coverage thresholds in every package's `jest.config.js`, with
   `pnpm test:coverage` wired through `--workspace-concurrency=1` (proxy
   integration tests bind real ports).
 
-- `@vaultcompass/vault-guard-mcp` — stdio MCP server (`scan_workspace`, `scan_file`, `scan_text`, `report_token_usage`, `record_session_event`); plus **`vault-guard statusline`** and VS Code extension package **`vault-guard-vscode`** (inline diagnostics, status bar, allow-list snippet command). See **`docs/MCP.md`**.
-- `@vaultcompass/vault-guard-telemetry` — local `~/.vault-guard/usage.sqlite` store, **`vault-guard suggest-model`** heuristic, and **`vault-guard proxy --listen`** (Anthropic `/v1/messages` forwarder MVP with `usage` logging for non-stream JSON).
+- `@vaultcompass/vault-guard-mcp`; stdio MCP server (`scan_workspace`, `scan_file`, `scan_text`, `report_token_usage`, `record_session_event`); plus **`vault-guard statusline`** and VS Code extension package **`vault-guard-vscode`** (inline diagnostics, status bar, allow-list snippet command). See **`docs/MCP.md`**.
+- `@vaultcompass/vault-guard-telemetry`; local `~/.vault-guard/usage.sqlite` store, **`vault-guard suggest-model`** heuristic, and **`vault-guard proxy --listen`** (Anthropic `/v1/messages` forwarder MVP with `usage` logging for non-stream JSON).
 - `SecretScanner.scanContent()` and shared **`formatJson` / `formatSarif`** in `@vaultcompass/vault-guard-core`.
-- **`vault-guard scan --staged`** — scans only git-indexed (staged) files.
+- **`vault-guard scan --staged`**: scans only git-indexed (staged) files.
 - Pre-commit hook respects `core.hooksPath` (local + global), installs `vault-guard scan --staged` with `set -e`, TTY re-attach, and `--no-verify` hint; optional **`--manager`** `native` | `husky` | `lefthook` | `precommit`.
 - Git utilities in core: `getGitStagedFilePaths`, `isInsideGitWorkTree`.
 - Repo hygiene: `LICENSE`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, Dependabot, CodeQL and OpenSSF Scorecard workflows, issue + PR templates.
