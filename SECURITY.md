@@ -38,7 +38,7 @@ releases with **npm provenance** enabled where configured in CI.
 ## `vault-guard proxy` (MVP)
 
 The optional local forwarder only targets **`https://api.anthropic.com`** (fixed
-hostname — not a generic open proxy).
+hostname, not a generic open proxy).
 
 ### Defaults are fail-closed
 
@@ -75,7 +75,7 @@ practice this is almost never the case on a developer workstation.
   `proxy-tee-overflow` row is recorded so the operator can see usage data is
   missing for that request.
 - Streaming responses are forwarded byte-for-byte; per-frame SSE usage parsing
-  is a planned follow-up — until then streaming requests are logged with
+  is a planned follow-up; until then streaming requests are logged with
   `0/0` token counts (`source: 'proxy-stream'`).
 - `SIGINT`/`SIGTERM` triggers a graceful shutdown: stop accepting new
   connections, drain inflight (5 s grace, then force-close), checkpoint and

@@ -33,7 +33,7 @@ function main() {
   );
   lines.push('Run `pnpm build && node scripts/gen-rules-doc.cjs` after touching that map.',
   );
-  lines.push('Do not hand-edit this file — CI rejects drift (see `.github/workflows/ci.yml`).');
+  lines.push('Do not hand-edit this file; CI rejects drift (see `.github/workflows/ci.yml`).');
   lines.push('');
   lines.push('## Pattern selection');
   lines.push('');
@@ -45,7 +45,7 @@ function main() {
   lines.push('');
   lines.push(
     'Unanchored generic patterns (raw 32-char hex, MD5/SHA1 shapes, base64 blobs) are intentionally ' +
-      'absent — they generate too many false positives on legitimate hashes, hex colors, and asset ' +
+      'absent; they generate too many false positives on legitimate hashes, hex colors, and asset ' +
       'fingerprints to be useful as a default.',
   );
   lines.push('');
@@ -64,7 +64,7 @@ function main() {
   lines.push('| --- | --- | --- | --- | --- |');
 
   for (const e of entries) {
-    const entropy = e.minEntropy !== undefined ? String(e.minEntropy) : '—';
+    const entropy = e.minEntropy !== undefined ? String(e.minEntropy) : '-';
     lines.push(
       `| \`${escapeMdCell(e.id)}\` | ${escapeMdCell(e.severity)} | ${escapeMdCell(entropy)} | \`${escapeMdCell(e.regexFlags || '')}\` | \`${escapeMdCell(e.regexSource)}\` |`,
     );

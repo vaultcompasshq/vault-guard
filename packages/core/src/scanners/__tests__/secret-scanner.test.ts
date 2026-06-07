@@ -465,6 +465,80 @@ describe('SecretScanner', () => {
         fs.rmSync(dir, { recursive: true, force: true });
       }
     });
+
+    it('does NOT flag README placeholder api keys', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-docfp-'));
+      const readme = path.join(dir, 'README.md');
+      try {
+        fs.writeFileSync(readme, 'GOOGLE_PLACES_API_KEY=your_google_places_key\n');
+        expect(scanner.scan(readme)).toHaveLength(0);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('does NOT flag X-redacted keys in docs plan markdown', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-docfp-'));
+      const plan = path.join(dir, 'docs', 'plans', 'setup.md');
+      try {
+        fs.mkdirSync(path.join(dir, 'docs', 'plans'), { recursive: true });
+        fs.writeFileSync(
+          plan,
+          'OPENAI_API_KEY="sk-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"\n',
+        );
+        expect(scanner.scan(plan)).toHaveLength(0);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('does NOT flag Ansible EXAMPLES docstring passwords in .py modules', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-docfp-'));
+      const mod = path.join(dir, 'expect.py');
+      try {
+        fs.writeFileSync(
+          mod,
+          [
+            'EXAMPLES = r"""',
+            '  ansible.builtin.expect:',
+            '    responses:',
+            '      (?i)password: "MySekretPa$$word"',
+            '"""',
+          ].join('\n'),
+        );
+        expect(scanner.scan(mod).some(m => m.type === 'password-in-code')).toBe(false);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('does NOT flag secret:ENV_NAME references in GitHub Actions workflows', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-docfp-'));
+      const wf = path.join(dir, '.github', 'workflows', 'release.yml');
+      try {
+        fs.mkdirSync(path.join(dir, '.github', 'workflows'), { recursive: true });
+        fs.writeFileSync(
+          wf,
+          'MISSING+=("secret:PLAID_TOKEN_ENCRYPTION_KEY")\n',
+        );
+        expect(scanner.scan(wf).some(m => m.type === 'secret-generic')).toBe(false);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('downgrades .env.production.example assignments to low', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-docfp-'));
+      const envFile = path.join(dir, 'backend', '.env.production.example');
+      try {
+        fs.mkdirSync(path.join(dir, 'backend'), { recursive: true });
+        fs.writeFileSync(envFile, 'ENTERPRISE_INGEST_API_KEY=replace-with-enterprise-ingest-key\n');
+        const matches = scanner.scan(envFile);
+        expect(matches.filter(m => m.severity === 'high' || m.severity === 'critical')).toHaveLength(0);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   // ---------------------------------------------------------------------------

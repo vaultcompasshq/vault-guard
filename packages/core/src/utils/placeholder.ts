@@ -44,6 +44,8 @@ const STANDARD_MARKERS: readonly string[] = [
   'insert_your',
   'replace_me',
   'replaceme',
+  'replace-with',
+  'replace_with',
   'loremipsum',
   // Pure character repetition (e.g. `xxxxxxxx`, `00000000`) is handled by the
   // low-variety check below rather than literal markers, so it does not clash
@@ -65,7 +67,48 @@ const AGGRESSIVE_MARKERS: readonly string[] = [
   'hunter2',
   'qwerty',
   'letmein',
+  'your_', // your_google_places_key, your_api_key_here
 ];
+
+/** Known vendor key prefixes whose remainder is often redacted with X/* in docs. */
+const REDACTED_PREFIXES: readonly RegExp[] = [
+  /^sk_live_/i,
+  /^sk_test_/i,
+  /^sk-ant-api\d+-/i,
+  /^sk-proj-/i,
+  /^sk-/i,
+  /^pk_live_/i,
+  /^pk_test_/i,
+  /^re_/i,
+  /^whsec_/i,
+  /^phc_/i,
+  /^AIza/i,
+  /^ghp_/i,
+  /^gho_/i,
+  /^npm_/i,
+  /^xox[baprs]-/i,
+];
+
+export function isRedactedTemplateValue(value: string): boolean {
+  if (!value) return false;
+  if (/^replace-with-/i.test(value)) return true;
+  if (value.length >= 8 && /^[Xx*]+$/.test(value)) return true;
+  for (const prefix of REDACTED_PREFIXES) {
+    const m = prefix.exec(value);
+    if (!m) continue;
+    const rest = value.slice(m[0].length);
+    if (rest.length >= 8 && /^[Xx*_.-]+$/.test(rest)) return true;
+  }
+  return false;
+}
+
+/**
+ * ALL_CAPS identifiers (e.g. `PLAID_TOKEN_ENCRYPTION_KEY`) are env-var names,
+ * not secret values — common in GitHub Actions `secret:NAME` checks.
+ */
+export function isEnvVarNameToken(value: string): boolean {
+  return /^[A-Z][A-Z0-9_]{7,}$/.test(value);
+}
 
 /**
  * A value made of one or two distinct characters (e.g. `xxxxxxxx`, `00000000`)

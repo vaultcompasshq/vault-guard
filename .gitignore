@@ -22,7 +22,7 @@ docs/DESIGN_PARTNERS.md
 docs/SCREENCAST.md
 docs/ISSUE_TRIAGE.md
 
-# Local-only working notes / private TODO list — never commit.
+# Local-only working notes (never commit).
 TODO.local.md
 *.local.md
 .local/

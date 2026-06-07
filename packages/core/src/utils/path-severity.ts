@@ -1,6 +1,11 @@
 import path from 'path';
 import type { SecretMatch } from '../types';
 import { isDocumentationPath } from './doc-context';
+import { splitPathParts } from './path-parts';
+import {
+  DOCS_VENDOR_DOWNGRADE_IDS,
+  LOW_PRECISION_PATH_DOWNGRADE_IDS,
+} from './path-downgrade-ids';
 
 /**
  * Pattern IDs whose severity is downgraded to `low` in obvious test / fixture
@@ -14,24 +19,12 @@ import { isDocumentationPath } from './doc-context';
  *     keeps them visible at `low` without drowning real criticals.
  *
  * Hard vendor-anchored API-key patterns (anthropic, aws-access, stripe,
- * github-token, …) are intentionally **absent**: a real provider key is a real
- * key even in a test file, and those patterns have near-zero false positives.
+ * github-token, …) are intentionally **absent** from test-path downgrades: a real
+ * provider key is a real key even in a test file, and those patterns have
+ * near-zero false positives. Documentation paths additionally downgrade a small
+ * vendor allowlist via {@link DOCS_VENDOR_DOWNGRADE_IDS}.
  */
-const TEST_PATH_DOWNGRADE_IDS = new Set([
-  // generic / assignment
-  'password-in-code',
-  'api-key-generic',
-  'secret-generic',
-  'bearer-token',
-  // connection strings
-  'postgresql-url',
-  'mysql-url',
-  'mongodb-url',
-  'redis-url',
-  // key / token shapes
-  'ssh-private-key',
-  'jwt-token',
-]);
+const TEST_PATH_DOWNGRADE_IDS = LOW_PRECISION_PATH_DOWNGRADE_IDS;
 
 /**
  * Segments that indicate a file lives in a test / fixture tree.
@@ -72,11 +65,7 @@ const TEST_FILE_PATTERNS = [
 ];
 
 /** Env template basenames — never production secrets. */
-const FIXTURE_ENV_BASENAME = /^\.env\.(example|sample|template|local\.example)$/;
-
-function splitPathParts(filePath: string): string[] {
-  return filePath.split(path.sep).flatMap(p => p.split('/'));
-}
+const FIXTURE_ENV_BASENAME = /^\.env(\.[a-z0-9_-]+)*\.(example|sample|template)$/i;
 
 /**
  * True when a path segment names a test/fixture directory, including common
@@ -140,8 +129,16 @@ export function applyPathAwareSeverity(
   if (!isLowPrecisionContextPath(filePath)) return matches;
 
   return matches.map(m => {
-    if (!TEST_PATH_DOWNGRADE_IDS.has(m.type)) return m;
-    if (m.severity === 'low') return m;
-    return { ...m, severity: 'low' as const };
+    if (TEST_PATH_DOWNGRADE_IDS.has(m.type) && m.severity !== 'low') {
+      return { ...m, severity: 'low' as const };
+    }
+    if (
+      isDocumentationPath(filePath) &&
+      DOCS_VENDOR_DOWNGRADE_IDS.has(m.type) &&
+      m.severity !== 'low'
+    ) {
+      return { ...m, severity: 'low' as const };
+    }
+    return m;
   });
 }

@@ -38,7 +38,7 @@ jobs:
     - name: Run tests with coverage
       run: pnpm test:coverage
 
-    # npm Trusted Publishing (OIDC): no NPM_TOKEN — auth via id-token: write +
+    # npm Trusted Publishing (OIDC): no NPM_TOKEN; auth via id-token: write +
     # trusted publisher on each @vaultcompass/* package (workflow: release.yml).
     # Requires npm CLI >= 11.5.1 (Node >= 22.14.0). Provenance is automatic.
     - name: Upgrade npm for OIDC trusted publishing

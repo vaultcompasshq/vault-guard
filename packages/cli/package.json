@@ -1,6 +1,6 @@
 {
   "name": "@vaultcompass/vault-guard",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Security and optimization layer for AI-native coding",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

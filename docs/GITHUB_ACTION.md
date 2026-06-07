@@ -6,7 +6,7 @@ The composite action in the **repository root** runs the published
 ## Requirements
 
 1. **`actions/checkout`** of your repository **before** this action (the action
-   does not check out your code — it only installs Node and runs `npx`).
+   does not check out your code; it only installs Node and runs `npx`).
 2. A **published** `@vaultcompass/vault-guard` version matching the `version`
    input (default `latest`).
 
@@ -37,7 +37,7 @@ The composite action in the **repository root** runs the published
     sarif-output: vault-guard.txt
 ```
 
-When `vault-guard` exits non-zero, the step fails and the job turns red — no
+When `vault-guard` exits non-zero, the step fails and the job turns red. No
 extra wiring required.
 
 ## SARIF upload

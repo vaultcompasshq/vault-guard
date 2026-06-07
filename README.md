@@ -1,6 +1,6 @@
 # Vault Guard
 
-**The security layer for AI-assisted coding.** Stop secrets from landing in your repo — whether you typed them or an AI agent pasted them.
+**The security layer for AI-assisted coding.** Stop secrets from landing in your repo, whether you typed them or an AI agent pasted them.
 
 ```bash
 npm install -g @vaultcompass/vault-guard
@@ -10,11 +10,11 @@ npm install -g @vaultcompass/vault-guard
 
 ## Why Vault Guard
 
-AI coding agents (Cursor, Claude Code, Copilot, …) are fast — and they routinely paste API keys, connection strings, and tokens directly into your editor. Vault Guard catches them before they reach a commit or a prompt:
+AI coding agents (Cursor, Claude Code, Copilot, …) are fast, and they routinely paste API keys, connection strings, and tokens directly into your editor. Vault Guard catches them before they reach a commit or a prompt:
 
-- **MCP server** — scans every proposed edit inside Cursor or Claude Code before it applies. One config line.
-- **Pre-commit hook** — blocks staged files containing secrets across all hook managers (native, Husky, Lefthook, pre-commit).
-- **GitHub Action** — integrates with Code Scanning via SARIF; one workflow step.
+- **MCP server**: scans every proposed edit inside Cursor or Claude Code before it applies. One config line.
+- **Pre-commit hook**: blocks staged files containing secrets across all hook managers (native, Husky, Lefthook, pre-commit).
+- **GitHub Action**: integrates with Code Scanning via SARIF; one workflow step.
 
 ---
 
@@ -91,7 +91,7 @@ Full rule reference with severities: **[docs/RULES.md](./docs/RULES.md)**.
 
 ## How it compares
 
-Vault Guard is **not** a history miner. It targets fast working-tree checks — the IDE, pre-commit gate, and CI on the checkout — and is designed to be composed with dedicated history scanners, not to replace them.
+Vault Guard is **not** a history miner. It targets fast working-tree checks (the IDE, pre-commit gate, and CI on the checkout) and is designed to be composed with dedicated history scanners, not to replace them.
 
 | Feature | Vault Guard | Gitleaks | TruffleHog | detect-secrets |
 |---|---|---|---|---|
@@ -103,13 +103,13 @@ Vault Guard is **not** a history miner. It targets fast working-tree checks — 
 | Entropy gating on generic patterns | Yes | Partial | Yes | Yes |
 | Config ignore paths / baselines | Yes | Yes | No | Yes |
 | Opt-in local token telemetry (Anthropic) | Yes | No | No | No |
-| Local-only — no remote calls | Yes | Yes | Yes | Yes |
+| Local-only (no remote calls) | Yes | Yes | Yes | Yes |
 
-For credentials in Git history use **[Gitleaks](https://github.com/gitleaks/gitleaks)** or **[TruffleHog](https://github.com/trufflesecurity/trufflehog)** alongside Vault Guard — they are complementary, not competing.
+For credentials in Git history use **[Gitleaks](https://github.com/gitleaks/gitleaks)** or **[TruffleHog](https://github.com/trufflesecurity/trufflehog)** alongside Vault Guard. They are complementary, not competing.
 
 ---
 
-## CI — GitHub Action
+## CI: GitHub Action
 
 ```yaml
 jobs:
@@ -153,7 +153,7 @@ Create `.vault-guard.json` at your repo root:
 
 JSON Schema for editor autocomplete: **[schemas/vault-guard-config.json](./schemas/vault-guard-config.json)**.
 
-**Baseline** — fingerprint accepted findings so new issues still fail the gate:
+**Baseline**: fingerprint accepted findings so new issues still fail the gate:
 
 ```json
 { "version": 1, "fingerprints": ["<sha256 hex from scan JSON>", "…"] }
@@ -173,13 +173,13 @@ const alsoFine = "...";
 
 ## Opt-in token telemetry (Anthropic only)
 
-Vault Guard can log Anthropic token usage locally — useful if you want to see what the proxy costs day-to-day.
+Vault Guard can log Anthropic token usage locally; useful if you want to see what the proxy costs day-to-day.
 
 ```bash
 vault-guard proxy --listen 127.0.0.1:8765
 ```
 
-Forwards `POST /v1/messages` to `api.anthropic.com` and logs `model`, `input_tokens`, `output_tokens`, and estimated cost to **`~/.vault-guard/usage.sqlite`** (local only — nothing is sent to Vault & Compass servers).
+Forwards `POST /v1/messages` to `api.anthropic.com` and logs `model`, `input_tokens`, `output_tokens`, and estimated cost to **`~/.vault-guard/usage.sqlite`** (local only; nothing is sent to Vault & Compass servers).
 
 Set `ANTHROPIC_BASE_URL=http://127.0.0.1:8765` to route a client through it. See **[docs/PRIVACY.md](./docs/PRIVACY.md)** for the full schema, opt-out steps, and data retention policy.
 
@@ -188,7 +188,7 @@ Set `ANTHROPIC_BASE_URL=http://127.0.0.1:8765` to route a client through it. See
 Inspect or wipe the local data:
 
 ```bash
-vault-guard data status             # counts only — no raw paths
+vault-guard data status             # counts only; no raw paths
 vault-guard data export -o out.json
 vault-guard data reset              # interactive prompt
 vault-guard data reset --yes        # non-interactive (CI)
@@ -211,7 +211,7 @@ vault-guard suggest-model --json
 
 ## VS Code / Cursor extension
 
-**Developer build only** — not yet published to the marketplace.
+**Developer build only**: not yet published to the marketplace.
 
 `packages/vscode-extension`: `pnpm --filter vault-guard-vscode build`, then **Run Extension** from VS Code for a local tryout.
 
@@ -219,7 +219,7 @@ vault-guard suggest-model --json
 
 ## Scripting & CI (stable JSON output)
 
-`--format json` prints one JSON object on stdout (diagnostics on stderr — parse stdout only):
+`--format json` prints one JSON object on stdout (diagnostics on stderr; parse stdout only):
 
 ```bash
 node packages/cli/dist/cli-entry.js scan /path/to/project --format json
@@ -231,8 +231,8 @@ Parse `summary.secrets`, `results`, and `run` as documented in **[docs/PRODUCT_S
 
 ## Docker & Homebrew
 
-- **Docker:** `docker/README.md` — image installs the published npm CLI.
-- **Homebrew:** `packaging/homebrew/README.md` — optional tap workflow (npm remains canonical).
+- **Docker:** `docker/README.md`, image installs the published npm CLI.
+- **Homebrew:** `packaging/homebrew/README.md`, optional tap workflow (npm remains canonical).
 
 ---
 
@@ -257,8 +257,10 @@ Run the precision/recall benchmark against the labeled fixture corpus:
 node bench/run.cjs
 ```
 
+**Local-only files (gitignored):** `TODO.local.md`, `.local/`, `docs/PRODUCTION_PLAN.md`, `docs/AWESOME_LISTS.md`, `marketing/`, `audit.md`. Keep launch plans and OSS sweep notes there, not on GitHub.
+
 ---
 
 ## License
 
-MIT — built and maintained by [Vault & Compass](https://vaultcompass.io)
+MIT, built and maintained by [Vault & Compass](https://vaultcompass.io)
