@@ -11,7 +11,10 @@ const path = require('path');
 const coreIndex = path.join(__dirname, '..', 'packages', 'core', 'dist', 'index.js');
 
 function escapeMdCell(s) {
-  return String(s).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+  return String(s)
+    .replace(/\\/g, '\\\\')
+    .replace(/\|/g, '\\|')
+    .replace(/\r?\n/g, ' ');
 }
 
 function main() {

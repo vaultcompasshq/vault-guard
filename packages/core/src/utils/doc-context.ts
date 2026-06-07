@@ -8,10 +8,8 @@ const DOC_SITE_SEGMENTS = new Set(['docs', 'doc', 'website']);
 /** Config files that routinely embed public search-only API keys. */
 const DOC_CONFIG_BASENAMES = new Set(['algolia.js', 'docusaurus.config.js']);
 
-/** Root-level / guide markdown basenames (case-insensitive). */
+/** Markdown extensions (any `.md` / `.mdx` file is treated as documentation). */
 const DOC_MARKDOWN_NAME = /\.(md|mdx)$/i;
-const DOC_NAMED_MARKDOWN =
-  /^(README|CLAUDE|CONTRIBUTING|CHANGELOG|CONFLICTS_README|.*GUIDE.*|.*SETUP.*|.*SUMMARY.*)$/i;
 
 /**
  * Return `true` when `filePath` lives in a documentation or doc-site tree
@@ -28,10 +26,24 @@ export function isDocumentationPath(filePath: string): boolean {
 
   if (DOC_MARKDOWN_NAME.test(base)) return true;
 
-  const stem = base.replace(/\.(md|mdx)$/i, '');
-  if (DOC_NAMED_MARKDOWN.test(stem)) return true;
-
   return false;
+}
+
+/** Placeholder shapes like `your_posthog_api_key` in docs (no regex; bounded scan). */
+function isYourUnderscoreKeyPlaceholder(value: string): boolean {
+  const MAX = 256;
+  if (value.length > MAX || value.length < 10) return false;
+  const lower = value.toLowerCase();
+  if (!lower.startsWith('your_') || !lower.endsWith('_key')) return false;
+  const mid = lower.slice(5, -4);
+  if (!mid.length) return false;
+  for (let i = 0; i < mid.length; i++) {
+    const c = mid.charCodeAt(i);
+    const isDigit = c >= 48 && c <= 57;
+    const isLower = c >= 97 && c <= 122;
+    if (!isDigit && !isLower && c !== 95) return false;
+  }
+  return true;
 }
 
 /** Algolia search-only keys are 32-char hex strings shipped in public doc frontends. */
@@ -92,7 +104,7 @@ export function shouldSuppressDocContextMatch(
     if (line.includes('algolia') || line.includes('appid')) return true;
     if (/YOUR[_-]?API[_-]?KEY/i.test(fullMatch)) return true;
     if (/insert[_-]?your/i.test(rawValue)) return true;
-    if (/your_[a-z0-9_]+_key/i.test(rawValue)) return true;
+    if (isYourUnderscoreKeyPlaceholder(rawValue)) return true;
   }
 
   if (patternId === 'password-in-code' && /MySekret/i.test(rawValue)) return true;
