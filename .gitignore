@@ -14,7 +14,10 @@ coverage/
 tmp-test-*
 tmp-test-integration/
 
-# Local-only planning, marketing, and adoption docs (kept on disk, not tracked).
+# Local-only planning and working notes (kept on disk, not tracked).
+.local/
+
+# Legacy paths (files now under .local/archive/); keep ignored if recreated.
 marketing/
 docs/PRODUCTION_PLAN.md
 docs/AWESOME_LISTS.md
@@ -25,5 +28,4 @@ docs/ISSUE_TRIAGE.md
 # Local-only working notes (never commit).
 TODO.local.md
 *.local.md
-.local/
 audit.md
