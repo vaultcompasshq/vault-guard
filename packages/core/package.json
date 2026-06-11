@@ -1,6 +1,6 @@
 {
   "name": "@vaultcompass/vault-guard-core",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Core engine for Vault Guard - security scanning",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-06-11
+
+### Added
+
+- Package READMEs for `@vaultcompass/vault-guard`, `@vaultcompass/vault-guard-core`,
+  `@vaultcompass/vault-guard-mcp`, and `@vaultcompass/vault-guard-telemetry` (npm
+  getting-started docs).
+
 ## [1.0.2] - 2026-06-07
 
 ### Fixed (false positives)

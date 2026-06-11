@@ -1,7 +1,7 @@
 {
   "name": "@vaultcompass/vault-guard-mcp",
-  "version": "1.0.2",
-  "description": "MCP server for Vault Guard \u2014 scan tools + local telemetry hooks",
+  "version": "1.0.3",
+  "description": "MCP server for Vault Guard: scan tools + local telemetry hooks",
   "main": "dist/index.js",
   "bin": {
     "vault-guard-mcp": "./dist/index.js"
