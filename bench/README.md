@@ -14,6 +14,10 @@ node bench/run.cjs
 # Verbose: show per-file TP/FP/FN/TN
 node bench/run.cjs --verbose
 
+# CI gate: exit non-zero if precision/recall fall below floors
+node bench/run.cjs --assert
+node bench/run.cjs --assert --min-precision 1.0 --min-recall 0.95
+
 # Side-by-side with Gitleaks (must be installed: brew install gitleaks)
 node bench/run.cjs --gitleaks --verbose
 ```

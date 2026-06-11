@@ -32,6 +32,13 @@ function write(filename, lines) {
   fs.writeFileSync(path.join(OUT_DIR, filename), lines.join('\n') + '\n', 'utf-8');
 }
 
+/** Write under fixtures/secrets/ preserving nested paths (e.g. caddytest/key.pem). */
+function writeNested(relPath, content) {
+  const full = path.join(OUT_DIR, relPath);
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+  fs.writeFileSync(full, content, 'utf-8');
+}
+
 // ---------------------------------------------------------------------------
 // Fixture definitions — parts joined at generation time
 // ---------------------------------------------------------------------------
@@ -122,11 +129,38 @@ const fixtures = [
   },
 ];
 
+/**
+ * Nested text fixtures (not limited to top-level .ts files).
+ *
+ * The PEM header/footer are stored as joined fragments for the SAME reason as
+ * the secrets above: the marker `-----BEGIN <TYPE> PRIVATE KEY-----` matches
+ * vault-guard's own `ssh-private-key` pattern, so a contiguous copy in this
+ * committed file would be flagged by the pre-commit hook. The fragments are
+ * split mid-word so no single string literal matches the detector, while the
+ * joined result is a valid PEM marker.
+ */
+const nestedFixtures = [
+  {
+    relPath: 'caddytest/key.pem',
+    comment: 'True positive: RSA private key in caddytest/ (path downgrades severity to low)',
+    content: () =>
+      [
+        ['-----BEGIN RSA PRIV', 'ATE KEY-----'].join('') + '\n',
+        'MIIEpAIBAAKCAQEAx32kL3AXuPTjn0Wd0+wN653+urjWMRkWxU5W2NCCNLUDly3o\n',
+        ['-----END RSA PRIV', 'ATE KEY-----'].join('') + '\n',
+      ].join(''),
+  },
+];
+
 // ---------------------------------------------------------------------------
 
 let written = 0;
 for (const f of fixtures) {
   write(f.file, f.lines(f));
+  written++;
+}
+for (const f of nestedFixtures) {
+  writeNested(f.relPath, f.content(f));
   written++;
 }
 

@@ -6,6 +6,7 @@ export default [
   {
     ignores: [
       'node_modules/**',
+      'bench/fixtures/**',
       'packages/mcp/scripts/**',
       'packages/**/dist/**',
       'packages/**/build/**',

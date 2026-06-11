@@ -20,5 +20,7 @@
   "fixtures/clean/docs/algolia-docs.ts": { "shouldDetect": false, "note": "Algolia search-only key in docs config" },
   "fixtures/clean/docstring-password.py": { "shouldDetect": false, "note": "Pydantic-style docstring demo passwords" },
   "fixtures/clean/env-production.example": { "shouldDetect": false, "note": ".env.production.example template keys" },
-  "fixtures/clean/readme-api-keys.md": { "shouldDetect": false, "note": "README your_* placeholder api keys" }
+  "fixtures/clean/readme-api-keys.md": { "shouldDetect": false, "note": "README your_* placeholder api keys" },
+  "fixtures/secrets/caddytest/key.pem": { "shouldDetect": true,  "note": "RSA PEM in caddytest/ (low severity via path downgrade, still detected)" },
+  "fixtures/clean/examples/seed-password.js": { "shouldDetect": false, "note": "DB seed script with placeholder passwords in examples/" }
 }
