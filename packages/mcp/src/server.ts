@@ -15,6 +15,12 @@ import {
 import { TelemetryStore } from '@vaultcompass/vault-guard-telemetry';
 import { scanWorkspaceDirectory } from './workspace-scan';
 
+// Injected by esbuild (`define`) at build time from package.json. Falls back
+// to a dev sentinel under ts-jest / unbundled execution where it is undefined.
+declare const __VG_MCP_VERSION__: string | undefined;
+const SERVER_VERSION =
+  typeof __VG_MCP_VERSION__ !== 'undefined' ? __VG_MCP_VERSION__ : '0.0.0-dev';
+
 /**
  * Build a scanner for the current MCP request.
  *
@@ -50,7 +56,7 @@ function toolPayload(obj: unknown): { content: Array<{ type: 'text'; text: strin
 
 export function createMcpServer(): McpServer {
   const server = new McpServer(
-    { name: 'vault-guard', version: '1.0.0' },
+    { name: 'vault-guard', version: SERVER_VERSION },
     {
       capabilities: {
         tools: {},

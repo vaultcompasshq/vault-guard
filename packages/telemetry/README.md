@@ -1,6 +1,6 @@
 # @vaultcompass/vault-guard-telemetry
 
-Opt-in **local-only** telemetry store for [Vault Guard](https://github.com/vaultcompasshq/vault-guard). Records Anthropic token usage and session events to `~/.vault-guard/usage.sqlite`. Nothing is sent to Vault & Compass servers.
+Opt-in, **local-only** store for [Vault Guard](https://github.com/vaultcompasshq/vault-guard). Tracks Anthropic API token cost (via the local `vault-guard proxy`) and session events such as `secret_blocked`, `revert`, and `accept` in `~/.vault-guard/usage.sqlite`. Nothing is sent to Vault & Compass servers, and Cursor/Copilot built-in model usage is not captured.
 
 ## Install
 

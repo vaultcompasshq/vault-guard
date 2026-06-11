@@ -1,6 +1,6 @@
 # @vaultcompass/vault-guard
 
-Security and optimization layer for AI-native coding. Catches API keys, tokens, and connection strings in your working tree before they reach a commit or an AI prompt.
+Catch secrets at commit and in CI, not after they are in your git history. Pre-commit hooks across every hook manager, fast staged-file scans, and SARIF for GitHub Code Scanning. Built for paste-heavy AI coding workflows.
 
 ## Install
 

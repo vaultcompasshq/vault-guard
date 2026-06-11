@@ -1,6 +1,6 @@
 # @vaultcompass/vault-guard-mcp
 
-[MCP](https://modelcontextprotocol.io/) server for [Vault Guard](https://github.com/vaultcompasshq/vault-guard). Exposes scan tools and local telemetry hooks so AI editors can check proposed edits for secrets before applying them.
+[MCP](https://modelcontextprotocol.io/) server for [Vault Guard](https://github.com/vaultcompasshq/vault-guard). Gives Cursor and Claude the ability to scan a proposed edit before it lands, at edit time instead of commit time. One config line, fully local.
 
 ## Install
 

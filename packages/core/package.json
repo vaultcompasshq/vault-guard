@@ -1,7 +1,7 @@
 {
   "name": "@vaultcompass/vault-guard-core",
   "version": "1.0.3",
-  "description": "Core engine for Vault Guard - security scanning",
+  "description": "Secret-scanning engine: vendor-anchored patterns, entropy gating, baselines, SARIF/JSON, hook helpers.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [

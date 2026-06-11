@@ -1,6 +1,6 @@
 # @vaultcompass/vault-guard-core
 
-Core engine for [Vault Guard](https://github.com/vaultcompasshq/vault-guard): secret scanning, config loading, baselines, SARIF/JSON formatters, and pre-commit hook helpers.
+The scanning engine behind [Vault Guard](https://github.com/vaultcompasshq/vault-guard), as a library: vendor-anchored patterns, entropy gating, baselines, and SARIF/JSON output, with no CLI to shell out to. For building your own CI checks, editor plugins, or security tooling.
 
 ## Install
 
