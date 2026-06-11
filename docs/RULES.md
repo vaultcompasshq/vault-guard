@@ -44,7 +44,7 @@ Patterns with a `Min entropy` value drop matches whose Shannon entropy falls bel
 | `slack-token` | critical | - | `g` | `xox[baprs]-[a-zA-Z0-9-]{10,}` |
 | `discord-webhook` | critical | - | `g` | `discord\\.com\\/api\\/webhooks\\/[0-9]{17,20}\\/[a-zA-Z0-9_-]{60,}` |
 | `sendgrid-api` | critical | - | `g` | `SG\\.[a-zA-Z0-9_-]{22}\\.[a-zA-Z0-9_-]{43}` |
-| `resend-api` | critical | - | `g` | `re_[a-zA-Z0-9]{32,}` |
+| `resend-api` | critical | 3.5 | `g` | `(?<![A-Za-z0-9_])re_[a-zA-Z0-9]{32,}` |
 | `mailgun-api` | critical | 3.5 | `g` | `key-[a-zA-Z0-9]{32}` |
 | `npm-token` | critical | - | `g` | `npm_[a-zA-Z0-9]{36}` |
 | `newrelic-api` | critical | - | `g` | `NRAK-[a-zA-Z0-9]{26}` |

@@ -98,6 +98,14 @@ const fixtures = [
     ],
   },
   {
+    file: 'resend.ts',
+    comment: 'True positive: Resend API key (standalone token, high entropy)',
+    lines: (j) => [
+      `// ${j.comment}`,
+      `const RESEND_API_KEY = ${JSON.stringify(['re_', 'A1b2C3d4E5f6', 'G7h8J9k0L1m2', 'N3o4P5q6R7s8'].join(''))};`,
+    ],
+  },
+  {
     file: 'slack.ts',
     comment: 'True positive: Slack incoming webhook URL',
     lines: (j) => [

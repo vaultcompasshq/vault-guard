@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-06-11
+
+### Fixed (false positives)
+
+- **`resend-api` no longer matches `re_<identifier>` substrings.** A long Go test
+  name (e.g. `...stateStore_reconfigureLeadingToMigrationOfLocalState`) produced a
+  `re_<camelCase>` run that satisfied the old `re_[a-zA-Z0-9]{32,}` rule and was
+  flagged `critical`. The rule is now anchored to a token boundary and
+  entropy-gated (`minEntropy: 3.5`), so only standalone high-entropy `re_` tokens
+  match. Surfaced by the OSS corpus scan against terraform.
+
+### Added
+
+- Bench fixtures locking the fix: a standalone Resend key (TP) and a Go test-name
+  false-positive guard (FP).
+
 ## [1.0.4] - 2026-06-11
 
 ### Fixed

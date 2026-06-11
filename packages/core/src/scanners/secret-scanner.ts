@@ -98,7 +98,11 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
 
   // --- Email / messaging services ---
   ['sendgrid-api',   { regex: /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/g,                     severity: 'critical' }],
-  ['resend-api',     { regex: /re_[a-zA-Z0-9]{32,}/g,                                            severity: 'critical' }],
+  // `re_` is a short prefix that also occurs mid-identifier (e.g. a long Go
+  // test name yields a `re_<camelCase>` substring). Anchor to a token boundary
+  // so only standalone `re_<key>` tokens match, and entropy-gate to drop
+  // low-entropy identifiers while keeping random Resend keys.
+  ['resend-api',     { regex: /(?<![A-Za-z0-9_])re_[a-zA-Z0-9]{32,}/g,                            severity: 'critical', minEntropy: 3.5 }],
   ['mailgun-api',    { regex: /key-[a-zA-Z0-9]{32}/g,                                            severity: 'critical', minEntropy: 3.5 }],
 
   // --- Package managers ---

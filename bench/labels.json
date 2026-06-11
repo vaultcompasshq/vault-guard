@@ -7,6 +7,8 @@
   "fixtures/secrets/stripe.ts":       { "shouldDetect": true,  "note": "Stripe live key" },
   "fixtures/secrets/database.ts":     { "shouldDetect": true,  "note": "PostgreSQL + MongoDB URLs with credentials" },
   "fixtures/secrets/slack.ts":        { "shouldDetect": true,  "note": "Slack webhook" },
+  "fixtures/secrets/resend.ts":       { "shouldDetect": true,  "note": "Resend API key (standalone re_ token)" },
+  "fixtures/clean/go-identifier-re.go": { "shouldDetect": false, "note": "Go test name with re_<camelCase> substring (resend-api FP guard)" },
   "fixtures/clean/example-keys.ts":   { "shouldDetect": false, "note": "AWS EXAMPLE key + placeholder tokens" },
   "fixtures/clean/test-passwords.ts": { "shouldDetect": false, "note": "Test passwords in test file — path-aware severity (may still flag; checked separately)" },
   "fixtures/clean/doc-urls.ts":       { "shouldDetect": false, "note": "Documentation URLs with generic user:pass" },
