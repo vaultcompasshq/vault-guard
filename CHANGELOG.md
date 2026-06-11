@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-06-11
+
+### Fixed
+
+- **MCP server no longer crashes when `better-sqlite3` is unavailable.** Telemetry
+  is now lazily constructed and degrades gracefully: if the native binding cannot
+  load (common under `npx`, `--ignore-scripts`, or a Node ABI mismatch), the
+  `scan_workspace`/`scan_file`/`scan_text` tools stay fully functional and only
+  `record_session_event` returns `{ ok: false, telemetry: "unavailable" }`.
+
+### Added
+
+- MCP integration tests (in-memory client/server) covering tool registration,
+  `scan_text` detection, telemetry-unavailable degradation, and session recording.
+
 ## [1.0.3] - 2026-06-11
 
 ### Added

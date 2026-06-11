@@ -12,7 +12,7 @@ import {
   type FileScanResult,
   type JsonRunMetadata,
 } from '@vaultcompass/vault-guard-core';
-import { TelemetryStore } from '@vaultcompass/vault-guard-telemetry';
+import { TelemetryStore, TelemetryUnavailableError } from '@vaultcompass/vault-guard-telemetry';
 import { scanWorkspaceDirectory } from './workspace-scan';
 
 // Injected by esbuild (`define`) at build time from package.json. Falls back
@@ -20,6 +20,17 @@ import { scanWorkspaceDirectory } from './workspace-scan';
 declare const __VG_MCP_VERSION__: string | undefined;
 const SERVER_VERSION =
   typeof __VG_MCP_VERSION__ !== 'undefined' ? __VG_MCP_VERSION__ : '0.0.0-dev';
+
+export interface McpServerOptions {
+  /**
+   * Factory for the telemetry store. Injectable for tests; defaults to a real
+   * {@link TelemetryStore}. Telemetry is strictly optional: if the factory
+   * throws {@link TelemetryUnavailableError} (e.g. missing `better-sqlite3`
+   * native bindings under `npx`), the scan tools remain fully functional and
+   * only `record_session_event` degrades.
+   */
+  telemetryFactory?: () => TelemetryStore;
+}
 
 /**
  * Build a scanner for the current MCP request.
@@ -54,7 +65,7 @@ function toolPayload(obj: unknown): { content: Array<{ type: 'text'; text: strin
   };
 }
 
-export function createMcpServer(): McpServer {
+export function createMcpServer(options: McpServerOptions = {}): McpServer {
   const server = new McpServer(
     { name: 'vault-guard', version: SERVER_VERSION },
     {
@@ -66,7 +77,32 @@ export function createMcpServer(): McpServer {
     },
   );
 
-  const telemetry = new TelemetryStore();
+  // Telemetry is optional and lazily constructed. The scan tools (the primary
+  // value of this server) must never be taken down by a missing/incompatible
+  // `better-sqlite3` binding, so we never build the store eagerly and we never
+  // let TelemetryUnavailableError escape `record_session_event`.
+  const telemetryFactory = options.telemetryFactory ?? ((): TelemetryStore => new TelemetryStore());
+  let telemetry: TelemetryStore | null = null;
+  let telemetryUnavailable = false;
+
+  function getTelemetry(): TelemetryStore | null {
+    if (telemetry) return telemetry;
+    if (telemetryUnavailable) return null;
+    try {
+      telemetry = telemetryFactory();
+      return telemetry;
+    } catch (e) {
+      if (e instanceof TelemetryUnavailableError) {
+        telemetryUnavailable = true;
+        process.stderr.write(
+          `vault-guard MCP: telemetry unavailable; session events will not be recorded: ${e.message}\n`,
+        );
+        return null;
+      }
+      throw e;
+    }
+  }
+
   const tokenCounter = new TokenCounter();
 
   server.registerTool(
@@ -235,7 +271,11 @@ export function createMcpServer(): McpServer {
       },
     },
     async args => {
-      telemetry.recordSession({
+      const store = getTelemetry();
+      if (!store) {
+        return toolPayload({ ok: false, telemetry: 'unavailable' });
+      }
+      store.recordSession({
         eventType: args.event_type,
         model: args.model,
         cwd: args.cwd,
