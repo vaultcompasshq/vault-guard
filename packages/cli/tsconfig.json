@@ -11,8 +11,8 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
+    "declarationMap": false,
+    "sourceMap": false,
     "moduleResolution": "node",
     "resolveJsonModule": true
   },
@@ -22,6 +22,7 @@
   "exclude": [
     "node_modules",
     "dist",
+    "**/__tests__/**",
     "**/*.test.ts"
   ]
 }

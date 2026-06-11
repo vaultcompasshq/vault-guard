@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-06-11
+
+### Fixed (publish hygiene)
+
+- **Source maps no longer ship to npm.** `sourceMap` and `declarationMap` are now
+  `false` in the published tsconfigs (`core`, `cli`, `telemetry`); `declaration`
+  (`.d.ts`) is kept. This removes ~half the files from each tarball (e.g. CLI
+  74 -> 34, core 94 -> 48) and stops shipping `.map` artifacts from a tool whose
+  own docs warn about source-map leaks. (The maps did not embed source text, but
+  shipping them at all is sloppy and pure bloat.)
+- **Test code no longer ships in the CLI tarball.** `proxy-test-helpers.ts` was
+  not named `*.test.ts`, so the old `exclude` missed it and it landed in
+  `dist/__tests__/`. The build now excludes `**/__tests__/**` entirely; tests
+  still run via `ts-jest` independently of the build.
+
+### Added
+
+- **`scripts/check-pack.cjs` publish-hygiene gate.** Runs `npm pack --dry-run`
+  for every publishable package and fails if any source map, `__tests__`
+  directory, test helper, or test file would be published. Wired into CI and as
+  a required gate in the release workflow before publish (`pnpm check:pack`).
+
 ## [1.0.5] - 2026-06-11
 
 ### Fixed (false positives)

@@ -9,6 +9,7 @@
     "test:coverage": "pnpm -r --workspace-concurrency=1 run test:coverage",
     "gen:rules-doc": "node scripts/gen-rules-doc.cjs",
     "lint": "eslint .",
+    "check:pack": "node scripts/check-pack.cjs",
     "prepublishOnly": "pnpm build",
     "release": "pnpm publish -r --access public",
     "bench": "node bench/run.cjs"

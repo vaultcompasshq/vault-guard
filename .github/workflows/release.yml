@@ -38,6 +38,9 @@ jobs:
     - name: Run tests with coverage
       run: pnpm test:coverage
 
+    - name: Verify publish hygiene (no source maps or test artifacts in tarballs)
+      run: pnpm check:pack
+
     # npm Trusted Publishing (OIDC): no NPM_TOKEN; auth via id-token: write +
     # trusted publisher on each @vaultcompass/* package (workflow: release.yml).
     # Requires npm CLI >= 11.5.1 (Node >= 22.14.0). Provenance is automatic.
