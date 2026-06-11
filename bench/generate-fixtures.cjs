@@ -56,11 +56,45 @@ const fixtures = [
   },
   {
     file: 'openai.ts',
-    comment: 'True positive: OpenAI API key (sk-proj-)',
+    comment: 'True positive: OpenAI project key (sk-proj-…T3BlbkFJ…)',
     lines: (j) => [
       `// ${j.comment}`,
+      // Split at the sk-proj- prefix boundary so no single string literal matches the
+      // full pattern (sk-proj- alone is not a secret; the watermark+suffix fragment does
+      // not start with the required prefix). The joined value is a real-shaped key.
       `const OPENAI_KEY = ${JSON.stringify(
-        ['sk-proj-', 'AbCdEfGhIjKl', 'MnOpQrStUvWx', 'YzAbCdEfGhIjKl', 'MnOpQrStUvWxYzAbCd'].join(''),
+        ['sk-proj-', 'aB3cD4eF5gH6iJ7kLmNoPqRsTuVw' + 'T3BlbkFJ' + 'xYz0123456789abcdefghijklmno'].join(''),
+      )};`,
+    ],
+  },
+  {
+    file: 'openai-svcacct.ts',
+    comment: 'True positive: OpenAI service-account key (sk-svcacct-…T3BlbkFJ…)',
+    lines: (j) => [
+      `// ${j.comment}`,
+      `const OPENAI_SVCACCT = ${JSON.stringify(
+        ['sk-svcacct-', 'aB3cD4eF5gH6iJ7kLmNoPqRsTuVw' + 'T3BlbkFJ' + 'xYz0123456789abcdefghijklmno'].join(''),
+      )};`,
+    ],
+  },
+  {
+    file: 'openai-admin.ts',
+    comment: 'True positive: OpenAI admin key (sk-admin-…T3BlbkFJ…)',
+    lines: (j) => [
+      `// ${j.comment}`,
+      `const OPENAI_ADMIN = ${JSON.stringify(
+        ['sk-admin-', 'aB3cD4eF5gH6iJ7kLmNoPqRsTuVw' + 'T3BlbkFJ' + 'xYz0123456789abcdefghijklmno'].join(''),
+      )};`,
+    ],
+  },
+  {
+    file: 'openai-legacy.ts',
+    comment: 'True positive: OpenAI legacy user key (sk-<20>T3BlbkFJ<20>)',
+    lines: (j) => [
+      `// ${j.comment}`,
+      // Legacy format: sk- + exactly 20 alphanum + T3BlbkFJ + 20 alphanum (48 chars total after sk-)
+      `const OPENAI_LEGACY = ${JSON.stringify(
+        ['sk-', 'aB3cD4eF5gH6iJ7kLmNo' + 'T3BlbkFJ' + 'PqRsTuVwXyZ012345678'].join(''),
       )};`,
     ],
   },

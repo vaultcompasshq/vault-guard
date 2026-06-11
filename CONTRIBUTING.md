@@ -1,77 +1,83 @@
-# Contributing
+# Contributing to vault-guard
 
-## Setup
+## Release train
+
+All four published packages (`@vaultcompass/vault-guard`, `-core`, `-mcp`,
+`-telemetry`) are versioned in lockstep via [changesets](https://github.com/changesets/changesets).
+
+### Rules
+
+- One **minor** release every 2-4 weeks.
+- **Patches** only for security fixes or correctness regressions — not features.
+- No ad-hoc edits to `version` in `package.json`. Use the train.
+- **Do not reset to 0.x.** Stability comes from cadence, not renumbering.
+
+### Every change needs a changeset
 
 ```bash
-git clone https://github.com/vaultcompasshq/vault-guard.git
-cd vault-guard
-pnpm install
-pnpm build
-pnpm test
+pnpm changeset   # interactive; picks minor/patch + writes a .changeset/*.md
 ```
 
-**Requirements:**
-- Node.js >= 18.0.0
-- pnpm >= 9.0.0
+Use Conventional Commit-style summaries: `fix(proxy): ...`, `feat(core): ...`.
 
-## Project Structure
+### Cutting a release
 
-```
-packages/
-├── core/          # Secret scanning, token counting
-│   └── src/
-│       ├── scanners/
-│       ├── types.ts
-│       └── utils/
-└── cli/           # CLI interface
-    └── src/
-        ├── commands/
-        └── utils/
+```bash
+# 1. Accumulate changesets from all merged work, then:
+pnpm version-packages    # bumps all 4 packages + writes CHANGELOG entries
+git add -A && git commit -m "chore(release): vX.Y.Z"
+git tag -a vX.Y.Z -m "vX.Y.Z: <one-line summary>"
+git push origin main && git push origin vX.Y.Z
+# The release.yml workflow publishes @latest automatically.
 ```
 
-## Development
+### Soaking risky work on @next
 
-Run tests: `pnpm test`
-Lint: `pnpm lint`
-Build: `pnpm build`
-
-## Adding New Secret Patterns
-
-Edit `packages/core/src/scanners/secret-scanner.ts`:
-
-```typescript
-['service-name', { regex: /pattern/g, severity: 'critical' }]
+```bash
+pnpm release:next   # publishes to @next dist-tag; does not touch @latest
 ```
 
-## Commit Format
+Promote to `@latest` by tagging once the soak passes.
 
-```
-type(scope): description
+## Pre-commit hook
 
-feat(core): add Stripe key detection
-fix(cli): handle missing directory
-docs: update README
-```
+The project installs a `vault-guard` pre-commit hook that scans staged files.
+It requires the global `vault-guard` binary:
 
-## Testing
-
-Write tests in `__tests__/` directories next to source files.
-
-```typescript
-describe('Feature', () => {
-  it('should do something', () => {
-    expect(result).toBe(expected);
-  });
-});
+```bash
+npm i -g @vaultcompass/vault-guard
 ```
 
-The monorepo currently runs **253** Jest tests across published packages (`pnpm -r test` shows the exact total on your branch).
+If a clean rebuild drops the exec bit, run:
 
-## PR Process
+```bash
+chmod +x packages/cli/dist/cli-entry.js
+```
 
-1. Fork & branch
-2. Make changes
-3. Ensure tests pass
-4. Submit PR
+Never bypass with `--no-verify`.
 
-Keep PRs focused. Include tests for new features.
+## CI gates (must pass before merge)
+
+- `test (22.x)` — full test suite + coverage
+- `lint` — ESLint
+- `bench` — precision/recall regression gate (`node bench/run.cjs --assert`)
+- `check:pack` — no source maps or test artifacts in any tarball
+
+Run the full suite locally before pushing:
+
+```bash
+pnpm install && pnpm build && pnpm check:pack
+node scripts/gen-rules-doc.cjs && git diff --exit-code docs/RULES.md
+pnpm lint && pnpm test && node bench/run.cjs --assert
+```
+
+## Out of scope (separate plans)
+
+Do not start these without a dedicated plan signed off by the repo owner:
+
+- Git history scanning
+- Active AI-key verification (`--verify`)
+- MCP deny-gate
+- `.claude/` `.cursor/` artifact detection rule
+- `init` autowire + GitHub Action Marketplace
+- TypeScript 6 upgrade

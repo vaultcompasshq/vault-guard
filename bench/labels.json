@@ -1,7 +1,11 @@
 {
   "_comment": "shouldDetect:true = at least one finding expected. severity:null = any severity accepted.",
   "fixtures/secrets/anthropic.ts":    { "shouldDetect": true,  "note": "Anthropic API key" },
-  "fixtures/secrets/openai.ts":       { "shouldDetect": true,  "note": "OpenAI API key" },
+  "fixtures/secrets/openai.ts":       { "shouldDetect": true,  "note": "OpenAI project key (sk-proj-…T3BlbkFJ…)" },
+  "fixtures/secrets/openai-svcacct.ts": { "shouldDetect": true,  "note": "OpenAI service-account key (sk-svcacct-…T3BlbkFJ…)" },
+  "fixtures/secrets/openai-admin.ts":   { "shouldDetect": true,  "note": "OpenAI admin key (sk-admin-…T3BlbkFJ…)" },
+  "fixtures/secrets/openai-legacy.ts":  { "shouldDetect": true,  "note": "OpenAI legacy user key (sk-<20>T3BlbkFJ<20>)" },
+  "fixtures/clean/openai-sk-nomark.ts": { "shouldDetect": false, "note": "sk- prefixed identifiers without T3BlbkFJ watermark (OpenAI FP guard)" },
   "fixtures/secrets/aws.ts":          { "shouldDetect": true,  "note": "AWS access key + secret" },
   "fixtures/secrets/github.ts":       { "shouldDetect": true,  "note": "GitHub classic + fine-grained PAT" },
   "fixtures/secrets/stripe.ts":       { "shouldDetect": true,  "note": "Stripe live key" },

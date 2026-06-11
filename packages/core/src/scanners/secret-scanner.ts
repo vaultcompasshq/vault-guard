@@ -58,9 +58,17 @@ interface PatternEntry {
  */
 const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // --- AI / ML providers ---
-  ['anthropic',      { regex: /sk-ant-[a-zA-Z0-9_-]{20,}/g,                                    severity: 'critical' }],
-  ['openai',         { regex: /sk-[a-zA-Z0-9]{48}/g,                                            severity: 'critical' }],
-  ['openai-project', { regex: /sk-proj-[a-zA-Z0-9_-]{48,}/g,                                   severity: 'critical' }],
+  ['anthropic',         { regex: /sk-ant-[a-zA-Z0-9_-]{20,}/g,                                                         severity: 'critical' }],
+  // OpenAI key formats. All modern keys embed the T3BlbkFJ watermark (base64 "OpenAI").
+  // Specific prefixes are ordered first so they get their own rule title (blast radius differs).
+  // The legacy sk- catch-all uses the watermark + token-boundary so it does not shadow the
+  // prefixed rules and avoids matching short benign identifiers.
+  ['openai-project',    { regex: /sk-proj-[A-Za-z0-9_-]{20,100}T3BlbkFJ[A-Za-z0-9_-]{20,100}/g,                       severity: 'critical' }],
+  ['openai-svcacct',    { regex: /sk-svcacct-[A-Za-z0-9_-]{20,100}T3BlbkFJ[A-Za-z0-9_-]{20,100}/g,                    severity: 'critical' }],
+  ['openai-admin',      { regex: /sk-admin-[A-Za-z0-9_-]{20,100}T3BlbkFJ[A-Za-z0-9_-]{20,100}/g,                      severity: 'critical' }],
+  // Legacy user key (sk-<20>T3BlbkFJ<20+>). Token-boundary anchored so benign sk- prefixes
+  // in identifiers (e.g. sk-None-short) don't fire without the watermark present.
+  ['openai',            { regex: /(?<![A-Za-z0-9_-])sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20,}/g,                    severity: 'critical' }],
   ['huggingface',    { regex: /hf_[a-zA-Z0-9]{34,}/g,                                           severity: 'critical' }],
   ['replicate',      { regex: /r8_[a-zA-Z0-9]{32}/g,                                            severity: 'critical' }],
 
