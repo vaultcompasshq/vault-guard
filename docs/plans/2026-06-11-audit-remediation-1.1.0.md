@@ -1,7 +1,6 @@
 # Plan: Audit remediation → first "release train" (1.1.0)
 
-**Status:** SHIPPED — tag `v1.1.0`, npm `@latest` on all four packages (2026-06-11).  
-**Handoff:** `docs/sessions/2026-06-11-external-audit-handoff.md` (outside-in audit snapshot).
+**Status:** SHIPPED — tag `v1.1.0`, npm `@latest` on all four packages (2026-06-11).
 
 **Author:** Opus (security architect) · **Implementer:** Sonnet (lead dev)  
 **Date:** 2026-06-11 · **Repo:** `vault-guard` (pnpm monorepo, branch `main`)

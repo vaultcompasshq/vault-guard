@@ -28,4 +28,5 @@ docs/ISSUE_TRIAGE.md
 # Local-only working notes (never commit).
 TODO.local.md
 *.local.md
+docs/sessions/
 audit.md
