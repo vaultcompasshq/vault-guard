@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Document OpenAI pattern trade-off: pre-watermark bare `sk-<N>` keys intentionally
+  not matched (comment in `secret-scanner.ts`; rides next release train).
+
+## [1.1.0] - 2026-06-11
+
+### Fixed
+
+- **Streaming proxy telemetry records real tokens and cost.** The stream path now
+  tees a bounded copy of the Anthropic SSE body (1 MB cap) and parses
+  `message_start` / `message_delta` usage events via `proxy-sse.ts`. Cost is
+  auto-computed by `TelemetryStore` when `estCostUsd` is omitted. Overflow uses
+  source `proxy-stream-overflow`. Fixes the High-severity audit finding where
+  streaming always logged `inputTokens: 0, outputTokens: 0`.
+- **OpenAI key detection broadened for current formats.** Replaced fixed
+  `sk-[48]` with `T3BlbkFJ` watermark rules: `openai-project`, `openai-svcacct`,
+  `openai-admin`, and legacy `openai` (token-boundary + watermark). Recall tests
+  and bench fixtures added; corpus 25 → 29 files, precision/recall 100%.
+
+### Added
+
+- **Release train:** `@changesets/cli`, lockstep versioning for all four published
+  packages, `pnpm version-packages` / `pnpm release:next`, `CONTRIBUTING.md`
+  cadence policy (one minor every 2–4 weeks).
+- `.vault-guard.json` — ignore `fixtures/**`, `bench/fixtures/**`, `**/__tests__/**`
+  for pre-commit scans.
+
 ## [1.0.6] - 2026-06-11
 
 ### Fixed (publish hygiene)
