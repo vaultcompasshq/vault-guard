@@ -4,7 +4,18 @@
 **Snapshot:** `@vaultcompass/vault-guard@1.1.0` (all four published packages lockstep).  
 **Repo:** `vaultcompasshq/vault-guard` · branch `main` · tag `v1.1.0` published.
 
-Read this file first in a new session. Personal ops backlog lives in `TODO.local.md` (gitignored).
+## How to resume (owner preference)
+
+No chat paste required. Each session:
+
+1. `git pull origin main` in `vault-guard`
+2. Read this file + `TODO.local.md` (gitignored personal backlog)
+3. **Verify what's still relevant** against live state:
+   - `npm view @vaultcompass/vault-guard version` (all four packages)
+   - `gh pr list` (dependabot / open work)
+   - `git log --oneline -10` (what landed since this snapshot)
+   - `CHANGELOG.md` `[Unreleased]` (unshipped commits on main)
+4. Treat sections below as **historical context** until step 3 confirms otherwise
 
 ---
 
@@ -106,13 +117,20 @@ pnpm build && pnpm check:pack && pnpm lint && pnpm test && node bench/run.cjs --
 
 ## Open backlog (prioritized)
 
-### Soon (low risk, high hygiene)
+*Relevance check 2026-06-11 after `git pull`: still accurate unless noted.*
 
-- Re-run OSS + Projects corpus scan against **@1.1.0** (last full report was @1.0.2: `~/vg-oss-broad/scan-v102-npm.txt`)
-- Sync root `CHANGELOG.md` if package changelogs drift (changesets write per-package only)
+### Done since this snapshot was written
+
+- Root `CHANGELOG.md` synced for 1.1.0 (`d83fe49`)
+- Dependabot **#48** codeql-action, **#45** @types/node, **#47** esbuild — merged
+
+### Still relevant — soon
+
+- Re-run OSS + Projects corpus scan against **@1.1.0** (last full report @1.0.2: `~/vg-oss-broad/scan-v102-npm.txt`)
+- Ship or batch **`cf1aec9`** (OpenAI pattern comment-only; in `[Unreleased]` on main)
 - Dependabot **#46** `ignore` 5→7 — runtime, two majors; read changelog + gitignore tests before merge (CI green ≠ safe)
 
-### Deferred dependabot
+### Still relevant — deferred dependabot
 
 - **#28** ESLint 10 — lint fails on PR
 - **#27** TypeScript 6 — known pnpm breakage
@@ -152,8 +170,6 @@ pnpm build && pnpm check:pack && pnpm lint && pnpm test && node bench/run.cjs --
 
 ---
 
-## Suggested next session prompt (optional)
+## Suggested agent behavior
 
-> Read `docs/sessions/2026-06-11-external-audit-handoff.md` and `TODO.local.md`. We're on 1.1.0. Pick the highest-leverage backlog item or run the @1.1.0 OSS corpus rescan.
-
-No paste required if the agent discovers this file via `docs/sessions/` or repo search.
+Pull latest, read this file, diff against live `npm` / `gh pr list` / `git log`, then work only what is **still relevant**. Do not replay completed audit remediation or re-merge closed dependabot PRs.
