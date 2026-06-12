@@ -59,10 +59,15 @@ interface PatternEntry {
 const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // --- AI / ML providers ---
   ['anthropic',         { regex: /sk-ant-[a-zA-Z0-9_-]{20,}/g,                                                         severity: 'critical' }],
-  // OpenAI key formats. All modern keys embed the T3BlbkFJ watermark (base64 "OpenAI").
+  // OpenAI key formats. All current keys embed the T3BlbkFJ watermark (base64 "OpenAI").
   // Specific prefixes are ordered first so they get their own rule title (blast radius differs).
   // The legacy sk- catch-all uses the watermark + token-boundary so it does not shadow the
   // prefixed rules and avoids matching short benign identifiers.
+  //
+  // DELIBERATE: we do NOT match the pre-2023 bare `sk-<48 alphanumerics>` format (no watermark).
+  // That pattern fires on any base64/hex blob following `sk-` and floods false positives; the
+  // watermark is the only reliable discriminator, matching the gitleaks/trufflehog consensus.
+  // Do not re-add a bare `sk-[A-Za-z0-9]{N,}` rule without an entropy gate and a bench FP guard.
   ['openai-project',    { regex: /sk-proj-[A-Za-z0-9_-]{20,100}T3BlbkFJ[A-Za-z0-9_-]{20,100}/g,                       severity: 'critical' }],
   ['openai-svcacct',    { regex: /sk-svcacct-[A-Za-z0-9_-]{20,100}T3BlbkFJ[A-Za-z0-9_-]{20,100}/g,                    severity: 'critical' }],
   ['openai-admin',      { regex: /sk-admin-[A-Za-z0-9_-]{20,100}T3BlbkFJ[A-Za-z0-9_-]{20,100}/g,                      severity: 'critical' }],
