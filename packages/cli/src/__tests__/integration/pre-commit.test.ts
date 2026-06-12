@@ -66,9 +66,12 @@ describe('Pre-commit Hook Integration', () => {
   it('should handle multiple secrets in same file', () => {
     // Keys must satisfy minimum length requirements for each vendor pattern.
     const stripeTest = `${'sk'}_${'test'}_51AbCdEfGhIjKlMnOpQrStUvWx`;
+    // Legacy OpenAI key: sk- + 20 alphanum + T3BlbkFJ watermark + 20 alphanum.
+    // Split across array items so this source file doesn't trigger the pre-commit hook.
+    const openaiKeyValue = ['sk-', 'AbCdEfGhIjKlMnOpQrSt', 'T3BlbkFJ', 'UvWxYz0123456789abcd'].join('');
     fs.writeFileSync(testFile, [
       `const anthropicKey = 'sk-ant-api03-fakekeyfortest1234567890';`,
-      `const openaiKey = 'sk-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKl';`,
+      `const openaiKey = '${openaiKeyValue}';`,
       `const stripeKey = '${stripeTest}';`,
     ].join('\n'));
 

@@ -2,6 +2,7 @@ import * as http from 'http';
 import * as https from 'https';
 import path from 'path';
 import { TelemetryStore } from '@vaultcompass/vault-guard-telemetry';
+import { parseAnthropicSseUsage } from './proxy-sse';
 
 /**
  * Bound inbound request buffering. 32 MB is a generous ceiling for
@@ -321,19 +322,57 @@ async function handleRequest(
       res.writeHead(pres.statusCode ?? 502, headers);
 
       if (stream) {
+        // Pipe to client immediately (bounded by the OS pipe, not us). Tee a
+        // bounded copy purely to parse SSE usage events after the stream ends.
+        // On tee overflow the client still receives the full stream; we record
+        // a distinct source so missing usage is visible in telemetry.
         pres.pipe(res);
+
+        const teeChunks: Buffer[] = [];
+        let teeLen = 0;
+        let teeAbandoned = false;
+
+        pres.on('data', chunk => {
+          if (teeAbandoned) return;
+          const b = chunk as Buffer;
+          teeLen += b.length;
+          if (teeLen > MAX_TEE_BYTES) {
+            teeAbandoned = true;
+            teeChunks.length = 0;
+            return;
+          }
+          teeChunks.push(b);
+        });
+
         pres.on('end', () => {
+          const model = typeof bodyJson.model === 'string' ? bodyJson.model : null;
+          if (teeAbandoned) {
+            store.recordUsage({
+              provider: 'anthropic',
+              model,
+              cwd,
+              inputTokens: 0,
+              outputTokens: 0,
+              source: 'proxy-stream-overflow',
+            });
+            resolve();
+            return;
+          }
+          const usage = parseAnthropicSseUsage(
+            Buffer.concat(teeChunks).toString('utf8'),
+            model,
+          );
           store.recordUsage({
             provider: 'anthropic',
-            model: typeof bodyJson.model === 'string' ? bodyJson.model : null,
+            model: usage.model,
             cwd,
-            inputTokens: 0,
-            outputTokens: 0,
-            estCostUsd: 0,
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
             source: 'proxy-stream',
           });
           resolve();
         });
+
         pres.on('error', () => resolve());
         return;
       }

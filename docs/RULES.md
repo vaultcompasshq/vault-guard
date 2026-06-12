@@ -19,8 +19,10 @@ Patterns with a `Min entropy` value drop matches whose Shannon entropy falls bel
 | ID | Severity | Min entropy | Regex flags | Regex source |
 | --- | --- | --- | --- | --- |
 | `anthropic` | critical | - | `g` | `sk-ant-[a-zA-Z0-9_-]{20,}` |
-| `openai` | critical | - | `g` | `sk-[a-zA-Z0-9]{48}` |
-| `openai-project` | critical | - | `g` | `sk-proj-[a-zA-Z0-9_-]{48,}` |
+| `openai-project` | critical | - | `g` | `sk-proj-[A-Za-z0-9_-]{20,100}T3BlbkFJ[A-Za-z0-9_-]{20,100}` |
+| `openai-svcacct` | critical | - | `g` | `sk-svcacct-[A-Za-z0-9_-]{20,100}T3BlbkFJ[A-Za-z0-9_-]{20,100}` |
+| `openai-admin` | critical | - | `g` | `sk-admin-[A-Za-z0-9_-]{20,100}T3BlbkFJ[A-Za-z0-9_-]{20,100}` |
+| `openai` | critical | - | `g` | `(?<![A-Za-z0-9_-])sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20,}` |
 | `huggingface` | critical | - | `g` | `hf_[a-zA-Z0-9]{34,}` |
 | `replicate` | critical | - | `g` | `r8_[a-zA-Z0-9]{32}` |
 | `stripe` | critical | - | `g` | `sk_live_[a-zA-Z0-9]{24,}` |

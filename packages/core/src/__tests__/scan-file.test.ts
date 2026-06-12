@@ -8,8 +8,8 @@ function tmp(name: string): string {
   return path.join(os.tmpdir(), `vg-scanfile-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
 }
 
-/** 48 hex chars after `sk-` — matches built-in OpenAI pattern. */
-const OPENAI_LIKE = `sk-${'a'.repeat(48)}`;
+/** Legacy OpenAI key format: sk-<20 alphanum>T3BlbkFJ<20 alphanum> — matches built-in openai pattern. */
+const OPENAI_LIKE = `sk-${'a'.repeat(20)}T3BlbkFJ${'b'.repeat(20)}`;
 
 describe('scanTextFileAsync', () => {
   it('reads small files in one shot', async () => {

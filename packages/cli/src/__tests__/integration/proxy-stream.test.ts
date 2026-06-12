@@ -136,12 +136,17 @@ describe('proxy response streaming + tee behaviour', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Streaming SSE response
+  // Streaming SSE response — parses real usage tokens
   // -------------------------------------------------------------------------
 
-  it('forwards streaming response byte-for-byte and records proxy-stream telemetry', async () => {
+  it('forwards streaming response byte-for-byte and parses input/output tokens', async () => {
     const sseBody =
-      'event: message_start\ndata: {"type":"message_start"}\n\nevent: message_stop\ndata: {}\n\n';
+      'event: message_start\n' +
+      'data: {"type":"message_start","message":{"model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":1200,"output_tokens":1}}}\n\n' +
+      'event: message_delta\n' +
+      'data: {"type":"message_delta","usage":{"output_tokens":350}}\n\n' +
+      'event: message_stop\n' +
+      'data: {"type":"message_stop"}\n\n';
     setupUpstreamMock(mockHttps, {
       statusCode: 200,
       contentType: 'text/event-stream',
@@ -165,6 +170,40 @@ describe('proxy response streaming + tee behaviour', () => {
       await new Promise(r => setTimeout(r, 50));
       const lastCall = recordSpy.mock.calls.at(-1)?.[0];
       expect(lastCall?.source).toBe('proxy-stream');
+      expect(lastCall?.inputTokens).toBe(1200);
+      expect(lastCall?.outputTokens).toBe(350);
+      expect(lastCall?.model).toBe('claude-3-5-sonnet-20241022');
+    } finally {
+      recordSpy.mockRestore();
+      await handle.shutdown('test-cleanup');
+    }
+  });
+
+  it('records proxy-stream-overflow when streaming response exceeds tee cap but client gets full body', async () => {
+    const bigBody = Buffer.alloc(2 * 1024 * 1024, 'x');
+    setupUpstreamMock(mockHttps, {
+      statusCode: 200,
+      contentType: 'text/event-stream',
+      body: bigBody,
+    });
+
+    const recordSpy = jest.spyOn(TelemetryStore.prototype, 'recordUsage');
+    const handle = await proxyCommand({ listen: '127.0.0.1:0' });
+    const { port } = handle.server.address() as { port: number };
+
+    try {
+      const result = await postToProxy(
+        port,
+        '/v1/messages',
+        { model: 'claude-3', stream: true },
+        { 'x-api-key': 'k' },
+      );
+      expect(result.status).toBe(200);
+      expect(result.body.length).toBe(bigBody.length);
+
+      await new Promise(r => setTimeout(r, 50));
+      const lastCall = recordSpy.mock.calls.at(-1)?.[0];
+      expect(lastCall?.source).toBe('proxy-stream-overflow');
       expect(lastCall?.inputTokens).toBe(0);
     } finally {
       recordSpy.mockRestore();

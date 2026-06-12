@@ -1,10 +1,9 @@
 {
   "ignore": {
-    "paths": [
-      "packages/**/__tests__/**",
-      "packages/**/src/__tests__/**",
+    "patterns": [
       "fixtures/**",
-      "bench/fixtures/**"
+      "bench/fixtures/**",
+      "**/__tests__/**"
     ]
   }
 }

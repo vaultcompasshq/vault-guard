@@ -1,0 +1,17 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.0.0/schema.json",
+  "changelog": "@changesets/cli/changelog",
+  "commit": false,
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "fixed": [
+    [
+      "@vaultcompass/vault-guard",
+      "@vaultcompass/vault-guard-core",
+      "@vaultcompass/vault-guard-mcp",
+      "@vaultcompass/vault-guard-telemetry"
+    ]
+  ],
+  "ignore": []
+}

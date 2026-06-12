@@ -1,7 +1,7 @@
 {
   "name": "@vaultcompass/vault-guard-monorepo",
   "version": "1.0.0",
-  "description": "Security and optimization layer for AI-native coding (workspace root \u2014 not published)",
+  "description": "Security and optimization layer for AI-native coding (workspace root — not published)",
   "private": true,
   "scripts": {
     "build": "pnpm -r build",
@@ -12,7 +12,10 @@
     "check:pack": "node scripts/check-pack.cjs",
     "prepublishOnly": "pnpm build",
     "release": "pnpm publish -r --access public",
-    "bench": "node bench/run.cjs"
+    "bench": "node bench/run.cjs",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release:next": "pnpm build && pnpm check:pack && pnpm publish -r --tag next --no-git-checks"
   },
   "keywords": [
     "cli",
@@ -26,14 +29,15 @@
   "author": "Vault & Compass LLC",
   "license": "MIT",
   "devDependencies": {
-    "@types/node": "^25.9.1",
+    "@changesets/cli": "^2.31.0",
+    "@eslint/js": "^9.0.0",
     "@types/jest": "^30.0.0",
-    "typescript": "^5.0.0",
-    "eslint": "^10.4.1",
+    "@types/node": "^25.9.1",
     "@typescript-eslint/eslint-plugin": "^8.60.1",
     "@typescript-eslint/parser": "^8.60.1",
-    "@eslint/js": "^9.0.0",
-    "jest": "^30.4.2"
+    "eslint": "^10.4.1",
+    "jest": "^30.4.2",
+    "typescript": "^5.0.0"
   },
   "packageManager": "pnpm@9.15.9",
   "pnpm": {
