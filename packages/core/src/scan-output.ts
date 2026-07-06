@@ -37,6 +37,8 @@ export interface JsonOutput {
       line: number;
       /** 0-based line-relative column. */
       column: number;
+      /** 0-based absolute UTF-16 offset in the scanned content. */
+      offset: number;
       /** Redacted form, e.g. `sk-a…(37c)`. Never the raw secret. */
       value: string;
       /** SHA-256 hex of `relPath|type|line|offset|matchLength` for baselines (no raw secret). */
@@ -98,6 +100,7 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
         severity: m.severity,
         line: m.line,
         column: m.column,
+        offset: m.offset,
         value: m.value,
         fingerprint: fingerprintForMatch(fpCwd, file, m),
       })),

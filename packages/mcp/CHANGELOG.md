@@ -1,5 +1,29 @@
 # @vaultcompass/vault-guard-mcp
 
+## 1.1.1
+
+### Patch Changes
+
+- c358939: Harden MCP workspace boundaries and fix reported scan locations.
+
+  MCP file, workspace, and token-report tools now reject paths outside the server
+  workspace, including traversal and symlink escapes. MCP workspace scans now also
+  honor `.vault-guard.json` ignore patterns.
+
+  Scan matches now distinguish display columns from absolute offsets, so CLI,
+  SARIF, editor diagnostics, and JSON output point at the right line-relative
+  column. JSON output now includes `matches[].offset` for callers that need an
+  absolute position. Baseline fingerprints remain compatible with existing
+  `.vault-guard.baseline.json` entries.
+
+  The GitHub Action now runs Node 22 and always emits `results-file` before
+  returning the scanner exit code. `vault-guard check` now delegates to the normal
+  scan path so config and baselines apply consistently.
+
+- Updated dependencies [c358939]
+  - @vaultcompass/vault-guard-core@1.1.1
+  - @vaultcompass/vault-guard-telemetry@1.1.1
+
 ## 1.1.0
 
 ### Minor Changes

@@ -96,7 +96,7 @@ export function buildCli(): Command {
   // Check command
   program
     .command('check')
-    .description('Quick check')
+    .description('Scan files with config and baselines')
     .argument('[files...]', 'Files to check')
     .action(async (files: string[]) => {
       const exitCode = await checkCommand(files);
