@@ -28,8 +28,9 @@ export async function scanWorkspaceDirectory(
   root: string,
   scanner: SecretScanner,
   concurrency = 10,
+  configIgnorePatterns: string[] = [],
 ): Promise<WorkspaceScanOutcome> {
-  const files = await getFilesToScanAsync(root, false);
+  const files = await getFilesToScanAsync(root, false, undefined, configIgnorePatterns);
   const results: FileScanResult[] = [];
   let filesScanned = 0;
   let bytesScanned = 0;

@@ -9,8 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **MCP workspace sandboxing.** `scan_file`, `scan_workspace`, and
+  `report_token_usage` now reject paths outside the MCP server workspace,
+  including traversal and symlink escapes. `scan_workspace` also honors
+  `.vault-guard.json` ignore paths/patterns.
+- **Accurate reported locations.** Scanner matches now separate line-relative
+  `column` from absolute `offset`, so CLI text, SARIF, and editor diagnostics
+  point at the correct column on multi-line files. Existing baselines remain
+  compatible because fingerprints continue to use the absolute position.
+- **`vault-guard check` parity.** `check` now delegates to the normal scan path,
+  so config, baselines, and diagnostics apply consistently with
+  `vault-guard scan`.
+- **GitHub Action reliability.** The composite action now runs Node 22 and
+  emits `results-file` even when the scanner exits non-zero due to findings.
 - Document OpenAI pattern trade-off: pre-watermark bare `sk-<N>` keys intentionally
   not matched (comment in `secret-scanner.ts`; rides next release train).
+
+### Fixed
+
+- Pin MCP's transitive `hono` dependency to a patched version so
+  `pnpm audit --audit-level high` passes.
+- Harden `scripts/check-pack.cjs` to use a temporary npm cache and show the real
+  npm error when pack fails.
+
+### Removed
+
+- Removed the tracked internal `docs/plans/` audit-remediation note; local plans
+  should stay out of the public repo.
 
 ## [1.1.0] - 2026-06-11
 

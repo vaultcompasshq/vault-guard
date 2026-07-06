@@ -588,6 +588,19 @@ describe('SecretScanner', () => {
     });
   });
 
+  describe('locations', () => {
+    it('reports a line-relative column and an absolute offset', () => {
+      const content = 'prefix\nconst k = "AKIA1234567890123456";';
+      fs.writeFileSync(testFilePath, content);
+      const matches = scanner.scan(testFilePath);
+      expect(matches[0]).toMatchObject({
+        line: 2,
+        column: 11,
+        offset: 18,
+      });
+    });
+  });
+
   describe('scanContent', () => {
     it('matches inline buffer same as file scan', () => {
       const text = `const k = "AKIA1234567890123456";`;

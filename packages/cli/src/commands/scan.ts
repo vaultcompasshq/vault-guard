@@ -29,11 +29,13 @@ interface ExtraPatternDiagnosticCtx {
 export type OutputFormat = 'text' | 'json' | 'sarif';
 
 export async function scanCommand(
-  targetPath: string,
+  targetPath: string | string[],
   format: OutputFormat = 'text',
   staged = false,
 ): Promise<number> {
   const cwd = process.cwd();
+  const targetPaths = Array.isArray(targetPath) ? targetPath : [targetPath];
+  const targetLabel = targetPaths.length === 1 ? targetPaths[0] : `${targetPaths.length} paths`;
 
   let config;
   try {
@@ -96,7 +98,7 @@ export async function scanCommand(
   }
 
   if (format === 'text' && !staged) {
-    console.log(chalk.blue('🔍 Scanning'), chalk.cyan(targetPath));
+    console.log(chalk.blue('🔍 Scanning'), chalk.cyan(targetLabel));
   }
 
   const stats = { filesScanned: 0, bytesScanned: 0 };
@@ -145,7 +147,7 @@ export async function scanCommand(
         configIgnorePatterns,
       });
     } else {
-      results = await scanFilesAsync([targetPath], scanner, {
+      results = await scanFilesAsync(targetPaths, scanner, {
         verbose: format === 'text',
         skipBinary: true,
         progress: format === 'text',

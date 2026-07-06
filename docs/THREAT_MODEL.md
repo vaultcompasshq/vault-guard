@@ -24,8 +24,8 @@ the majority of real-world incidents:
 2. **Secret leakage in CI.** SARIF output uploadable to GitHub Code Scanning,
    so detections appear inline on PRs without re-scanning.
 3. **Secret leakage in editor / AI prompts.** Optional MCP server exposes
-   `scan_for_secrets` so an LLM client can pre-scan content before sending it
-   upstream.
+   `scan_text`, `scan_file`, and `scan_workspace` so an LLM client can
+   pre-scan content before sending or applying it.
 4. **Pre-commit hook reliability across managers.** Native git hooks, husky,
    lefthook, and `pre-commit` framework integrations are tested and
    first-class.
@@ -100,8 +100,8 @@ boundary is the editor process.
 
 | Threat                                                | Mitigation                                                          |
 |-------------------------------------------------------|---------------------------------------------------------------------|
-| Sensitive context in `cwd` column (PII)               | Documented in [`PRIVACY.md`](./PRIVACY.md); hashing planned.         |
-| Unbounded growth                                      | 90-day rotation planned (`VG_TELEMETRY_RETENTION_DAYS`).             |
+| Sensitive context in `cwd` column (PII)               | HMAC-SHA256 digest with local salt; see [`PRIVACY.md`](./PRIVACY.md). |
+| Unbounded growth                                      | 90-day retention by default (`VG_TELEMETRY_RETENTION_DAYS`).          |
 | Loss of recent rows on crash                          | WAL mode; `closeAndCheckpoint()` runs on SIGINT/SIGTERM.             |
 
 ## Known limits

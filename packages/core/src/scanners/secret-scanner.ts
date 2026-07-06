@@ -404,7 +404,8 @@ export class SecretScanner {
           type,
           value: this.maskValue(fullMatch),
           line,
-          column: match.index,
+          column: match.index - (lineIndex[line - 1] ?? 0),
+          offset: match.index,
           matchLength: fullMatch.length,
           severity,
         });
@@ -502,18 +503,18 @@ export class SecretScanner {
     if (matches.length <= 1) return matches;
 
     // Sort by start offset so we can do a linear sweep.
-    const sorted = [...matches].sort((a, b) => a.column - b.column || a.line - b.line);
+    const sorted = [...matches].sort((a, b) => a.offset - b.offset || a.line - b.line);
     const kept: SecretMatch[] = [];
 
     for (const candidate of sorted) {
-      const cStart = candidate.column;
+      const cStart = candidate.offset;
       const cEnd = cStart + candidate.matchLength;
 
       let dominated = false;
 
       for (let i = kept.length - 1; i >= 0; i--) {
         const existing = kept[i];
-        const eStart = existing.column;
+        const eStart = existing.offset;
         const eEnd = eStart + existing.matchLength;
 
         // No possible overlap once we've passed the candidate start by more

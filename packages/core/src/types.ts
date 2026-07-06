@@ -5,9 +5,11 @@ export interface SecretMatch {
   value: string;
   /** 1-based line number in the file. */
   line: number;
-  /** 0-based absolute byte offset in the file (used for deduplication). */
+  /** 0-based line-relative UTF-16 column, for CLI/SARIF/editor display. */
   column: number;
-  /** Byte length of the original match (used for SARIF region output). */
+  /** 0-based absolute UTF-16 offset in the scanned content, for dedupe/baselines. */
+  offset: number;
+  /** UTF-16 code-unit length of the original match (used for SARIF region output). */
   matchLength: number;
   severity: 'critical' | 'high' | 'medium' | 'low';
 }

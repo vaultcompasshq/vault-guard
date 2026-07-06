@@ -12,6 +12,8 @@
  * Run after `pnpm build`. Wired into CI and the release workflow before publish.
  */
 const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const PACKAGES = ['core', 'cli', 'telemetry', 'mcp'];
@@ -25,6 +27,8 @@ const FORBIDDEN = [
 ];
 
 let failed = false;
+let packFailed = false;
+const npmCache = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-guard-npm-pack-'));
 
 for (const name of PACKAGES) {
   const dir = path.join(__dirname, '..', 'packages', name);
@@ -33,12 +37,22 @@ for (const name of PACKAGES) {
     const out = execFileSync('npm', ['pack', '--dry-run', '--json'], {
       cwd: dir,
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        npm_config_cache: npmCache,
+        npm_config_update_notifier: 'false',
+      },
     });
     parsed = JSON.parse(out);
   } catch (e) {
     console.error(`check-pack: failed to pack ${name}: ${e.message}`);
+    const stdout = typeof e.stdout === 'string' ? e.stdout : e.stdout?.toString('utf8');
+    const stderr = typeof e.stderr === 'string' ? e.stderr : e.stderr?.toString('utf8');
+    if (stdout?.trim()) console.error(stdout.trim());
+    if (stderr?.trim()) console.error(stderr.trim());
     failed = true;
+    packFailed = true;
     continue;
   }
 
@@ -59,7 +73,21 @@ for (const name of PACKAGES) {
 }
 
 if (failed) {
-  console.error('\ncheck-pack: forbidden artifacts found. Fix tsconfig (sourceMap/declarationMap, exclude __tests__) before publishing.');
+  try {
+    fs.rmSync(npmCache, { recursive: true, force: true });
+  } catch {
+    /* best-effort cleanup */
+  }
+  if (packFailed) {
+    console.error('\ncheck-pack: npm pack failed. See the npm output above.');
+  } else {
+    console.error('\ncheck-pack: forbidden artifacts found. Fix tsconfig (sourceMap/declarationMap, exclude __tests__) before publishing.');
+  }
   process.exit(1);
+}
+try {
+  fs.rmSync(npmCache, { recursive: true, force: true });
+} catch {
+  /* best-effort cleanup */
 }
 console.log('\ncheck-pack: all publishable packages are clean.');
