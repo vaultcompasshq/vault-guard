@@ -16,6 +16,6 @@ function relativeFingerprintKey(file: string, cwd: string | null): string {
  */
 export function fingerprintForMatch(cwd: string | null, fileAbs: string, m: SecretMatch): string {
   const relKey = relativeFingerprintKey(fileAbs, cwd);
-  const payload = `${relKey}|${m.type}|${m.line}|${m.column}|${m.matchLength}`;
+  const payload = `${relKey}|${m.type}|${m.line}|${m.offset}|${m.matchLength}`;
   return createHash('sha256').update(payload, 'utf8').digest('hex');
 }

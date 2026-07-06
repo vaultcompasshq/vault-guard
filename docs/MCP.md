@@ -4,6 +4,9 @@ The package **`@vaultcompass/vault-guard-mcp`** exposes a stdio MCP server for e
 
 ## Tools
 
+File and directory paths are resolved under the MCP server's launch directory.
+Paths outside that workspace are rejected.
+
 | Tool | Purpose |
 |------|---------|
 | `scan_workspace` | Scan a directory (`.gitignore`-aware). Returns `json`, `sarif`, and `summary`. |

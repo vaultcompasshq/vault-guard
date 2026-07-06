@@ -2,16 +2,21 @@
 
 ## Overview
 
-Vault Guard is a monorepo with two packages:
+Vault Guard is a monorepo with four publishable packages and one developer
+extension package:
 
 - **`@vaultcompass/vault-guard-core`**: Scanning engine
 - **`@vaultcompass/vault-guard`**: CLI interface
+- **`@vaultcompass/vault-guard-mcp`**: local MCP server
+- **`@vaultcompass/vault-guard-telemetry`**: local SQLite telemetry store
+- **`vault-guard-vscode`**: unpublished VS Code / Cursor extension prototype
 
 ## Core Components
 
 ### SecretScanner
 
-Regex-based pattern matching for 75+ service API keys.
+Regex-based pattern matching for vendor-specific keys, connection strings,
+private keys, JWTs, and entropy-gated generic assignments.
 
 ```typescript
 const scanner = new SecretScanner();

@@ -34,7 +34,7 @@ function refreshDocument(doc: vscode.TextDocument): void {
   if (doc.uri.scheme !== 'file') return;
   const dir = path.dirname(doc.uri.fsPath);
   const scanner = new SecretScanner(safeLoadConfig(dir));
-  const matches = scanner.scanContent(doc.getText());
+  const matches = scanner.scanContent(doc.getText(), { filePath: doc.uri.fsPath });
   const diags: vscode.Diagnostic[] = matches.map(m => {
     const lineIdx = Math.max(0, m.line - 1);
     const line = doc.lineAt(lineIdx);
@@ -104,13 +104,14 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('vaultGuard.copyAllowListSnippet', async () => {
       const snippet =
-        '# .vault-guard.yml — tune or ignore patterns/paths (see Vault Guard docs)\n' +
-        'version: 1\n' +
-        'paths:\n' +
-        '  ignore: []\n' +
-        'patterns: {}\n';
+        '{\n' +
+        '  "ignore": {\n' +
+        '    "paths": []\n' +
+        '  },\n' +
+        '  "severity_overrides": {}\n' +
+        '}\n';
       await vscode.env.clipboard.writeText(snippet);
-      void vscode.window.showInformationMessage('Copied .vault-guard.yml starter snippet to clipboard.');
+      void vscode.window.showInformationMessage('Copied .vault-guard.json starter snippet to clipboard.');
     }),
   );
 }

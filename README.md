@@ -12,7 +12,7 @@ npm install -g @vaultcompass/vault-guard
 
 AI coding agents (Cursor, Claude Code, Copilot, …) are fast, and they routinely paste API keys, connection strings, and tokens directly into your editor. Vault Guard catches them before they reach a commit or a prompt:
 
-- **MCP server**: scans every proposed edit inside Cursor or Claude Code before it applies. One config line.
+- **MCP server**: gives Cursor, Claude Code, and other MCP clients local tools to scan proposed edits, files, and workspaces before changes are applied.
 - **Pre-commit hook**: blocks staged files containing secrets across all hook managers (native, Husky, Lefthook, pre-commit).
 - **GitHub Action**: integrates with Code Scanning via SARIF; one workflow step.
 
@@ -93,17 +93,17 @@ Full rule reference with severities: **[docs/RULES.md](./docs/RULES.md)**.
 
 Vault Guard is **not** a history miner. It targets fast working-tree checks (the IDE, pre-commit gate, and CI on the checkout) and is designed to be composed with dedicated history scanners, not to replace them.
 
-| Feature | Vault Guard | Gitleaks | TruffleHog | detect-secrets |
-|---|---|---|---|---|
-| Working-tree / staged-file scan | Yes | Yes | Yes | Yes |
-| Git history mining | No | Yes | Yes | No |
-| MCP server (AI editor integration) | **Yes** | No | No | No |
-| GitHub Action (SARIF output) | Yes | Yes | No | No |
-| Pre-commit hook installer | Yes | Partial | No | Yes |
-| Entropy gating on generic patterns | Yes | Partial | Yes | Yes |
-| Config ignore paths / baselines | Yes | Yes | No | Yes |
-| Opt-in local token telemetry (Anthropic) | Yes | No | No | No |
-| Local-only (no remote calls) | Yes | Yes | Yes | Yes |
+| Feature | Vault Guard | Gitleaks | TruffleHog | detect-secrets | GitHub Secret Protection | GitGuardian |
+|---|---|---|---|---|---|---|
+| Working-tree / staged-file scan | Yes | Yes | Yes | Yes | Push/PR focused | Yes |
+| Git history mining | No | Yes | Yes | No | Hosted scanning | Yes |
+| MCP / AI-agent scanning | Local MCP | No | No | No | Yes | Yes |
+| GitHub Action (SARIF output) | Yes | Yes | No | No | Native platform | Yes |
+| Pre-commit hook installer | Yes | Partial | No | Yes | No | Yes |
+| Entropy gating on generic patterns | Yes | Partial | Yes | Yes | Provider-pattern focused | Yes |
+| Config ignore paths / baselines | Yes | Yes | No | Yes | Platform-managed | Yes |
+| Opt-in local token telemetry (Anthropic) | Yes | No | No | No | No | No |
+| Local-only / no account required | Yes | Yes | Yes | Yes | No | No |
 
 For credentials in Git history use **[Gitleaks](https://github.com/gitleaks/gitleaks)** or **[TruffleHog](https://github.com/trufflesecurity/trufflehog)** alongside Vault Guard. They are complementary, not competing.
 

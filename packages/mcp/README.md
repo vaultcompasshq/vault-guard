@@ -29,6 +29,9 @@ Restart the editor. Vault Guard tools are now available to your AI agent.
 
 ## Tools
 
+File and directory paths are resolved under the server's `cwd`. Paths outside
+that workspace are rejected.
+
 | Tool | Purpose |
 |------|---------|
 | `scan_workspace` | Scan a directory (`.gitignore`-aware). Returns JSON, SARIF, and summary. |

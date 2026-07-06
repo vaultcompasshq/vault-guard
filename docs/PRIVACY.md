@@ -20,8 +20,9 @@ home directory; resolved with `os.homedir()`).
 
 #### `usage_events`
 
-Recorded by `vault-guard proxy` after every forwarded request, and by the MCP
-`report_token_usage` tool when the caller invokes it.
+Recorded by `vault-guard proxy` after every forwarded request. The MCP
+`report_token_usage` tool returns an estimate to the caller but does not write a
+usage row.
 
 | Column         | Type    | Source                                                            | PII risk                                              |
 |----------------|---------|-------------------------------------------------------------------|-------------------------------------------------------|

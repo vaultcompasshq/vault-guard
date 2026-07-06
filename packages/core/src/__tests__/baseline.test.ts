@@ -12,6 +12,7 @@ function match(over: Partial<SecretMatch> = {}): SecretMatch {
     value: 'sk-a…(37c)',
     line: 2,
     column: 0,
+    offset: 0,
     matchLength: 10,
     severity: 'critical',
     ...over,
@@ -24,6 +25,14 @@ describe('baseline + fingerprints', () => {
     const file = path.join('/repo', 'src', 'a.ts');
     const m = match();
     expect(fingerprintForMatch(cwd, file, m)).toBe(fingerprintForMatch(cwd, file, m));
+  });
+
+  it('fingerprint uses the absolute offset, not the display column', () => {
+    const cwd = '/repo';
+    const file = path.join('/repo', 'src', 'a.ts');
+    const a = match({ column: 2, offset: 42 });
+    const b = match({ column: 9, offset: 42 });
+    expect(fingerprintForMatch(cwd, file, a)).toBe(fingerprintForMatch(cwd, file, b));
   });
 
   it('filterResultsByBaseline removes matches whose fingerprint is listed', () => {

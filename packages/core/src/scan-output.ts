@@ -35,10 +35,11 @@ export interface JsonOutput {
       type: string;
       severity: string;
       line: number;
+      /** 0-based line-relative column. */
       column: number;
       /** Redacted form, e.g. `sk-a…(37c)`. Never the raw secret. */
       value: string;
-      /** SHA-256 hex of `relPath|type|line|column|matchLength` for baselines (no raw secret). */
+      /** SHA-256 hex of `relPath|type|line|offset|matchLength` for baselines (no raw secret). */
       fingerprint: string;
     }>;
   }>;

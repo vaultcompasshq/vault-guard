@@ -29,6 +29,7 @@ docs/ISSUE_TRIAGE.md
 TODO.local.md
 *.local.md
 docs/sessions/
+docs/plans/
 
 # Local AI configs — never commit (Vault & Compass convention).
 .cursor/

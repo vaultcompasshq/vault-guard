@@ -11,6 +11,7 @@ import {
   formatSarif,
   type FileScanResult,
   type JsonRunMetadata,
+  type VaultGuardConfig,
 } from '@vaultcompass/vault-guard-core';
 import { TelemetryStore, TelemetryUnavailableError } from '@vaultcompass/vault-guard-telemetry';
 import { scanWorkspaceDirectory } from './workspace-scan';
@@ -30,6 +31,8 @@ export interface McpServerOptions {
    * only `record_session_event` degrades.
    */
   telemetryFactory?: () => TelemetryStore;
+  /** Workspace root the MCP server is allowed to read. Defaults to `process.cwd()`. */
+  workspaceRoot?: string;
 }
 
 /**
@@ -41,11 +44,10 @@ export interface McpServerOptions {
  * to default config. The CLI surface, by contrast, hard-fails on
  * `ConfigError` because a human is at the terminal to read the message.
  */
-function makeScanner(): SecretScanner {
-  const cwd = process.cwd();
-  let cfg;
+function loadMcpConfig(workspaceRoot: string): VaultGuardConfig {
+  let cfg: VaultGuardConfig;
   try {
-    cfg = loadConfig(cwd);
+    cfg = loadConfig(workspaceRoot);
   } catch (e) {
     if (e instanceof ConfigError) {
       process.stderr.write(
@@ -56,7 +58,11 @@ function makeScanner(): SecretScanner {
       throw e;
     }
   }
-  return new SecretScanner(cfg);
+  return cfg;
+}
+
+function makeScanner(config: VaultGuardConfig): SecretScanner {
+  return new SecretScanner(config);
 }
 
 function toolPayload(obj: unknown): { content: Array<{ type: 'text'; text: string }> } {
@@ -65,7 +71,48 @@ function toolPayload(obj: unknown): { content: Array<{ type: 'text'; text: strin
   };
 }
 
+function isPathInside(root: string, candidate: string): boolean {
+  const rel = path.relative(root, candidate);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function realpathIfExists(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+function resolveWorkspacePath(
+  workspaceRoot: string,
+  input: string,
+): { ok: true; path: string } | { ok: false; error: 'path_outside_workspace'; path: string } {
+  const root = path.resolve(workspaceRoot);
+  const requested = path.resolve(root, input);
+  if (!isPathInside(root, requested)) {
+    return { ok: false, error: 'path_outside_workspace', path: requested };
+  }
+
+  const realRoot = realpathIfExists(root);
+  const realRequested = realpathIfExists(requested);
+  if (!isPathInside(realRoot, realRequested)) {
+    return { ok: false, error: 'path_outside_workspace', path: requested };
+  }
+
+  return { ok: true, path: requested };
+}
+
+function configIgnorePatterns(config: VaultGuardConfig): string[] {
+  return [
+    ...(config.ignore?.paths ?? []),
+    ...(config.ignore?.patterns ?? []),
+  ];
+}
+
 export function createMcpServer(options: McpServerOptions = {}): McpServer {
+  const workspaceRoot = path.resolve(options.workspaceRoot ?? process.cwd());
+
   const server = new McpServer(
     { name: 'vault-guard', version: SERVER_VERSION },
     {
@@ -116,10 +163,20 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
       },
     },
     async ({ root }) => {
-      const scanner = makeScanner();
-      const dir = path.resolve(process.cwd(), root ?? '.');
+      const config = loadMcpConfig(workspaceRoot);
+      const scanner = makeScanner(config);
+      const resolved = resolveWorkspacePath(workspaceRoot, root ?? '.');
+      if (!resolved.ok) {
+        return toolPayload({ error: resolved.error, path: resolved.path });
+      }
+      const dir = resolved.path;
       const t0 = Date.now();
-      const { results, filesScanned, bytesScanned } = await scanWorkspaceDirectory(dir, scanner);
+      const { results, filesScanned, bytesScanned } = await scanWorkspaceDirectory(
+        dir,
+        scanner,
+        10,
+        configIgnorePatterns(config),
+      );
       const run: JsonRunMetadata = {
         duration_ms: Date.now() - t0,
         files_scanned: filesScanned,
@@ -148,8 +205,13 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
       },
     },
     async ({ file_path }) => {
-      const scanner = makeScanner();
-      const fp = path.resolve(process.cwd(), file_path);
+      const config = loadMcpConfig(workspaceRoot);
+      const scanner = makeScanner(config);
+      const resolved = resolveWorkspacePath(workspaceRoot, file_path);
+      if (!resolved.ok) {
+        return toolPayload({ error: resolved.error, path: resolved.path });
+      }
+      const fp = resolved.path;
       if (!fs.existsSync(fp) || !fs.statSync(fp).isFile()) {
         return toolPayload({ error: 'not_a_file', path: fp });
       }
@@ -165,8 +227,8 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
       const results: FileScanResult[] = matches.length ? [{ file: fp, matches }] : [];
       return toolPayload({
         summary: { files_with_secrets: results.length, total_matches: matches.length },
-        json: JSON.parse(formatJson(results, { cwd: process.cwd(), run })) as unknown,
-        sarif: formatSarif(results, { cwd: process.cwd(), run }),
+        json: JSON.parse(formatJson(results, { cwd: workspaceRoot, run })) as unknown,
+        sarif: formatSarif(results, { cwd: workspaceRoot, run }),
       });
     },
   );
@@ -186,7 +248,7 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
       },
     },
     async ({ text, virtual_path }) => {
-      const scanner = makeScanner();
+      const scanner = makeScanner(loadMcpConfig(workspaceRoot));
       const t0 = Date.now();
       const matches = scanner.scanContent(text);
       const label = virtual_path ?? 'inline://snippet';
@@ -218,7 +280,7 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
       },
     },
     async ({ paths }) => {
-      const targets = paths && paths.length > 0 ? paths : [process.cwd()];
+      const targets = paths && paths.length > 0 ? paths : ['.'];
       let total = 0;
       const breakdown: Record<string, number> = {};
       const walkFile = (file: string): void => {
@@ -242,7 +304,11 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
         }
       };
       for (const t of targets) {
-        walkFile(path.resolve(process.cwd(), t));
+        const resolved = resolveWorkspacePath(workspaceRoot, t);
+        if (!resolved.ok) {
+          return toolPayload({ error: resolved.error, path: resolved.path });
+        }
+        walkFile(resolved.path);
       }
       const estCostAnthropic = tokenCounter.calculateCost('anthropic', total, 0);
       return toolPayload({

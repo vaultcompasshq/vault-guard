@@ -30,7 +30,7 @@
     "commands": [
       {
         "command": "vaultGuard.copyAllowListSnippet",
-        "title": "Vault Guard: Copy .vault-guard.yml allow-list snippet"
+        "title": "Vault Guard: Copy .vault-guard.json allow-list snippet"
       }
     ]
   },

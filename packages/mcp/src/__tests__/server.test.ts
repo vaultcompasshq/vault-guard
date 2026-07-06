@@ -2,6 +2,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { TelemetryStore, TelemetryUnavailableError } from '@vaultcompass/vault-guard-telemetry';
 import { createMcpServer } from '../server';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 type ToolResult = { content: Array<{ type: string; text: string }> };
 
@@ -48,6 +51,103 @@ describe('createMcpServer', () => {
     const payload = parse(res);
     expect((payload.summary as { total_matches: number }).total_matches).toBeGreaterThanOrEqual(1);
     await client.close();
+  });
+
+  it('scan_file rejects paths outside the workspace root', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-root-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-outside-'));
+    try {
+      const outsideFile = path.join(outside, 'secret.ts');
+      fs.writeFileSync(outsideFile, `const key = "${SECRET}";`, 'utf8');
+      const client = await connect(createMcpServer({ telemetryFactory: fakeStore, workspaceRoot: root }));
+      const res = await client.callTool({ name: 'scan_file', arguments: { file_path: outsideFile } });
+      expect(parse(res)).toMatchObject({ error: 'path_outside_workspace' });
+      await client.close();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('scan_file allows files inside the workspace root', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-root-'));
+    try {
+      fs.writeFileSync(path.join(root, 'secret.ts'), `const key = "${SECRET}";`, 'utf8');
+      const client = await connect(createMcpServer({ telemetryFactory: fakeStore, workspaceRoot: root }));
+      const res = await client.callTool({ name: 'scan_file', arguments: { file_path: 'secret.ts' } });
+      const payload = parse(res);
+      expect((payload.summary as { total_matches: number }).total_matches).toBeGreaterThanOrEqual(1);
+      await client.close();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('scan_file rejects symlinks that resolve outside the workspace root', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-root-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-outside-'));
+    try {
+      const outsideFile = path.join(outside, 'secret.ts');
+      const linkPath = path.join(root, 'link.ts');
+      fs.writeFileSync(outsideFile, `const key = "${SECRET}";`, 'utf8');
+      try {
+        fs.symlinkSync(outsideFile, linkPath);
+      } catch {
+        return;
+      }
+      const client = await connect(createMcpServer({ telemetryFactory: fakeStore, workspaceRoot: root }));
+      const res = await client.callTool({ name: 'scan_file', arguments: { file_path: 'link.ts' } });
+      expect(parse(res)).toMatchObject({ error: 'path_outside_workspace' });
+      await client.close();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('scan_workspace rejects traversal outside the workspace root', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-root-'));
+    try {
+      const client = await connect(createMcpServer({ telemetryFactory: fakeStore, workspaceRoot: root }));
+      const res = await client.callTool({ name: 'scan_workspace', arguments: { root: '..' } });
+      expect(parse(res)).toMatchObject({ error: 'path_outside_workspace' });
+      await client.close();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('report_token_usage rejects paths outside the workspace root', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-root-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-outside-'));
+    try {
+      const client = await connect(createMcpServer({ telemetryFactory: fakeStore, workspaceRoot: root }));
+      const res = await client.callTool({ name: 'report_token_usage', arguments: { paths: [outside] } });
+      expect(parse(res)).toMatchObject({ error: 'path_outside_workspace' });
+      await client.close();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('scan_workspace applies .vault-guard.json ignore paths', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-root-'));
+    try {
+      fs.writeFileSync(
+        path.join(root, '.vault-guard.json'),
+        JSON.stringify({ ignore: { paths: ['ignored.ts'] } }),
+        'utf8',
+      );
+      fs.writeFileSync(path.join(root, 'ignored.ts'), `const key = "${SECRET}";`, 'utf8');
+      const client = await connect(createMcpServer({ telemetryFactory: fakeStore, workspaceRoot: root }));
+      const res = await client.callTool({ name: 'scan_workspace', arguments: { root: '.' } });
+      const payload = parse(res);
+      expect((payload.summary as { total_matches: number }).total_matches).toBe(0);
+      await client.close();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   // Regression: a missing/incompatible better-sqlite3 binding must NOT crash the

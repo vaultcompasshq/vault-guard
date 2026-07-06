@@ -70,7 +70,7 @@ export async function scanTextFileAsync(
       const found = scanner.scanContent(slice).map(m => ({
         ...m,
         line: lineNo,
-        column: utf16Offset + m.column,
+        offset: utf16Offset + m.offset,
       }));
       raw.push(...found);
       utf16Offset += line.length + 1;

@@ -8,6 +8,7 @@ function makeMatch(over: Partial<SecretMatch> = {}): SecretMatch {
     value: 'sk-a…(37c)',
     line: 4,
     column: 12,
+    offset: 112,
     matchLength: 37,
     severity: 'critical',
     ...over,
@@ -84,6 +85,15 @@ describe('scan-output formatters', () => {
       );
       expect(sarif.runs[0].properties.vault_guard_run.patterns_active).toBe(40);
       expect(sarif.runs[0].properties.vault_guard_run.bytes_scanned).toBe(99);
+    });
+
+    it('formatSarif uses line-relative columns for regions', () => {
+      const results: FileScanResult[] = [{ file: '/tmp/x.ts', matches: [makeMatch({ column: 12, offset: 212 })] }];
+      const sarif = JSON.parse(formatSarif(results, { cwd: null }));
+      const region = sarif.runs[0].results[0].locations[0].physicalLocation.region;
+      expect(region.startLine).toBe(4);
+      expect(region.startColumn).toBe(13);
+      expect(region.endColumn).toBe(50);
     });
   });
 });

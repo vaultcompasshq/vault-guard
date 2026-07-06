@@ -1,7 +1,7 @@
 # GitHub Action (`action.yml`)
 
 The composite action in the **repository root** runs the published
-`@vaultcompass/vault-guard` CLI via `npx` after Node 20 is installed.
+`@vaultcompass/vault-guard` CLI via `npx` after Node 22 is installed.
 
 ## Requirements
 
