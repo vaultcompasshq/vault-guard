@@ -92,7 +92,8 @@ boundary is the editor process.
 
 | Input source       | Threat                                                | Mitigation                                                       |
 |--------------------|-------------------------------------------------------|------------------------------------------------------------------|
-| Tool arguments     | Path traversal via `scan_file`                        | Resolved against the project root; refuses paths outside.         |
+| Tool arguments     | Path traversal via `scan_file` / `scan_workspace`     | Resolved against the project root; refuses traversal and symlink escapes. |
+| Tool arguments     | Path walks via `report_token_usage`                   | Each requested path is workspace-bounded before traversal.        |
 | Tool arguments     | Arbitrary regex via `scan_text` (none today)          | No user-supplied regex on this surface; only the built-in set.    |
 | `report_token_usage`| Untrusted token counts inflate local SQLite           | Counts are local-only and not used for any access-control choice. |
 

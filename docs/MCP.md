@@ -5,7 +5,10 @@ The package **`@vaultcompass/vault-guard-mcp`** exposes a stdio MCP server for e
 ## Tools
 
 File and directory paths are resolved under the MCP server's launch directory.
-Paths outside that workspace are rejected.
+Paths outside that workspace are rejected. This sandbox applies to filesystem
+tools (`scan_file`, `scan_workspace`, and `report_token_usage`). `scan_text`
+scans only the string passed by the client; `virtual_path` is a label for output,
+not a file read.
 
 | Tool | Purpose |
 |------|---------|
@@ -14,6 +17,21 @@ Paths outside that workspace are rejected.
 | `scan_text` | Scan arbitrary UTF-8 (e.g. a proposed edit). Optional `virtual_path` for SARIF URIs. |
 | `report_token_usage` | Rough on-disk token estimate for paths (no network calls). |
 | `record_session_event` | Append an opt-in local row to `~/.vault-guard/usage.sqlite` (e.g. `secret_blocked`, `revert`). |
+
+## Errors
+
+Tool errors are returned as JSON payloads in the normal MCP tool response.
+Filesystem sandbox violations use this shape:
+
+```json
+{
+  "error": "path_outside_workspace",
+  "path": "/absolute/requested/path"
+}
+```
+
+`scan_file` can also return `{ "error": "not_a_file", "path": "..." }` when the
+resolved path does not exist or is not a regular file.
 
 ## Cursor / Claude Desktop
 

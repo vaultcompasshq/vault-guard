@@ -70,6 +70,13 @@ describe('scan-output formatters', () => {
       expect(fp).toMatch(/^[a-f0-9]{64}$/);
     });
 
+    it('formatJson includes line-relative column and absolute offset', () => {
+      const results: FileScanResult[] = [{ file: '/tmp/x.ts', matches: [makeMatch({ column: 7, offset: 207 })] }];
+      const out = JSON.parse(formatJson(results, { cwd: null }));
+      expect(out.results[0].matches[0].column).toBe(7);
+      expect(out.results[0].matches[0].offset).toBe(207);
+    });
+
     it('formatSarif embeds run metadata under runs[0].properties when opts.run is set', () => {
       const results: FileScanResult[] = [{ file: '/tmp/x.ts', matches: [makeMatch()] }];
       const sarif = JSON.parse(

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-07-06
+
 ### Changed
 
 - **MCP workspace sandboxing.** `scan_file`, `scan_workspace`, and
@@ -17,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `column` from absolute `offset`, so CLI text, SARIF, and editor diagnostics
   point at the correct column on multi-line files. Existing baselines remain
   compatible because fingerprints continue to use the absolute position.
+  JSON integrators should treat `matches[].column` as a 0-based line-relative
+  column and `matches[].offset` as the 0-based absolute UTF-16 offset.
 - **`vault-guard check` parity.** `check` now delegates to the normal scan path,
   so config, baselines, and diagnostics apply consistently with
   `vault-guard scan`.
