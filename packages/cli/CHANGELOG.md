@@ -1,5 +1,19 @@
 # @vaultcompass/vault-guard
 
+## 1.1.2
+
+### Patch Changes
+
+- fa2a45d: Flush structured scan output before returning a non-zero exit code.
+
+  Large `scan --format json` and `scan --format sarif` runs can produce enough
+  stdout that forcing `process.exit(1)` immediately after writing findings may
+  truncate the output. CLI commands now set `process.exitCode` instead, preserving
+  the same shell status while letting Node drain stdout and stderr normally.
+
+  - @vaultcompass/vault-guard-core@1.1.2
+  - @vaultcompass/vault-guard-telemetry@1.1.2
+
 ## 1.1.1
 
 ### Patch Changes
