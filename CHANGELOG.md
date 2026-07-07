@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-07-07
+
+### Fixed
+
+- **Structured output flush.** Large `scan --format json` and `scan --format sarif`
+  runs no longer truncate stdout when findings force a non-zero exit. CLI commands
+  set `process.exitCode` instead of calling `process.exit(1)` immediately, so
+  Node can drain stdout before the process ends.
+
 ## [1.1.1] - 2026-07-06
 
 ### Changed
