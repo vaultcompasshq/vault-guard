@@ -18,6 +18,12 @@ function readCliVersion(): string {
   return (JSON.parse(raw) as { version: string }).version;
 }
 
+function setExitCode(exitCode: number): void {
+  if (exitCode !== 0) {
+    process.exitCode = exitCode;
+  }
+}
+
 export function buildCli(): Command {
   const program = new Command();
 
@@ -33,7 +39,7 @@ export function buildCli(): Command {
     .description('Validate the nearest .vault-guard.json (structure + scanner load)')
     .action(async () => {
       const exitCode = await configValidateCommand(process.cwd());
-      if (exitCode !== 0) process.exit(exitCode);
+      setExitCode(exitCode);
     });
 
   // Scan command
@@ -46,9 +52,7 @@ export function buildCli(): Command {
     .action(async (path: string, options: { format: string; staged?: boolean }) => {
       const format = (options.format as OutputFormat) ?? 'text';
       const exitCode = await scanCommand(path, format, Boolean(options.staged));
-      if (exitCode !== 0) {
-        process.exit(exitCode);
-      }
+      setExitCode(exitCode);
     });
 
   // Install-hook command
@@ -68,7 +72,8 @@ export function buildCli(): Command {
         | 'precommit';
       if (!['native', 'husky', 'lefthook', 'precommit'].includes(m)) {
         console.error(`Unknown manager: ${options.manager}`);
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       await installHookCommand(m);
     });
@@ -88,9 +93,7 @@ export function buildCli(): Command {
     .argument('[files...]', 'Files to check')
     .action(async (files: string[]) => {
       const exitCode = await fixCommand(files);
-      if (exitCode !== 0) {
-        process.exit(exitCode);
-      }
+      setExitCode(exitCode);
     });
 
   // Check command
@@ -100,9 +103,7 @@ export function buildCli(): Command {
     .argument('[files...]', 'Files to check')
     .action(async (files: string[]) => {
       const exitCode = await checkCommand(files);
-      if (exitCode !== 0) {
-        process.exit(exitCode);
-      }
+      setExitCode(exitCode);
     });
 
   program
@@ -166,7 +167,8 @@ export function buildCli(): Command {
             const n = Number(options.maxRpm);
             if (!Number.isFinite(n) || n < 1) {
               console.error('--max-rpm must be a positive number');
-              process.exit(1);
+              process.exitCode = 1;
+              return;
             }
             maxRpm = Math.floor(n);
           }
@@ -196,7 +198,7 @@ export function buildCli(): Command {
           });
         } catch (e) {
           console.error(String(e));
-          process.exit(1);
+          process.exitCode = 1;
         }
       },
     );
@@ -214,7 +216,7 @@ export function buildCli(): Command {
     .option('--json', 'Print JSON', false)
     .action(async (options: { json?: boolean }) => {
       const exitCode = await dataStatusCommand({ json: Boolean(options.json) });
-      if (exitCode !== 0) process.exit(exitCode);
+      setExitCode(exitCode);
     });
 
   dataCmd
@@ -229,7 +231,7 @@ export function buildCli(): Command {
         dryRun: Boolean(options.dryRun),
         json: Boolean(options.json),
       });
-      if (exitCode !== 0) process.exit(exitCode);
+      setExitCode(exitCode);
     });
 
   dataCmd
@@ -240,7 +242,7 @@ export function buildCli(): Command {
     .action(async (options: { output: string; format?: string }) => {
       const fmt = options.format === 'jsonl' ? 'jsonl' : 'json';
       const exitCode = await dataExportCommand({ output: options.output, format: fmt });
-      if (exitCode !== 0) process.exit(exitCode);
+      setExitCode(exitCode);
     });
 
   return program;

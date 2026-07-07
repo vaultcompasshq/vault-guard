@@ -56,6 +56,33 @@ describe('CLI JSON stdout contract', () => {
     expect(body.run?.duration_ms).toBeDefined();
   });
 
+  it('flushes a large JSON findings payload before exiting non-zero', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-guard-json-large-'));
+    const secretPrefix = ['sk', '-ant', '-api03-'].join('');
+    try {
+      const lines = Array.from({ length: 2000 }, (_, i) => {
+        const suffix = `${String(i).padStart(4, '0')}abcdefghijklmnopqrstuvwxyz`;
+        return `const key${i} = "${secretPrefix}${suffix}";`;
+      });
+      fs.writeFileSync(path.join(tmp, 'many.ts'), `${lines.join('\n')}\n`, 'utf-8');
+
+      const proc = runJsonScan(tmp, tmp);
+      expect(proc.error).toBeUndefined();
+
+      const body = parseStdoutJson(proc.stdout) as {
+        summary?: { secrets?: number };
+        results?: Array<{ matches?: unknown[] }>;
+      };
+
+      expect(proc.status).not.toBe(0);
+      expect(body.summary?.secrets).toBe(2000);
+      expect(body.results?.[0]?.matches?.length).toBe(2000);
+    } finally {
+      fs.unlinkSync(path.join(tmp, 'many.ts'));
+      fs.rmdirSync(tmp);
+    }
+  });
+
   it('writes parseable JSON only to stdout for a clean temp directory (no findings)', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-guard-json-contract-'));
     try {
