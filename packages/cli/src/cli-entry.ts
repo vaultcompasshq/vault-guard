@@ -13,11 +13,8 @@ if (nodeMajor < 22) {
 const program = buildCli();
 
 // Parse arguments and execute command
-program.parseAsync().then(() => {
-  // Successful completion
-  process.exit(0);
-}).catch((error) => {
+program.parseAsync().catch((error) => {
   // Handle errors
   console.error(error);
-  process.exit(1);
+  process.exitCode = 1;
 });
