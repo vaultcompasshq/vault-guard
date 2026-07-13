@@ -10,8 +10,8 @@ const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
 
-// Instructional mentions in CONTRIBUTING are allowed (policy text, not leaks).
-const ALLOWLIST = new Set(['CONTRIBUTING.md']);
+// Instructional mentions in CONTRIBUTING and the checker itself are allowed.
+const ALLOWLIST = new Set(['CONTRIBUTING.md', 'scripts/check-private-names.cjs']);
 
 const PATTERNS = [
   { label: 'venture codename', re: /\b(kidcompass|sheetful|capitalcanvas|prismfolio|brightlet|nixblock|staysafe|medicalbillsuite|cosigned|translator-headphones)\b/i },
