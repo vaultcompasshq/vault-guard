@@ -41,6 +41,13 @@ describe('CLI', () => {
     });
   });
 
+  describe('vault-guard init', () => {
+    it('should have init command', () => {
+      const command = program.commands.find(cmd => cmd.name() === 'init');
+      expect(command).toBeDefined();
+    });
+  });
+
   describe('vault-guard install-hook', () => {
     it('should have install-hook command', () => {
       const command = program.commands.find(cmd => cmd.name() === 'install-hook');

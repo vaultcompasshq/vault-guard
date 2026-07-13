@@ -20,6 +20,29 @@ AI coding agents (Cursor, Claude Code, Copilot, …) are fast, and they routinel
 
 ## Quickstart
 
+### 0. One-command setup (recommended)
+
+From your repository root:
+
+```bash
+vault-guard init
+```
+
+Creates `.vault-guard.json`, a GitHub Actions workflow, local agent guardrail files under
+`.vault-guard/`, and a pre-commit hook. Preview changes first:
+
+```bash
+vault-guard init --dry-run
+```
+
+Init never overwrites existing files — resolve conflicts manually. To undo:
+
+```bash
+vault-guard init --revert
+```
+
+Merge `.vault-guard/mcp-snippet.json` into your editor MCP config (see step 1).
+
 ### 1. Protect your AI editor (MCP)
 
 Add to your MCP config (`~/.cursor/mcp.json`, `claude_desktop_config.json`, etc.):

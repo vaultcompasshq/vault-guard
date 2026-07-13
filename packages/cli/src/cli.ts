@@ -11,6 +11,7 @@ import { suggestModelCommand } from './commands/suggest-model';
 import { proxyCommand } from './commands/proxy';
 import { dataStatusCommand, dataResetCommand, dataExportCommand } from './commands/data';
 import { configValidateCommand } from './commands/config';
+import { initCommand } from './commands/init';
 
 function readCliVersion(): string {
   const pkgPath = path.join(__dirname, '..', 'package.json');
@@ -54,6 +55,52 @@ export function buildCli(): Command {
       const exitCode = await scanCommand(path, format, Boolean(options.staged));
       setExitCode(exitCode);
     });
+
+  program
+    .command('init')
+    .description('Initialize Vault Guard in this repository (config, CI workflow, agent rules, hook)')
+    .option('--dry-run', 'Print the file manifest and planned actions without writing', false)
+    .option('--revert', 'Remove files recorded in .vault-guard/manifest.json', false)
+    .option('--json', 'Machine-readable output', false)
+    .option(
+      '-m, --manager <manager>',
+      'Hook integration when installing pre-commit: native | husky | lefthook | precommit',
+      'native',
+    )
+    .option('--skip-hook', 'Do not install a pre-commit hook', false)
+    .option('--skip-workflow', 'Do not create .github/workflows/vault-guard.yml', false)
+    .option('--skip-config', 'Do not create .vault-guard.json', false)
+    .option('--skip-agent-rules', 'Do not create .vault-guard/mcp-snippet.json or agent-rules.md', false)
+    .action(
+      async (options: {
+        dryRun?: boolean;
+        revert?: boolean;
+        json?: boolean;
+        manager: string;
+        skipHook?: boolean;
+        skipWorkflow?: boolean;
+        skipConfig?: boolean;
+        skipAgentRules?: boolean;
+      }) => {
+        const m = (options.manager ?? 'native').toLowerCase();
+        if (!['native', 'husky', 'lefthook', 'precommit'].includes(m)) {
+          console.error(`Unknown manager: ${options.manager}`);
+          process.exitCode = 1;
+          return;
+        }
+        const exitCode = await initCommand({
+          dryRun: Boolean(options.dryRun),
+          revert: Boolean(options.revert),
+          json: Boolean(options.json),
+          manager: m as 'native' | 'husky' | 'lefthook' | 'precommit',
+          skipHook: Boolean(options.skipHook),
+          skipWorkflow: Boolean(options.skipWorkflow),
+          skipConfig: Boolean(options.skipConfig),
+          skipAgentRules: Boolean(options.skipAgentRules),
+        });
+        setExitCode(exitCode);
+      },
+    );
 
   // Install-hook command
   program
