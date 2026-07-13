@@ -77,6 +77,11 @@ vault-guard install-hook --manager lefthook   # lefthook-local.yml
 vault-guard install-hook --manager precommit  # .pre-commit-config.yaml (only if absent)
 ```
 
+**Windows:** `scan`, `check`, MCP, and CI workflows are supported on Windows. Pre-commit
+hook install (`install-hook`, `init`) targets **POSIX shell** (Git Bash or WSL) — native
+`.git/hooks/pre-commit` is a shell script; a `.cmd` companion is not shipped yet. Use
+`vault-guard scan --staged` in CI or run hooks from Git Bash.
+
 Emergency bypass (discouraged): `git commit --no-verify`.
 
 ### 3. Scan a repo or file
