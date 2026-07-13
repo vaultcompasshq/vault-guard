@@ -139,7 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed (false positives)
 
 - **`.env.<env>.example` templates** (e.g. `.env.production.example`, `.env.staging.example`)
-  are now treated as fixture paths; fixes CapitalCanvas-style monorepo noise.
+  are now treated as fixture paths; fixes false positives on multi-env `.example` templates.
 - **All markdown documentation** (`README.md`, `CLAUDE.md`, `*GUIDE*.md`, any `.md`/`.mdx`)
   is recognized as a documentation path; generic patterns downgrade to `low`, vendor
   patterns in docs downgrade to `low`, and common placeholders are suppressed.
