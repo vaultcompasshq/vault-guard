@@ -19,6 +19,7 @@ Local-only notes belong in gitignored paths: `TODO.local.md`, `.local/`, `audit.
 `docs/sessions/`, `docs/plans/`.
 
 Before opening a PR, search the diff for private product names and internal paths.
+CI runs `pnpm check:private-names` on every PR.
 
 ## Release train
 

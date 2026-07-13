@@ -10,6 +10,7 @@
     "gen:rules-doc": "node scripts/gen-rules-doc.cjs",
     "lint": "eslint .",
     "check:pack": "node scripts/check-pack.cjs",
+    "check:private-names": "node scripts/check-private-names.cjs",
     "prepublishOnly": "pnpm build",
     "release": "pnpm publish -r --access public",
     "bench": "node bench/run.cjs",
