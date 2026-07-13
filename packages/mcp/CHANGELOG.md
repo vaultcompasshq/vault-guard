@@ -1,5 +1,12 @@
 # @vaultcompass/vault-guard-mcp
 
+## 1.2.0
+
+### Patch Changes
+
+- @vaultcompass/vault-guard-core@1.2.0
+- @vaultcompass/vault-guard-telemetry@1.2.0
+
 ## 1.1.2
 
 ### Patch Changes

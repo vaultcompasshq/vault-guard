@@ -1,5 +1,16 @@
 # @vaultcompass/vault-guard
 
+## 1.2.0
+
+### Minor Changes
+
+- 47c7004: Add `vault-guard init` for one-command repository setup: config, CI workflow, agent guardrail files, pre-commit hook, manifest-based revert, dry-run, and conflict-safe (no-overwrite) behavior.
+
+### Patch Changes
+
+- @vaultcompass/vault-guard-core@1.2.0
+- @vaultcompass/vault-guard-telemetry@1.2.0
+
 ## 1.1.2
 
 ### Patch Changes
