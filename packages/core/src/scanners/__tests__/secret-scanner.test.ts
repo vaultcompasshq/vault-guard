@@ -532,7 +532,7 @@ describe('SecretScanner', () => {
       const envFile = path.join(dir, 'backend', '.env.production.example');
       try {
         fs.mkdirSync(path.join(dir, 'backend'), { recursive: true });
-        fs.writeFileSync(envFile, 'ENTERPRISE_INGEST_API_KEY=replace-with-enterprise-ingest-key\n');
+        fs.writeFileSync(envFile, 'EXAMPLE_API_KEY=replace-with-example-api-key\n');
         const matches = scanner.scan(envFile);
         expect(matches.filter(m => m.severity === 'high' || m.severity === 'critical')).toHaveLength(0);
       } finally {

@@ -15,8 +15,7 @@ export class TokenCounter {
   };
 
   /**
-   * Count tokens in a file (rough estimation)
-   * Real implementation would use tiktoken or similar
+   * Rough token estimate from file contents (heuristic, not tokenizer-accurate).
    */
   countTokensInFile(filePath: string): number {
     if (!fs.existsSync(filePath)) {
@@ -27,10 +26,7 @@ export class TokenCounter {
     return this.estimateTokens(content);
   }
 
-  /**
-   * Estimate token count from text with improved accuracy
-   * Accounts for code density, symbols, and whitespace
-   */
+  /** Heuristic token count from text (words + symbols; code gets a small bump). */
   estimateTokens(text: string): number {
     if (!text || text.length === 0) {
       return 0;
@@ -40,31 +36,21 @@ export class TokenCounter {
     const words = text.split(/\s+/).filter(w => w.length > 0);
     const wordCount = words.length;
 
-    // Count symbols and operators (more common in code)
     const symbolMatches = text.match(/[{}[\]();,:.<>+\-*/%=|^&!~?]/g);
     const symbolCount = symbolMatches ? symbolMatches.length : 0;
 
-    // Base estimate: words + symbols (rough approximation)
     let tokenEstimate = wordCount + symbolCount;
 
-    // Adjust for code density (code typically has higher token/word ratio)
-    // If text has many symbols relative to words, it's likely code
     const symbolToWordRatio = wordCount > 0 ? symbolCount / wordCount : 0;
     if (symbolToWordRatio > 0.5) {
-      // Code-like content: increase estimate
       tokenEstimate = Math.floor(tokenEstimate * 1.3);
     } else if (symbolToWordRatio < 0.1) {
-      // Natural language: decrease slightly (words are better tokens)
       tokenEstimate = Math.floor(tokenEstimate * 0.9);
     }
 
-    // Ensure minimum estimate
     return Math.max(tokenEstimate, Math.ceil(text.length / 8));
   }
 
-  /**
-   * Calculate cost from token usage
-   */
   calculateCost(provider: 'anthropic' | 'openai', inputTokens: number, outputTokens: number): number {
     const rates = this.tokenRates[provider];
     const inputCost = (inputTokens / 1_000_000) * rates.input;
@@ -72,9 +58,6 @@ export class TokenCounter {
     return inputCost + outputCost;
   }
 
-  /**
-   * Generate token report for a directory
-   */
   generateReport(directoryPath: string): TokenReport {
     let totalTokens = 0;
     const breakdown: Record<string, number> = {};
