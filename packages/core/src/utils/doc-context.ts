@@ -29,7 +29,7 @@ export function isDocumentationPath(filePath: string): boolean {
   return false;
 }
 
-/** Placeholder shapes like `your_posthog_api_key` in docs (no regex; bounded scan). */
+/** Placeholder shapes like `your_example_api_key` in docs (no regex; bounded scan). */
 function isYourUnderscoreKeyPlaceholder(value: string): boolean {
   const MAX = 256;
   if (value.length > MAX || value.length < 10) return false;

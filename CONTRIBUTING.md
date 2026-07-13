@@ -9,7 +9,7 @@ Compass products, private monorepos, or internal portfolio work.
 
 - Other product or venture codenames (e.g. internal app/repo names)
 - Paths like `/Users/.../Projects/<private-app>/` or workspace scan notes
-- Session handoffs, AVS control state, or `ai-venture-studio` venture metadata
+- Session handoffs, AVS control state, or internal venture-tracker metadata (private)
 - References to "portfolio" fixes tied to a specific private repo
 
 **Use instead:** generic placeholders (`example-app/`, `my-service/`, `acme-corp/`)
