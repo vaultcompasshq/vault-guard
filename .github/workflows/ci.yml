@@ -71,6 +71,9 @@ jobs:
     - name: Lint code
       run: pnpm lint
 
+    - name: Check for private portfolio references
+      run: pnpm check:private-names
+
   bench:
     runs-on: ubuntu-latest
 
