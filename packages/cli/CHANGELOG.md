@@ -1,5 +1,13 @@
 # @vaultcompass/vault-guard
 
+## 1.2.1
+
+### Patch Changes
+
+- Align `vault-guard init` GitHub Actions workflow template with v1.2.0 action pin. Includes post-release CI and public-repo hygiene fixes (hash-only name guard, generic test fixtures).
+  - @vaultcompass/vault-guard-core@1.2.1
+  - @vaultcompass/vault-guard-telemetry@1.2.1
+
 ## 1.2.0
 
 ### Minor Changes
