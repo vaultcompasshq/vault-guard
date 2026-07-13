@@ -1,5 +1,13 @@
 # @vaultcompass/vault-guard
 
+## 1.2.2
+
+### Patch Changes
+
+- Windows CI unit-test job, GitHub Actions pin updates (checkout v7, CodeQL 4.37), and `better-sqlite3` 12.11 for telemetry.
+  - @vaultcompass/vault-guard-core@1.2.2
+  - @vaultcompass/vault-guard-telemetry@1.2.2
+
 ## 1.2.1
 
 ### Patch Changes
