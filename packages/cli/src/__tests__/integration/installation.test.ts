@@ -14,6 +14,7 @@ describe('CLI Installation Integration', () => {
     expect(commands).toContain('config');
     expect(commands).toContain('scan');
     expect(commands).toContain('install-hook');
+    expect(commands).toContain('init');
     expect(commands).toContain('tokens');
     expect(commands).toContain('fix');
     expect(commands).toContain('check');
@@ -54,6 +55,14 @@ describe('CLI Installation Integration', () => {
     expect(installHookCommand).toBeDefined();
     if (installHookCommand) {
       expect(installHookCommand.description()).toBeDefined();
+    }
+  });
+
+  it('should have init command', () => {
+    const init = program.commands.find(cmd => cmd.name() === 'init');
+    expect(init).toBeDefined();
+    if (init) {
+      expect(init.description()).toContain('Initialize');
     }
   });
 
