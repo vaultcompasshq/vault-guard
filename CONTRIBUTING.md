@@ -1,5 +1,25 @@
 # Contributing to vault-guard
 
+## Public repository hygiene
+
+This repo is **public**. Never commit names, paths, or context from other Vault &
+Compass products, private monorepos, or internal portfolio work.
+
+**Do not put in committed files** (including tests, fixtures, changelogs, comments):
+
+- Other product or venture codenames (e.g. internal app/repo names)
+- Paths like `/Users/.../Projects/<private-app>/` or workspace scan notes
+- Session handoffs, AVS control state, or `ai-venture-studio` venture metadata
+- References to "portfolio" fixes tied to a specific private repo
+
+**Use instead:** generic placeholders (`example-app/`, `my-service/`, `acme-corp/`)
+and describe the *pattern* (e.g. "multi-env `.example` templates"), not the source repo.
+
+Local-only notes belong in gitignored paths: `TODO.local.md`, `.local/`, `audit.md`,
+`docs/sessions/`, `docs/plans/`.
+
+Before opening a PR, search the diff for private product names and internal paths.
+
 ## Release train
 
 All four published packages (`@vaultcompass/vault-guard`, `-core`, `-mcp`,

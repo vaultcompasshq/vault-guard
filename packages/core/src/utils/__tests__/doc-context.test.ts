@@ -15,9 +15,9 @@ describe('isDocumentationPath', () => {
   });
 
   it('recognizes root README and CLAUDE markdown', () => {
-    expect(isDocumentationPath('kidcompass/README.md')).toBe(true);
-    expect(isDocumentationPath('sheetful/CLAUDE.md')).toBe(true);
-    expect(isDocumentationPath('translator-headphones/POSTHOG_SETUP.md')).toBe(true);
+    expect(isDocumentationPath('example-app/README.md')).toBe(true);
+    expect(isDocumentationPath('example-app/CLAUDE.md')).toBe(true);
+    expect(isDocumentationPath('example-app/POSTHOG_SETUP.md')).toBe(true);
   });
 
   it('does not mark production source', () => {
@@ -54,7 +54,7 @@ describe('shouldSuppressDocContextMatch', () => {
     expect(
       shouldSuppressDocContextMatch(
         'api-key-generic',
-        'translator-headphones/ANALYTICS_GUIDE.md',
+        'example-app/ANALYTICS_GUIDE.md',
         'your_posthog_api_key',
         'your_posthog_api_key',
         'export const KEY = "your_posthog_api_key";',
