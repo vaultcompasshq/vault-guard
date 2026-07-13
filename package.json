@@ -7,7 +7,7 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "test:coverage": "pnpm -r --workspace-concurrency=1 run test:coverage",
-    "test:windows": "pnpm --filter @vaultcompass/vault-guard-core test && pnpm --filter @vaultcompass/vault-guard test -- --testPathIgnorePatterns=integration",
+    "test:windows": "pnpm --filter @vaultcompass/vault-guard-core test -- --testPathIgnorePatterns=pre-commit-hook && pnpm --filter @vaultcompass/vault-guard test -- --testPathIgnorePatterns=integration",
     "gen:rules-doc": "node scripts/gen-rules-doc.cjs",
     "lint": "eslint .",
     "check:pack": "node scripts/check-pack.cjs",
