@@ -1,5 +1,11 @@
 # @vaultcompass/vault-guard-core
 
+## 1.2.3
+
+### Patch Changes
+
+- fix(core): apply nested `.gitignore` files when scanning from an ancestor directory, and downgrade `gcp-oauth` to low severity (public client ID, not a secret).
+
 ## 1.2.2
 
 ## 1.2.1
