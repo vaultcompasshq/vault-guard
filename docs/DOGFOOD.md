@@ -84,3 +84,7 @@ After a day of agent-assisted work on a product repo:
 - [`docs/MCP.md`](MCP.md)
 - [`docs/PRODUCT_SCOPE.md`](PRODUCT_SCOPE.md)
 - [`bench/README.md`](../bench/README.md)
+
+## Related backlog
+
+See `docs/BACKLOG.md` for Jul 16, 2026 audit suggestions (marketplace extension, Windows companion, Homebrew, init conflict guidance).
