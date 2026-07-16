@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-07-16
+
+### Fixed
+
+- **Nested `.gitignore` files are now honored when scanning from an ancestor
+  directory.** `vault-guard scan .` previously only merged `.gitignore` rules
+  found by walking *up* from the scan root to the git root, so a `.gitignore`
+  nested below the scan root (a common pattern in monorepos, e.g. a
+  per-package `target/` or `dist/` ignore) was silently skipped. On one real
+  repo this meant scanning 9,186 files / 1.7GB of compiled build artifacts
+  instead of the 469 files git actually tracks, producing 9 critical false
+  positives on binary artifacts. Fixed by discovering `.gitignore` files
+  below the scan root as well as above it.
+- **`gcp-oauth` downgraded from critical to low severity.** The pattern
+  matches GCP OAuth 2.0 client IDs, which are public identifiers safe for
+  client-side embedding (only the paired client secret is sensitive). This
+  is consistent with the project's existing policy of not treating public
+  identifiers as secrets.
+
 ## [1.1.2] - 2026-07-07
 
 ### Fixed

@@ -1,5 +1,12 @@
 # @vaultcompass/vault-guard-telemetry
 
+## 1.2.3
+
+### Patch Changes
+
+- Updated dependencies
+  - @vaultcompass/vault-guard-core@1.2.3
+
 ## 1.2.2
 
 ### Patch Changes
