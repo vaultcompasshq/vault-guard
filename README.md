@@ -266,6 +266,10 @@ Parse `summary.secrets`, `results`, and `run` as documented in **[docs/PRODUCT_S
 
 ---
 
+## Maintainer dogfood
+
+Before tagging a release, run through **[docs/DOGFOOD.md](./docs/DOGFOOD.md)** — install on a ship machine, MCP + pre-commit smoke, optional telemetry, and `pnpm bench` / `node bench/run.cjs --assert`.
+
 ## Development
 
 Requires **Node.js 22+** and **pnpm 9+**. (Node 20 reached EOL April 2026.)
