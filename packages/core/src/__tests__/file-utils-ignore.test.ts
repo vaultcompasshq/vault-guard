@@ -54,6 +54,24 @@ describe('getFilesToScan + ignore package', () => {
     expect(files).toEqual(['a.ts']);
   });
 
+  it('applies a nested .gitignore when scanning from an ancestor directory', () => {
+    const root = tmp('nested-from-ancestor');
+    fs.mkdirSync(path.join(root, 'pkg', 'src'), { recursive: true });
+    fs.mkdirSync(path.join(root, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.gitignore'), '*.log\n', 'utf-8');
+    fs.writeFileSync(path.join(root, 'pkg', '.gitignore'), '*.tmp\n', 'utf-8');
+    fs.writeFileSync(path.join(root, 'pkg', 'src', 'a.ts'), 'ok\n', 'utf-8');
+    fs.writeFileSync(path.join(root, 'pkg', 'src', 'x.tmp'), 'no\n', 'utf-8');
+    fs.writeFileSync(path.join(root, 'noise.log'), 'no\n', 'utf-8');
+
+    // Scan from the repo ROOT, the normal `vault-guard scan .` case — the
+    // nested pkg/.gitignore should still apply to files under pkg/src/.
+    const files = getFilesToScan(root).map(f => path.basename(f));
+    expect(files).toContain('a.ts');
+    expect(files).not.toContain('x.tmp');
+    expect(files).not.toContain('noise.log');
+  });
+
   it('skips vendored / generated directories and minified artifacts', () => {
     const root = tmp('vendored');
     fs.mkdirSync(path.join(root, '.yarn', 'releases'), { recursive: true });

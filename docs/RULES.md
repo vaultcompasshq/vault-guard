@@ -32,7 +32,7 @@ Patterns with a `Min entropy` value drop matches whose Shannon entropy falls bel
 | `aws-secret-context` | critical | - | `gi` | `(?:aws_secret_access_key\|AWS_SECRET_ACCESS_KEY)\\s*[=:]\\s*["']?([a-zA-Z0-9/+]{40})` |
 | `gcp-service-account` | critical | - | `g` | `"type":\\s*"service_account"` |
 | `gcp-api-key` | critical | - | `g` | `AIza[a-zA-Z0-9_-]{35}` |
-| `gcp-oauth` | critical | - | `g` | `[0-9]+-[a-zA-Z0-9_]{32}\\.apps\\.googleusercontent\\.com` |
+| `gcp-oauth` | low | - | `g` | `[0-9]+-[a-zA-Z0-9_]{32}\\.apps\\.googleusercontent\\.com` |
 | `azure-storage` | critical | - | `g` | `DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{20,}` |
 | `postgresql-url` | critical | - | `g` | `postgres(?:ql)?:\\/\\/[^:@\\s]+:[^@\\s]+@[^:\\s/]+(?::\\d+)?\\/\\S+` |
 | `mysql-url` | critical | - | `g` | `mysql:\\/\\/[^:@\\s]+:[^@\\s]+@[^:\\s/]+(?::\\d+)?\\/\\S+` |

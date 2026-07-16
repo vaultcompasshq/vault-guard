@@ -89,7 +89,10 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   ['aws-secret-context',  { regex: /(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[=:]\s*["']?([a-zA-Z0-9/+]{40})/gi, severity: 'critical' }],
   ['gcp-service-account', { regex: /"type":\s*"service_account"/g,                               severity: 'critical' }],
   ['gcp-api-key',         { regex: /AIza[a-zA-Z0-9_-]{35}/g,                                    severity: 'critical' }],
-  ['gcp-oauth',           { regex: /[0-9]+-[a-zA-Z0-9_]{32}\.apps\.googleusercontent\.com/g,    severity: 'critical' }],
+  // OAuth 2.0 client ID, not a secret: Google documents these as safe for
+  // client-side / public embedding (only the paired client *secret* is
+  // sensitive). Kept at low severity for visibility, not blocking.
+  ['gcp-oauth',           { regex: /[0-9]+-[a-zA-Z0-9_]{32}\.apps\.googleusercontent\.com/g,    severity: 'low' }],
   ['azure-storage',       { regex: /DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{20,}/g, severity: 'critical' }],
 
   // --- Database connection strings ---
