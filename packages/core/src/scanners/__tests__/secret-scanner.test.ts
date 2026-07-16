@@ -102,6 +102,17 @@ describe('SecretScanner', () => {
       const matches = scanner.scan(testFilePath);
       expect(matches.some(m => m.type === 'jwt-token')).toBe(true);
     });
+
+    it('detects a GCP OAuth client ID at low severity (it is a public identifier, not a secret)', () => {
+      fs.writeFileSync(
+        testFilePath,
+        `const GOOGLE_CLIENT_ID = "141102123456-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com";`,
+      );
+      const matches = scanner.scan(testFilePath);
+      expect(matches).toHaveLength(1);
+      expect(matches[0].type).toBe('gcp-oauth');
+      expect(matches[0].severity).toBe('low');
+    });
   });
 
   // ---------------------------------------------------------------------------
