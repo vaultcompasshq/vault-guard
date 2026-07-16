@@ -151,10 +151,58 @@ function collectGitignoreChain(resolvedScan: string, stopAt: string): GitignoreC
   return raw;
 }
 
+/**
+ * Recursively discover `.gitignore` files inside `root` (inclusive of `root`
+ * itself), skipping directories the walk never descends into anyway
+ * ({@link shouldIgnoreDirectory}) so this pre-pass stays cheap. Scanning from
+ * an ancestor of a nested `.gitignore` (e.g. `vault-guard scan .` in a repo
+ * with a per-package `.gitignore`) otherwise never sees that file: the ignore
+ * filter was only ever built from ancestors of the scan root, not descendants.
+ */
+function collectDescendantGitignores(root: string): GitignoreChainEntry[] {
+  const found: GitignoreChainEntry[] = [];
+  const stack: string[] = [root];
+
+  while (stack.length > 0) {
+    const dir = stack.pop() as string;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (shouldIgnoreDirectory(entry.name)) continue;
+        stack.push(full);
+      } else if (entry.isFile() && entry.name === '.gitignore') {
+        try {
+          found.push({ dir, absGitignore: full, content: fs.readFileSync(full, 'utf-8') });
+        } catch {
+          /* unreadable .gitignore — treat as absent */
+        }
+      }
+    }
+  }
+
+  // Shallow-to-deep, matching collectGitignoreChain's ordering, so more
+  // specific nested rules are added (and can override) after broader ones.
+  found.sort((a, b) => a.dir.split(path.sep).length - b.dir.split(path.sep).length);
+  return found;
+}
+
 function buildIgnoreFilter(resolvedScanRoot: string): CachedIgnoreFilter {
   const gitRoot = findGitRoot(resolvedScanRoot);
   const stopAt = gitRoot ?? filesystemRootFor(resolvedScanRoot);
-  const chain = collectGitignoreChain(resolvedScanRoot, stopAt);
+  const ancestorChain = collectGitignoreChain(resolvedScanRoot, stopAt);
+  const seen = new Set(ancestorChain.map(c => c.absGitignore));
+  const descendantChain = collectDescendantGitignores(resolvedScanRoot).filter(
+    c => !seen.has(c.absGitignore),
+  );
+  const chain = [...ancestorChain, ...descendantChain];
 
   const ig = ignore();
   for (const { dir, content } of chain) {
