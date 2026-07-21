@@ -196,4 +196,24 @@ describe('vault-guard init', () => {
     const code = await initCommand({ cwd: testDir, dryRun: true });
     expect(code).toBe(2);
   });
+
+  it('advises when husky is present but native manager is selected', () => {
+    fs.mkdirSync(path.join(testDir, '.husky'), { recursive: true });
+    const plan = planInit({ cwd: testDir, manager: 'native' });
+    expect(plan.advisories.some(a => a.manager === 'husky')).toBe(true);
+    expect(plan.advisories.find(a => a.manager === 'husky')?.guidance).toMatch(/husky/i);
+  });
+
+  it('does not advise husky when manager is husky', () => {
+    fs.mkdirSync(path.join(testDir, '.husky'), { recursive: true });
+    const plan = planInit({ cwd: testDir, manager: 'husky', skipHook: true });
+    expect(plan.advisories.some(a => a.manager === 'husky')).toBe(false);
+  });
+
+  it('advises when lefthook.yml exists under native manager', () => {
+    fs.writeFileSync(path.join(testDir, 'lefthook.yml'), 'pre-commit:\n  commands: {}\n');
+    const plan = planInit({ cwd: testDir, manager: 'native' });
+    expect(plan.advisories.some(a => a.manager === 'lefthook')).toBe(true);
+  });
+
 });

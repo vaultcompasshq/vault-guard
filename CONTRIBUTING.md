@@ -94,12 +94,13 @@ pnpm lint && pnpm test && node bench/run.cjs --assert
 
 ## Out of scope (separate plans)
 
+`vault-guard init` is **shipped** (see README Quickstart §0).
+
 Do not start these without a dedicated plan signed off by the repo owner:
 
 - Git history scanning
 - Active AI-key verification (`--verify`)
 - MCP deny-gate
 - `.claude/` `.cursor/` artifact detection rule
-- `vault-guard init` one-command repo setup (see README Quickstart §0)
 - GitHub Action Marketplace listing
 - TypeScript 6 upgrade

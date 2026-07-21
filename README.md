@@ -77,12 +77,12 @@ vault-guard install-hook --manager lefthook   # lefthook-local.yml
 vault-guard install-hook --manager precommit  # .pre-commit-config.yaml (only if absent)
 ```
 
-**Windows:** `scan`, `check`, MCP, and CI workflows are supported on Windows. Pre-commit
-hook install (`install-hook`, `init`) and hook unit tests target **POSIX shell**
-(Git Bash or WSL) — native `.git/hooks/pre-commit` is a shell script; a `.cmd`
-companion is not shipped yet. CI runs `pnpm test:windows` (core + CLI unit tests,
-excluding hook/proxy integration). Use `vault-guard scan --staged` in CI or run
-hooks from Git Bash.
+**Windows:** `scan`, `check`, MCP, and CI workflows are supported on Windows.
+Native hook install (`install-hook`, `init --manager native`) writes both a POSIX
+`pre-commit` script (Git Bash / WSL) and a **`pre-commit.cmd`** companion for
+cmd.exe-based Git clients. Husky/Lefthook/pre-commit managers still use their
+own runners. CI runs `pnpm test:windows` (core + CLI unit tests, excluding
+hook/proxy integration).
 
 Emergency bypass (discouraged): `git commit --no-verify`.
 
@@ -136,6 +136,22 @@ Vault Guard is **not** a history miner. It targets fast working-tree checks (the
 | Local-only / no account required | Yes | Yes | Yes | Yes | No | No |
 
 For credentials in Git history use **[Gitleaks](https://github.com/gitleaks/gitleaks)** or **[TruffleHog](https://github.com/trufflesecurity/trufflehog)** alongside Vault Guard. They are complementary, not competing.
+
+
+---
+
+## Recommended stack
+
+Use Vault Guard as the **local AI-edit firewall**, then compose with history scanners:
+
+| Layer | Tool | Role |
+|---|---|---|
+| AI edits + staged files + CI checkout | **Vault Guard** (MCP, pre-commit, Action) | Fast working-tree gate; no account |
+| Git history / deep local scan | [Gitleaks](https://github.com/gitleaks/gitleaks) | Offline history + strong pre-commit rules |
+| Verified / live-key audit | [TruffleHog](https://github.com/trufflesecurity/trufflehog) | Confirm credentials still work |
+
+Vault Guard does **not** mine Git history — see [docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md). Pairing with Gitleaks/TruffleHog is the recommended production setup, not a competing choice.
+
 
 ---
 
@@ -241,9 +257,14 @@ vault-guard suggest-model --json
 
 ## VS Code / Cursor extension
 
-**Developer build only**: not yet published to the marketplace.
+Inline diagnostics for open files (uses `@vaultcompass/vault-guard-core`). Package lives in
+`packages/vscode-extension`.
 
-`packages/vscode-extension`: `pnpm --filter vault-guard-vscode build`, then **Run Extension** from VS Code for a local tryout.
+**Local tryout:** `pnpm --filter vault-guard-vscode build`, then **Run Extension** from VS Code.
+
+**Marketplace:** packaging is ready (`vsce package` / `vsce publish`) — see
+[packages/vscode-extension/README.md](./packages/vscode-extension/README.md). Publishing
+requires the `vaultcompass` publisher token (maintainers only).
 
 ---
 

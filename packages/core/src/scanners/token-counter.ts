@@ -111,7 +111,8 @@ export class TokenCounter {
   }
 
   private getExtension(filePath: string): string {
-    const parts = filePath.split('.');
-    return parts.length > 1 ? `.${parts[parts.length - 1]}` : '(no ext)';
+    // Use basename so parent dirs with '.' (e.g. macOS temp paths) are ignored.
+    const ext = path.extname(path.basename(filePath));
+    return ext.length > 0 ? ext : '(no ext)';
   }
 }

@@ -62,6 +62,13 @@ describe('PreCommitHook', () => {
       const hookContent = fs.readFileSync(hookPath, 'utf-8');
       expect(hookContent).toContain('vault-guard');
       expect(hookContent).toContain('scan --staged');
+
+      const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
+      expect(fs.existsSync(cmdPath)).toBe(true);
+      const cmdContent = fs.readFileSync(cmdPath, 'utf-8');
+      expect(cmdContent).toContain('vault-guard');
+      expect(cmdContent).toContain('scan --staged');
+      expect(cmdContent).toMatch(/@echo off/i);
     });
 
     it('should install into core.hooksPath when set (relative to .git)', () => {
@@ -103,7 +110,24 @@ describe('PreCommitHook', () => {
       const result = preCommitHook.install({ manager: 'native' });
 
       expect(result.success).toBe(true);
-      expect(result.message).toBe('Hook already installed');
+      expect(result.message).toMatch(/Hook already installed/);
+      expect(fs.existsSync(path.join(hooksDir, 'pre-commit.cmd'))).toBe(true);
+    });
+
+    it('should refresh missing Windows .cmd companion when POSIX hook exists', () => {
+      fs.mkdirSync(hooksDir, { recursive: true });
+      fs.writeFileSync(
+        hookPath,
+        '#!/bin/sh\n# vault-guard pre-commit hook\nvault-guard scan --staged\n',
+        { mode: 0o755 },
+      );
+      process.chdir(testDir);
+
+      const result = preCommitHook.install({ manager: 'native' });
+      expect(result.success).toBe(true);
+      const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
+      expect(fs.existsSync(cmdPath)).toBe(true);
+      expect(fs.readFileSync(cmdPath, 'utf-8')).toContain('call vault-guard scan --staged');
     });
 
     it('should overwrite non-vault-guard hook', () => {
@@ -159,18 +183,18 @@ describe('PreCommitHook', () => {
       expect(result.message).toBe('No hook to remove');
     });
 
-    it('should remove existing hook', () => {
-      fs.mkdirSync(hooksDir, { recursive: true });
-      fs.writeFileSync(hookPath, '#!/bin/sh\n# vault-guard pre-commit hook\nvault-guard scan --staged\n', {
-        mode: 0o755,
-      });
+    it('should remove existing hook and Windows .cmd companion', () => {
       process.chdir(testDir);
+      expect(preCommitHook.install({ manager: 'native' }).success).toBe(true);
+      const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
+      expect(fs.existsSync(cmdPath)).toBe(true);
 
       const result = preCommitHook.uninstall({ manager: 'native' });
 
       expect(result.success).toBe(true);
-      expect(result.message).toBe('Pre-commit hook removed');
+      expect(result.message).toMatch(/removed/i);
       expect(fs.existsSync(hookPath)).toBe(false);
+      expect(fs.existsSync(cmdPath)).toBe(false);
     });
   });
 
@@ -213,7 +237,7 @@ describe('PreCommitHook', () => {
 
       const reinstallResult = preCommitHook.install({ manager: 'native' });
       expect(reinstallResult.success).toBe(true);
-      expect(reinstallResult.message).toBe('Hook already installed');
+      expect(reinstallResult.message).toMatch(/Hook already installed/);
 
       const uninstallResult = preCommitHook.uninstall({ manager: 'native' });
       expect(uninstallResult.success).toBe(true);

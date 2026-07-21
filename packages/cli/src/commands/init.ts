@@ -34,6 +34,13 @@ export interface InitConflict {
     | 'foreign_hook';
 }
 
+export interface InitAdvisory {
+  /** Detected manager that may already own pre-commit. */
+  manager: 'husky' | 'lefthook' | 'precommit';
+  path: string;
+  guidance: string;
+}
+
 export interface InitPlannedAction {
   kind: 'create' | 'hook-install' | 'skip';
   path: string;
@@ -47,6 +54,8 @@ export interface InitResult {
   alreadyInitialized: boolean;
   actions: InitPlannedAction[];
   conflicts: InitConflict[];
+  /** Non-blocking tips when other hook managers are present. */
+  advisories: InitAdvisory[];
   hook?: { manager: string; path?: string; installed: boolean };
   manifestPath: string;
   mcpMergeHint: string;
@@ -131,6 +140,70 @@ function foreignHookConflict(
   return { path: rel, reason: 'foreign_hook' };
 }
 
+
+function detectOtherHookManagers(cwd: string, selected: HookManager): InitAdvisory[] {
+  const advisories: InitAdvisory[] = [];
+
+  const huskyDir = path.join(cwd, '.husky');
+  if (fs.existsSync(huskyDir) && selected !== 'husky') {
+    advisories.push({
+      manager: 'husky',
+      path: '.husky/',
+      guidance:
+        'Husky detected. Prefer `vault-guard init --manager husky` or `vault-guard install-hook --manager husky` so the scan runs from .husky/pre-commit. Native hooks may not run when husky owns core.hooksPath.',
+    });
+  }
+
+  const lefthookYml = path.join(cwd, 'lefthook.yml');
+  const lefthookLocal = path.join(cwd, 'lefthook-local.yml');
+  if ((fs.existsSync(lefthookYml) || fs.existsSync(lefthookLocal)) && selected !== 'lefthook') {
+    advisories.push({
+      manager: 'lefthook',
+      path: fs.existsSync(lefthookLocal) ? 'lefthook-local.yml' : 'lefthook.yml',
+      guidance:
+        'Lefthook detected. Prefer `vault-guard init --manager lefthook` (writes lefthook-local.yml) or merge `vault-guard scan --staged` under pre-commit.commands manually. Init never overwrites existing lefthook files.',
+    });
+  }
+
+  const precommitCfg = path.join(cwd, '.pre-commit-config.yaml');
+  if (fs.existsSync(precommitCfg) && selected !== 'precommit') {
+    advisories.push({
+      manager: 'precommit',
+      path: '.pre-commit-config.yaml',
+      guidance:
+        'pre-commit framework config detected. Prefer `vault-guard init --manager precommit` only if the file is absent, or merge the local vault-guard hook into repos: yourself. Init never overwrites an existing .pre-commit-config.yaml.',
+    });
+  }
+
+  return advisories;
+}
+
+function conflictGuidance(c: InitConflict): string {
+  switch (c.reason) {
+    case 'exists':
+      return 'File already exists with different content — edit manually or move it aside, then re-run init.';
+    case 'foreign_manifest':
+      return 'Existing .vault-guard/init-manifest.json is invalid or foreign — fix or remove it, then re-run.';
+    case 'manifest_mismatch':
+      return 'Init manifest does not match current templates/options — run `vault-guard init --revert` then init again, or update files by hand.';
+    case 'not_a_git_repository':
+      return 'Run `git init` first, or pass `--skip-hook` to scaffold config/workflow without a hook.';
+    case 'foreign_hook':
+      if (c.path.includes('husky') || c.path.startsWith('.husky')) {
+        return 'Existing Husky pre-commit has no vault-guard stanza. Append `vault-guard scan --staged` yourself, or use `install-hook --manager husky` after reviewing the file.';
+      }
+      if (c.path.includes('lefthook')) {
+        return 'Add under pre-commit.commands:\n  vault-guard:\n    run: vault-guard scan --staged';
+      }
+      if (c.path.includes('pre-commit-config')) {
+        return 'Merge a local vault-guard hook into repos: (see `vault-guard install-hook --manager precommit` error output for a snippet).';
+      }
+      return 'An existing pre-commit hook is present without vault-guard. Merge `vault-guard scan --staged` manually, or remove the foreign hook if unused.';
+    default:
+      return 'Resolve manually, then re-run vault-guard init.';
+  }
+}
+
 function ensureParentDir(filePath: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
@@ -141,6 +214,7 @@ export function planInit(options: InitOptions = {}): InitResult {
   const manager = options.manager ?? 'native';
   const actions: InitPlannedAction[] = [];
   const conflicts: InitConflict[] = [];
+  const advisories = detectOtherHookManagers(cwd, manager);
   const trackedFiles: Array<{ path: string; action: 'created' }> = [];
 
   const manifestAbs = path.join(cwd, MANIFEST_RELATIVE_PATH);
@@ -237,6 +311,7 @@ export function planInit(options: InitOptions = {}): InitResult {
     alreadyInitialized,
     actions,
     conflicts,
+    advisories,
     hook: hookState,
     manifestPath: MANIFEST_RELATIVE_PATH,
     mcpMergeHint: MCP_MERGE_HINT,
@@ -371,6 +446,7 @@ export function revertInit(options: InitOptions = {}): InitResult {
       reverted: false,
       alreadyInitialized: false,
       actions: [],
+      advisories: [],
       conflicts: [{ path: MANIFEST_RELATIVE_PATH, reason: 'foreign_manifest' }],
       manifestPath: MANIFEST_RELATIVE_PATH,
       mcpMergeHint: MCP_MERGE_HINT,
@@ -385,6 +461,7 @@ export function revertInit(options: InitOptions = {}): InitResult {
       reverted: false,
       alreadyInitialized: false,
       actions: [],
+      advisories: [],
       conflicts: [{ path: MANIFEST_RELATIVE_PATH, reason: 'foreign_manifest' }],
       manifestPath: MANIFEST_RELATIVE_PATH,
       mcpMergeHint: MCP_MERGE_HINT,
@@ -443,6 +520,7 @@ export function revertInit(options: InitOptions = {}): InitResult {
     reverted: !dryRun,
     alreadyInitialized: false,
     actions,
+    advisories: [],
     conflicts: [],
     manifestPath: MANIFEST_RELATIVE_PATH,
     mcpMergeHint: MCP_MERGE_HINT,
@@ -470,6 +548,14 @@ function printHuman(result: InitResult, options: InitOptions): void {
     console.error(chalk.red.bold('❌ Init blocked — conflicts (no automatic overwrites):'));
     for (const c of result.conflicts) {
       console.error(chalk.white(`   ${c.path}`), chalk.gray(`(${c.reason})`));
+      console.error(chalk.gray(`      → ${conflictGuidance(c)}`));
+    }
+    if (result.advisories.length > 0) {
+      console.error(chalk.yellow('\nAlso noted:'));
+      for (const a of result.advisories) {
+        console.error(chalk.yellow(`   [${a.manager}] ${a.path}`));
+        console.error(chalk.gray(`      ${a.guidance}`));
+      }
     }
     console.error(chalk.gray('\nResolve manually, then re-run vault-guard init.'));
     return;
@@ -493,6 +579,14 @@ function printHuman(result: InitResult, options: InitOptions): void {
       console.log(
         chalk.white(`   ${result.dryRun ? 'install' : 'installed'} hook (${a.detail})`),
       );
+    }
+  }
+
+  if (result.advisories.length > 0) {
+    console.log(chalk.yellow('\nHook manager notes:'));
+    for (const a of result.advisories) {
+      console.log(chalk.yellow(`   [${a.manager}] ${a.path}`));
+      console.log(chalk.gray(`      ${a.guidance}`));
     }
   }
 
