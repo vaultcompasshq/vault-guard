@@ -15,7 +15,10 @@ export async function installHookCommand(manager: HookManager = 'native'): Promi
     }
     console.log(
       chalk.gray(
-        '\nThe hook runs `vault-guard scan --staged` before each commit (staged files only).\n',
+        '\nThe hook runs `vault-guard scan --staged` before each commit (staged files only).\n' +
+          (manager === 'native'
+            ? 'Native install also writes pre-commit.cmd for Windows cmd.exe clients.\n'
+            : ''),
       ),
     );
   } else {

@@ -39,6 +39,32 @@ echo "💡 Fix or unstage, then retry. Emergency bypass (discouraged): git commi
 exit 1
 `;
 
+/**
+ * Windows cmd.exe companion for native Git hooks.
+ * Git for Windows invokes `pre-commit.cmd` when present and the shell hook
+ * is not used (e.g. some GUI clients / cmd-based workflows).
+ */
+const NATIVE_HOOK_CMD = `@echo off
+REM vault-guard pre-commit (installed by @vaultcompass/vault-guard)
+where vault-guard >nul 2>&1
+if errorlevel 1 (
+  echo ❌ vault-guard: command not found ^(install: npm i -g @vaultcompass/vault-guard^)
+  exit /b 1
+)
+
+echo 🔍 vault-guard: scanning staged files...
+call vault-guard scan --staged
+if errorlevel 1 (
+  echo.
+  echo ❌ COMMIT BLOCKED: secrets detected in staged files
+  echo 💡 Fix or unstage, then retry. Emergency bypass ^(discouraged^): git commit --no-verify
+  exit /b 1
+)
+
+echo ✅ vault-guard: no secrets in staged files
+exit /b 0
+`;
+
 /** Husky-friendly hook (sources \`_/husky.sh\` when present). */
 const HUSKY_HOOK_SCRIPT = `#!/usr/bin/env sh
 if [ -f "$(dirname "$0")/_/husky.sh" ]; then
@@ -122,6 +148,13 @@ export class PreCommitHook {
     return path.join(this.getEffectiveHooksDir(cwd).hooksDir, 'pre-commit');
   }
 
+  /**
+   * Absolute path to the Windows \`pre-commit.cmd\` companion (native manager only).
+   */
+  getPreCommitCmdPath(cwd: string): string {
+    return path.join(this.getEffectiveHooksDir(cwd).hooksDir, 'pre-commit.cmd');
+  }
+
   install(options: InstallHookOptions = {}): { success: boolean; message: string; hookPath?: string } {
     const cwd = options.cwd ?? process.cwd();
     const manager = options.manager ?? 'native';
@@ -180,9 +213,27 @@ export class PreCommitHook {
   // native (Git hooks / core.hooksPath)
   // -------------------------------------------------------------------------
 
+  private writeNativeCmdCompanion(hooksDir: string): string {
+    const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
+    fs.writeFileSync(cmdPath, NATIVE_HOOK_CMD, { encoding: 'utf-8' });
+    return cmdPath;
+  }
+
+  private removeNativeCmdCompanion(hooksDir: string): boolean {
+    const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
+    if (!fs.existsSync(cmdPath)) return false;
+    const content = fs.readFileSync(cmdPath, 'utf-8');
+    if (!content.includes('vault-guard') || !content.includes('scan --staged')) {
+      return false;
+    }
+    fs.unlinkSync(cmdPath);
+    return true;
+  }
+
   private installNative(cwd: string): { success: boolean; message: string; hookPath?: string } {
     const { hooksDir, viaHooksPath } = this.getEffectiveHooksDir(cwd);
     const hookPath = path.join(hooksDir, 'pre-commit');
+    const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
 
     try {
       if (!fs.existsSync(hooksDir)) {
@@ -192,21 +243,30 @@ export class PreCommitHook {
       if (fs.existsSync(hookPath)) {
         const existing = fs.readFileSync(hookPath, 'utf-8');
         if (existing.includes('vault-guard') && existing.includes('scan --staged')) {
+          // Refresh the Windows companion if missing or stale.
+          this.writeNativeCmdCompanion(hooksDir);
           return {
             success: true,
-            message: 'Hook already installed',
+            message: fs.existsSync(cmdPath)
+              ? 'Hook already installed (POSIX + Windows .cmd companion)'
+              : 'Hook already installed',
             hookPath,
           };
         }
       }
 
       fs.writeFileSync(hookPath, NATIVE_HOOK_SCRIPT, { mode: 0o755 });
+      this.writeNativeCmdCompanion(hooksDir);
 
       const hint = viaHooksPath
         ? `Installed to hooksPath: ${hooksDir}`
-        : 'Installed to .git/hooks/pre-commit';
+        : 'Installed to .git/hooks/pre-commit (+ pre-commit.cmd)';
 
-      return { success: true, message: `Pre-commit hook installed (${hint})`, hookPath };
+      return {
+        success: true,
+        message: `Pre-commit hook installed (${hint})`,
+        hookPath,
+      };
     } catch (error) {
       const hookError = new HookError(`Failed to install hook: ${error}`, 'install');
       return { success: false, message: hookError.message };
@@ -214,20 +274,37 @@ export class PreCommitHook {
   }
 
   private uninstallNative(cwd: string): { success: boolean; message: string } {
-    const hookPath = this.getPreCommitHookPath(cwd, 'native');
+    const { hooksDir } = this.getEffectiveHooksDir(cwd);
+    const hookPath = path.join(hooksDir, 'pre-commit');
+    const cmdRemoved = this.removeNativeCmdCompanion(hooksDir);
 
     if (!fs.existsSync(hookPath)) {
-      return { success: true, message: 'No hook to remove' };
+      return {
+        success: true,
+        message: cmdRemoved
+          ? 'Removed Windows pre-commit.cmd companion'
+          : 'No hook to remove',
+      };
     }
 
     const content = fs.readFileSync(hookPath, 'utf-8');
     if (!content.includes('vault-guard')) {
-      return { success: true, message: 'No vault-guard hook to remove' };
+      return {
+        success: true,
+        message: cmdRemoved
+          ? 'Removed Windows pre-commit.cmd companion'
+          : 'No vault-guard hook to remove',
+      };
     }
 
     try {
       fs.unlinkSync(hookPath);
-      return { success: true, message: 'Pre-commit hook removed' };
+      return {
+        success: true,
+        message: cmdRemoved
+          ? 'Pre-commit hook and Windows .cmd companion removed'
+          : 'Pre-commit hook removed',
+      };
     } catch (error) {
       const hookError = new HookError(`Failed to remove hook: ${error}`, 'uninstall');
       return { success: false, message: hookError.message };

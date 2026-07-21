@@ -3,7 +3,6 @@
   "displayName": "Vault Guard",
   "description": "Inline secret diagnostics and local spend/status hints for Vault Guard",
   "version": "0.1.0",
-  "private": true,
   "publisher": "vaultcompass",
   "engines": {
     "vscode": "^1.85.0"
@@ -36,14 +35,33 @@
   },
   "scripts": {
     "build": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=dist/extension.js --format=cjs",
-    "vscode:prepublish": "pnpm run build"
+    "vscode:prepublish": "pnpm run build",
+    "package": "vsce package --no-dependencies",
+    "publish": "vsce publish --no-dependencies"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
     "@types/vscode": "^1.120.0",
     "@vaultcompass/vault-guard-core": "workspace:*",
     "esbuild": "^0.28.1",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "@vscode/vsce": "^3.6.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vaultcompasshq/vault-guard.git",
+    "directory": "packages/vscode-extension"
+  },
+  "bugs": {
+    "url": "https://github.com/vaultcompasshq/vault-guard/issues"
+  },
+  "homepage": "https://github.com/vaultcompasshq/vault-guard#readme",
+  "keywords": [
+    "secrets",
+    "security",
+    "vault-guard",
+    "linter",
+    "ai"
+  ]
 }
