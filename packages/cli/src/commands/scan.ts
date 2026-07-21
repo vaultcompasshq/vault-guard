@@ -145,6 +145,8 @@ export async function scanCommand(
         bus,
         stats,
         configIgnorePatterns,
+        fromGitIndex: true,
+        cwd,
       });
     } else {
       results = await scanFilesAsync(targetPaths, scanner, {

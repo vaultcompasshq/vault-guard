@@ -78,11 +78,11 @@ vault-guard install-hook --manager precommit  # .pre-commit-config.yaml (only if
 ```
 
 **Windows:** `scan`, `check`, MCP, and CI workflows are supported on Windows.
-Native hook install (`install-hook`, `init --manager native`) writes both a POSIX
-`pre-commit` script (Git Bash / WSL) and a **`pre-commit.cmd`** companion for
-cmd.exe-based Git clients. Husky/Lefthook/pre-commit managers still use their
-own runners. CI runs `pnpm test:windows` (core + CLI unit tests, excluding
-hook/proxy integration).
+Native hook install writes a POSIX `pre-commit` script (Git for Windows runs it
+via `sh`, same as Git Bash) plus an optional `pre-commit.cmd` for clients that
+call `.cmd` hooks directly — `git.exe` does not use the `.cmd` file.
+Husky/Lefthook/pre-commit managers still use their own runners. CI runs
+`pnpm test:windows` (core + CLI unit tests, excluding hook/proxy integration).
 
 Emergency bypass (discouraged): `git commit --no-verify`.
 

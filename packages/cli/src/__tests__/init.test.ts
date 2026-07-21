@@ -216,4 +216,28 @@ describe('vault-guard init', () => {
     expect(plan.advisories.some(a => a.manager === 'lefthook')).toBe(true);
   });
 
+  it('conflicts on foreign lefthook-local.yml when manager is lefthook', () => {
+    fs.writeFileSync(path.join(testDir, 'lefthook-local.yml'), 'pre-commit:\n  commands:\n    other:\n      run: echo hi\n');
+    const plan = planInit({ cwd: testDir, manager: 'lefthook', skipConfig: true, skipWorkflow: true, skipAgentRules: true });
+    expect(plan.ok).toBe(false);
+    expect(plan.conflicts.some(c => c.path === 'lefthook-local.yml' && c.reason === 'foreign_hook')).toBe(true);
+  });
+
+  it('conflicts on foreign pre-commit.cmd for native manager', () => {
+    const hooksDir = path.join(testDir, '.git', 'hooks');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit.cmd'), '@echo off\necho other\n');
+    const plan = planInit({
+      cwd: testDir,
+      manager: 'native',
+      skipConfig: true,
+      skipWorkflow: true,
+      skipAgentRules: true,
+    });
+    expect(plan.ok).toBe(false);
+    expect(plan.conflicts.some(c => c.path.endsWith('pre-commit.cmd') && c.reason === 'foreign_hook')).toBe(
+      true,
+    );
+  });
+
 });

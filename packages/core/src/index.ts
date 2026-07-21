@@ -10,7 +10,7 @@ export * from './scan-output';
 export * from './diagnostics';
 export { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from './utils/entropy';
 export { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken } from './utils/placeholder';
-export { getGitStagedFilePaths, isInsideGitWorkTree } from './utils/git-utils';
+export { getGitStagedFilePaths, readGitIndexFile, isInsideGitWorkTree } from './utils/git-utils';
 export {
   validateRegexSafety,
   validateRegexLength,

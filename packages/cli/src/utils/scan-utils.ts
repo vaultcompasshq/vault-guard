@@ -7,6 +7,8 @@ import {
   buildConfigIgnoreFilter,
   scanTextFileAsync,
   scanTextFileSync,
+  readGitIndexFile,
+  applyPathAwareSeverity,
   formatJson as formatJsonResults,
   formatSarif as formatSarifResults,
   type JsonOutput,
@@ -68,11 +70,20 @@ export interface ScanOptions {
    * directory scans and staged-file scans.
    */
   configIgnorePatterns?: string[];
+  /**
+   * When true, read each path from the git index (`git show :path`) so
+   * `--staged` matches what will actually be committed — including `AD`
+   * (added in index, deleted in worktree) and partially staged files.
+   */
+  fromGitIndex?: boolean;
+  /** Repo root for `fromGitIndex` (defaults to `process.cwd()`). */
+  cwd?: string;
 }
 
 /**
  * Scan an explicit list of files (e.g. paths from \`git diff --cached\`).
- * Skips missing paths and non-files silently.
+ * Without `fromGitIndex`, skips missing worktree paths. With `fromGitIndex`,
+ * reads staged blobs so deleted worktree files are still scanned.
  */
 export async function scanFileListAsync(
   files: string[],
@@ -86,6 +97,8 @@ export async function scanFileListAsync(
     progress = false,
     concurrency = 10,
     configIgnorePatterns = [],
+    fromGitIndex = false,
+    cwd = process.cwd(),
   } = options;
 
   // Apply config ignore patterns to the explicit file list (e.g. staged files).
@@ -93,7 +106,7 @@ export async function scanFileListAsync(
   // `packages/**/__tests__/**` work identically for staged and directory scans.
   const configIgnoreTester =
     configIgnorePatterns.length > 0
-      ? buildConfigIgnoreFilter(configIgnorePatterns, process.cwd())
+      ? buildConfigIgnoreFilter(configIgnorePatterns, cwd)
       : null;
   const filteredFiles = configIgnoreTester
     ? files.filter(f => !configIgnoreTester(f))
@@ -103,6 +116,37 @@ export async function scanFileListAsync(
 
   const scanFile = async (file: string): Promise<void> => {
     try {
+      if (fromGitIndex) {
+        const rel = path.relative(cwd, file).split(path.sep).join('/');
+        if (skipBinary && isBinaryFile(file)) return;
+
+        const content = readGitIndexFile(cwd, rel);
+        if (skipBinary && content.includes('\0')) return;
+
+        const byteLen = Buffer.byteLength(content, 'utf-8');
+        if (byteLen > maxSize && verbose) {
+          console.warn(
+            chalk.yellow(`⚠️  Large staged blob (scanning in memory):`),
+            chalk.white(rel),
+            chalk.gray(`(${(byteLen / 1024 / 1024).toFixed(2)}MB)`),
+          );
+        }
+
+        if (options.stats) {
+          options.stats.filesScanned += 1;
+          options.stats.bytesScanned += byteLen;
+        }
+
+        const matches = applyPathAwareSeverity(
+          scanner.scanContent(content, { filePath: file }),
+          file,
+        );
+        if (matches.length > 0) {
+          results.push({ file, matches });
+        }
+        return;
+      }
+
       if (!fs.existsSync(file)) return;
       const st = await fs.promises.stat(file);
       if (!st.isFile()) return;
@@ -112,7 +156,7 @@ export async function scanFileListAsync(
       if (st.size > maxSize && verbose) {
         console.warn(
           chalk.yellow(`⚠️  Large file (streaming line-by-line):`),
-          chalk.white(path.relative(process.cwd(), file)),
+          chalk.white(path.relative(cwd, file)),
           chalk.gray(`(${(st.size / 1024 / 1024).toFixed(2)}MB)`),
         );
       }
@@ -134,11 +178,11 @@ export async function scanFileListAsync(
         options.bus.add({
           code: 'file.read_error',
           severity: 'error',
-          ctx: { file: path.relative(process.cwd(), file), detail: String(error) },
+          ctx: { file: path.relative(cwd, file), detail: String(error) },
         });
       }
       if (verbose) {
-        console.error(chalk.red('❌ Error scanning file:'), chalk.white(path.relative(process.cwd(), file)));
+        console.error(chalk.red('❌ Error scanning file:'), chalk.white(path.relative(cwd, file)));
         console.error(chalk.gray(String(error)));
       }
     }
