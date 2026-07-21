@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-21
+
+### Added
+
+- Optional Windows `pre-commit.cmd` companion on native hook install (Git for
+  Windows still runs the POSIX `pre-commit` via `sh`).
+- `vault-guard init` advisories when Husky / Lefthook / pre-commit framework
+  layouts are present; conflict guidance without overwrites.
+- README recommended stack: Vault Guard + Gitleaks + TruffleHog.
+- VS Code extension packaging scripts for Marketplace publish (`vsce` via npx).
+
+### Fixed
+
+- **`scan --staged` reads git index blobs.** Secrets staged then deleted from
+  the worktree (`AD`) or partially staged are no longer skipped by pre-commit.
+- Init conflicts on foreign `pre-commit.cmd`; never overwrites foreign
+  companions; refreshes the optional `.cmd` on repeat native init.
+- TokenCounter extension parsing uses `path.extname` on the basename so temp
+  dirs with dots no longer mis-bucket files.
+
 ## [1.2.3] - 2026-07-16
 
 ### Fixed
