@@ -130,6 +130,24 @@ describe('PreCommitHook', () => {
       expect(fs.readFileSync(cmdPath, 'utf-8')).toContain('call vault-guard scan --staged');
     });
 
+    it('should not overwrite a foreign pre-commit.cmd', () => {
+      fs.mkdirSync(hooksDir, { recursive: true });
+      fs.writeFileSync(
+        hookPath,
+        '#!/bin/sh\n# vault-guard pre-commit hook\nvault-guard scan --staged\n',
+        { mode: 0o755 },
+      );
+      const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
+      const foreign = '@echo off\necho foreign-hook\n';
+      fs.writeFileSync(cmdPath, foreign);
+      process.chdir(testDir);
+
+      const result = preCommitHook.install({ manager: 'native' });
+      expect(result.success).toBe(true);
+      expect(result.message).toMatch(/foreign pre-commit\.cmd/i);
+      expect(fs.readFileSync(cmdPath, 'utf-8')).toBe(foreign);
+    });
+
     it('should overwrite non-vault-guard hook', () => {
       fs.mkdirSync(hooksDir, { recursive: true });
       fs.writeFileSync(hookPath, '#!/bin/sh\necho "other hook"', { mode: 0o755 });

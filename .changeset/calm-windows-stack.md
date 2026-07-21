@@ -5,11 +5,13 @@
 "@vaultcompass/vault-guard-telemetry": minor
 ---
 
-Windows pre-commit.cmd companion, init conflict guidance, and 1.3.0 docs.
+Windows hook companion, staged-index scan fix, init conflict guidance, and 1.3.0 docs.
 
-Native `install-hook` / `init` now write a Windows `pre-commit.cmd` alongside the
-POSIX `pre-commit` script. `vault-guard init` detects Husky/Lefthook/pre-commit
-framework layouts and prints merge guidance without overwriting files. README
-adds a recommended stack (Vault Guard + Gitleaks + TruffleHog); VS Code
-extension packaging is Marketplace-ready. TokenCounter extension parsing uses
-`path.extname` on the basename so temp dirs with dots no longer mis-bucket files.
+Native `install-hook` / `init` write an optional `pre-commit.cmd` beside the POSIX
+`pre-commit` (Git for Windows still runs the extensionless hook via sh).
+`scan --staged` reads index blobs so staged-then-deleted or partially staged secrets
+are not skipped. `vault-guard init` detects Husky/Lefthook/pre-commit layouts,
+conflicts on foreign `.cmd` files, and refreshes the companion without overwriting
+foreign hooks. README adds a recommended stack (Vault Guard + Gitleaks + TruffleHog)
+and clarifies Windows hook behavior. TokenCounter uses `path.extname` on the basename
+so temp dirs with dots no longer mis-bucket files.

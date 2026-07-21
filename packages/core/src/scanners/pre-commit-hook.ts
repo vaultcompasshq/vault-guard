@@ -40,9 +40,8 @@ exit 1
 `;
 
 /**
- * Windows cmd.exe companion for native Git hooks.
- * Git for Windows invokes `pre-commit.cmd` when present and the shell hook
- * is not used (e.g. some GUI clients / cmd-based workflows).
+ * Optional `pre-commit.cmd` beside the POSIX hook. Git for Windows runs the
+ * extensionless `pre-commit` via sh; a few clients may invoke `.cmd` directly.
  */
 const NATIVE_HOOK_CMD = `@echo off
 REM vault-guard pre-commit (installed by @vaultcompass/vault-guard)
@@ -213,10 +212,22 @@ export class PreCommitHook {
   // native (Git hooks / core.hooksPath)
   // -------------------------------------------------------------------------
 
-  private writeNativeCmdCompanion(hooksDir: string): string {
+  /**
+   * Write or refresh our `pre-commit.cmd`. Never overwrites a foreign file.
+   * @returns whether our companion is present afterwards
+   */
+  private writeNativeCmdCompanion(hooksDir: string): boolean {
     const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
+    if (fs.existsSync(cmdPath)) {
+      const existing = fs.readFileSync(cmdPath, 'utf-8');
+      const isOurs =
+        existing.includes('vault-guard') && existing.includes('scan --staged');
+      if (!isOurs) {
+        return false;
+      }
+    }
     fs.writeFileSync(cmdPath, NATIVE_HOOK_CMD, { encoding: 'utf-8' });
-    return cmdPath;
+    return true;
   }
 
   private removeNativeCmdCompanion(hooksDir: string): boolean {
@@ -243,24 +254,28 @@ export class PreCommitHook {
       if (fs.existsSync(hookPath)) {
         const existing = fs.readFileSync(hookPath, 'utf-8');
         if (existing.includes('vault-guard') && existing.includes('scan --staged')) {
-          // Refresh the Windows companion if missing or stale.
-          this.writeNativeCmdCompanion(hooksDir);
+          // Refresh the Windows companion if missing or stale (never clobber foreign).
+          const cmdOk = this.writeNativeCmdCompanion(hooksDir);
           return {
             success: true,
-            message: fs.existsSync(cmdPath)
+            message: cmdOk
               ? 'Hook already installed (POSIX + Windows .cmd companion)'
-              : 'Hook already installed',
+              : fs.existsSync(cmdPath)
+                ? 'Hook already installed (left foreign pre-commit.cmd untouched)'
+                : 'Hook already installed',
             hookPath,
           };
         }
       }
 
       fs.writeFileSync(hookPath, NATIVE_HOOK_SCRIPT, { mode: 0o755 });
-      this.writeNativeCmdCompanion(hooksDir);
+      const cmdOk = this.writeNativeCmdCompanion(hooksDir);
 
       const hint = viaHooksPath
         ? `Installed to hooksPath: ${hooksDir}`
-        : 'Installed to .git/hooks/pre-commit (+ pre-commit.cmd)';
+        : cmdOk
+          ? 'Installed to .git/hooks/pre-commit (+ pre-commit.cmd)'
+          : 'Installed to .git/hooks/pre-commit';
 
       return {
         success: true,

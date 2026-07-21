@@ -110,16 +110,9 @@ function foreignHookConflict(
   manager: HookManager,
 ): InitConflict | undefined {
   const hook = new PreCommitHook();
-  const hookPath = hook.getPreCommitHookPath(cwd, manager);
-  if (!fs.existsSync(hookPath)) return undefined;
-  if (hook.isInstalled({ cwd, manager })) return undefined;
 
-  const rel = hookRelativePath(cwd, hookPath);
-  if (manager === 'husky') {
-    const content = readFileIfExists(hookPath) ?? '';
-    if (content.includes('vault-guard')) return undefined;
-    return { path: rel, reason: 'foreign_hook' };
-  }
+  // Manager-specific paths first — lefthook/precommit do not use getPreCommitHookPath
+  // (that helper still resolves the native hooks dir for non-husky managers).
   if (manager === 'lefthook') {
     const localPath = path.join(cwd, 'lefthook-local.yml');
     if (!fs.existsSync(localPath)) return undefined;
@@ -134,10 +127,35 @@ function foreignHookConflict(
     if (content.includes('vault-guard scan --staged')) return undefined;
     return { path: '.pre-commit-config.yaml', reason: 'foreign_hook' };
   }
+  if (manager === 'husky') {
+    const hookPath = hook.getPreCommitHookPath(cwd, 'husky');
+    if (!fs.existsSync(hookPath)) return undefined;
+    if (hook.isInstalled({ cwd, manager: 'husky' })) return undefined;
+    const content = readFileIfExists(hookPath) ?? '';
+    if (content.includes('vault-guard')) return undefined;
+    return { path: hookRelativePath(cwd, hookPath), reason: 'foreign_hook' };
+  }
 
-  const content = readFileIfExists(hookPath) ?? '';
-  if (content.trim().length === 0) return undefined;
-  return { path: rel, reason: 'foreign_hook' };
+  // native: POSIX hook and optional Windows companion
+  const hookPath = hook.getPreCommitHookPath(cwd, 'native');
+  if (fs.existsSync(hookPath) && !hook.isInstalled({ cwd, manager: 'native' })) {
+    const content = readFileIfExists(hookPath) ?? '';
+    if (content.trim().length > 0) {
+      return { path: hookRelativePath(cwd, hookPath), reason: 'foreign_hook' };
+    }
+  }
+
+  const cmdPath = hook.getPreCommitCmdPath(cwd);
+  if (fs.existsSync(cmdPath)) {
+    const content = readFileIfExists(cmdPath) ?? '';
+    const isOurs =
+      content.includes('vault-guard') && content.includes('scan --staged');
+    if (content.trim().length > 0 && !isOurs) {
+      return { path: hookRelativePath(cwd, cmdPath), reason: 'foreign_hook' };
+    }
+  }
+
+  return undefined;
 }
 
 
@@ -319,12 +337,29 @@ export function planInit(options: InitOptions = {}): InitResult {
 }
 
 export function applyInit(plan: InitResult, options: InitOptions = {}): InitResult {
-  if (!plan.ok || plan.dryRun || plan.alreadyInitialized) {
+  if (!plan.ok || plan.dryRun) {
     return plan;
   }
 
   const cwd = options.cwd ?? process.cwd();
   const manager = options.manager ?? 'native';
+
+  // Idempotent native refresh: backfill/update optional pre-commit.cmd even when
+  // the repo is already fully initialized.
+  if (
+    plan.alreadyInitialized &&
+    plan.hook &&
+    !options.skipHook &&
+    manager === 'native'
+  ) {
+    new PreCommitHook().install({ cwd, manager: 'native' });
+    return plan;
+  }
+
+  if (plan.alreadyInitialized) {
+    return plan;
+  }
+
   const trackedFiles: Array<{ path: string; action: 'created' }> = [];
   const createdPaths: string[] = [];
 
@@ -339,28 +374,34 @@ export function applyInit(plan: InitResult, options: InitOptions = {}): InitResu
     }
   };
 
-  if (plan.hook && !plan.hook.installed && !options.skipHook) {
+  if (plan.hook && !options.skipHook) {
     const hook = new PreCommitHook();
-    const result = hook.install({ cwd, manager });
-    if (!result.success) {
-      return {
-        ...plan,
-        ok: false,
-        actions: [
-          ...plan.actions,
-          {
-            kind: 'skip',
-            path: plan.hook.path ?? 'pre-commit',
-            detail: `hook install failed: ${result.message}`,
-          },
-        ],
-      };
+    // Always call install for native when planning a hook: first-time write, or
+    // idempotent refresh of the optional pre-commit.cmd companion.
+    if (!plan.hook.installed || manager === 'native') {
+      const result = hook.install({ cwd, manager });
+      if (!result.success && !plan.hook.installed) {
+        return {
+          ...plan,
+          ok: false,
+          actions: [
+            ...plan.actions,
+            {
+              kind: 'skip',
+              path: plan.hook.path ?? 'pre-commit',
+              detail: `hook install failed: ${result.message}`,
+            },
+          ],
+        };
+      }
+      if (result.success) {
+        plan.hook = {
+          manager,
+          path: result.hookPath ?? plan.hook.path,
+          installed: true,
+        };
+      }
     }
-    plan.hook = {
-      manager,
-      path: result.hookPath ?? plan.hook.path,
-      installed: true,
-    };
   }
 
   try {
@@ -606,7 +647,7 @@ export async function initCommand(options: InitOptions = {}): Promise<number> {
   }
 
   const plan = planInit(options);
-  const result = plan.dryRun || plan.alreadyInitialized ? plan : applyInit(plan, options);
+  const result = plan.dryRun ? plan : applyInit(plan, options);
 
   if (options.json) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

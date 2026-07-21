@@ -5,7 +5,8 @@
 **Status:** Published OSS CLI/MCP/Action; CHANGELOG at 1.2.3+. Dogfood notes live in `docs/DOGFOOD.md`.
 
 - [x] **P0** Publish VS Code/Cursor extension to marketplace — packaging ready; maintainer `vsce publish` (see `packages/vscode-extension/README.md`)
-- [x] **P0** Ship Windows-native pre-commit companion (`pre-commit.cmd` alongside POSIX hook)
+- [x] **P0** Optional Windows `pre-commit.cmd` companion (docs: Git runs POSIX `pre-commit` via sh)
+- [x] **P0** `scan --staged` reads git index blobs (covers AD / partial stage)
 - [x] **P1** Short “recommended stack” section: compose with history scanners (see README)
 - [ ] **P1** Harden Homebrew tap path beyond optional (`packaging/homebrew/`)
 - [x] **P1** Expand `vault-guard init` conflict-resolution guidance for existing hook managers
