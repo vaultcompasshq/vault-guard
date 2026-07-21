@@ -13,11 +13,11 @@
     "check:pack": "node scripts/check-pack.cjs",
     "check:private-names": "node scripts/check-private-names.cjs",
     "prepublishOnly": "pnpm build",
-    "release": "pnpm publish -r --access public",
+    "release": "pnpm publish -r --access public --filter \"@vaultcompass/*\"",
     "bench": "node bench/run.cjs",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release:next": "pnpm build && pnpm check:pack && pnpm publish -r --tag next --no-git-checks"
+    "release:next": "pnpm build && pnpm check:pack && pnpm publish -r --tag next --no-git-checks --filter \"@vaultcompass/*\""
   },
   "keywords": [
     "cli",

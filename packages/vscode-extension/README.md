@@ -40,8 +40,11 @@ pnpm --filter vault-guard-vscode build
 cd packages/vscode-extension
 npx --yes @vscode/vsce login vaultcompass   # once
 pnpm run package                   # npx @vscode/vsce package
-pnpm run publish                   # npx @vscode/vsce publish
+pnpm run publish                   # strips private, then vsce publish
 ```
+
+The package is `"private": true` so `pnpm publish -r` never pushes it to npm.
+`pnpm run publish` removes `private` for that Marketplace publish only.
 
 Use `--no-dependencies` because the extension bundles core via esbuild.
 
