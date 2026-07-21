@@ -3,6 +3,7 @@
   "displayName": "Vault Guard",
   "description": "Inline secret diagnostics and local spend/status hints for Vault Guard",
   "version": "0.1.0",
+  "private": true,
   "publisher": "vaultcompass",
   "engines": {
     "vscode": "^1.85.0"
@@ -37,7 +38,7 @@
     "build": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=dist/extension.js --format=cjs",
     "vscode:prepublish": "pnpm run build",
     "package": "npx --yes @vscode/vsce package --no-dependencies",
-    "publish": "npx --yes @vscode/vsce publish --no-dependencies"
+    "publish": "npm pkg delete private && npx --yes @vscode/vsce publish --no-dependencies"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",

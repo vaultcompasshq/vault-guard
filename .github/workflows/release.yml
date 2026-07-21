@@ -48,15 +48,40 @@ jobs:
     - name: Upgrade npm for OIDC trusted publishing
       run: npm install -g npm@11
 
+    # Only @vaultcompass/* packages — never vault-guard-vscode (Marketplace via vsce).
+    # Skip versions already on the registry so a failed mid-release can be re-run.
     - name: Publish to npm
-      run: pnpm publish -r --access public --no-git-checks
+      run: |
+        set -euo pipefail
+        for dir in packages/core packages/telemetry packages/cli packages/mcp; do
+          name="$(node -p "require('./${dir}/package.json').name")"
+          ver="$(node -p "require('./${dir}/package.json').version")"
+          if [[ "$(npm view "${name}@${ver}" version 2>/dev/null || true)" == "${ver}" ]]; then
+            echo "Skip ${name}@${ver} (already on registry)"
+            continue
+          fi
+          echo "Publishing ${name}@${ver}"
+          pnpm --filter "${name}" publish --access public --no-git-checks
+        done
+
+    - name: Resolve release tag
+      id: meta
+      run: |
+        set -euo pipefail
+        if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+        else
+          echo "tag=v$(node -p "require('./packages/cli/package.json').version")" >> "$GITHUB_OUTPUT"
+        fi
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
       with:
+        tag_name: ${{ steps.meta.outputs.tag }}
+        target_commitish: ${{ github.sha }}
         generate_release_notes: true
         body: |
-          Published `@vaultcompass/vault-guard`, `@vaultcompass/vault-guard-core`, `@vaultcompass/vault-guard-mcp`, and `@vaultcompass/vault-guard-telemetry` to npm (private workspace packages are skipped). See [CHANGELOG.md](https://github.com/vaultcompasshq/vault-guard/blob/main/CHANGELOG.md).
+          Published `@vaultcompass/vault-guard`, `@vaultcompass/vault-guard-core`, `@vaultcompass/vault-guard-mcp`, and `@vaultcompass/vault-guard-telemetry` to npm (VS Code extension is Marketplace-only, not npm). See [CHANGELOG.md](https://github.com/vaultcompasshq/vault-guard/blob/main/CHANGELOG.md).
 
   smoke-published:
     name: Smoke test published CLI
