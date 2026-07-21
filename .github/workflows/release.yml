@@ -101,8 +101,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
-          VERSION="${TAG#v}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+          else
+            VERSION="$(node -p "require('./packages/cli/package.json').version")"
+          fi
           echo "Smoke testing @vaultcompass/vault-guard@${VERSION}"
 
           FOUND=0
