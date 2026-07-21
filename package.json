@@ -31,7 +31,7 @@
   "author": "Vault & Compass LLC",
   "license": "MIT",
   "devDependencies": {
-    "@changesets/cli": "^2.31.0",
+    "@changesets/cli": "^2.31.1",
     "@eslint/js": "^9.0.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^25.9.3",
