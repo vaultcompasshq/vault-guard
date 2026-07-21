@@ -38,9 +38,9 @@ code --install-extension vault-guard-vscode-*.vsix
 ```bash
 pnpm --filter vault-guard-vscode build
 cd packages/vscode-extension
-pnpm exec vsce login vaultcompass   # once
-pnpm run package                   # produces .vsix
-pnpm run publish                   # uploads to Marketplace
+npx --yes @vscode/vsce login vaultcompass   # once
+pnpm run package                   # npx @vscode/vsce package
+pnpm run publish                   # npx @vscode/vsce publish
 ```
 
 Use `--no-dependencies` because the extension bundles core via esbuild.
