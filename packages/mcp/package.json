@@ -30,7 +30,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@vaultcompass/vault-guard-core": "workspace:*",
     "@vaultcompass/vault-guard-telemetry": "workspace:*",
     "zod": "^4.4.3"
