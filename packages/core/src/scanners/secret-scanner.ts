@@ -2,7 +2,7 @@ import fs from 'fs';
 import { SecretMatch } from '../types';
 import { VaultGuardConfig } from '../config';
 import { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from '../utils/entropy';
-import { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken } from '../utils/placeholder';
+import { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody } from '../utils/placeholder';
 import { applyPathAwareSeverity } from '../utils/path-severity';
 import { shouldSuppressDocContextMatch, isInsidePythonTripleQuoted } from '../utils/doc-context';
 import {
@@ -76,8 +76,27 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   ['openai',            { regex: /(?<![A-Za-z0-9_-])sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20,}/g,                    severity: 'critical' }],
   ['huggingface',    { regex: /hf_[a-zA-Z0-9]{34,}/g,                                           severity: 'critical' }],
   ['replicate',      { regex: /r8_[a-zA-Z0-9]{32}/g,                                            severity: 'critical' }],
+  // Post-2023 AI provider keys. The product's stated wedge is AI-assisted
+  // coding, so these carry the same weight as the OpenAI/Anthropic rules.
+  // Every one is prefix-anchored with a fixed length, so no entropy gate is
+  // needed (same precision profile as `ghp_` / `hf_`).
+  ['groq',           { regex: /(?<![A-Za-z0-9_-])gsk_[a-zA-Z0-9]{52}/g,                          severity: 'critical' }],
+  ['openrouter',     { regex: /sk-or-v1-[a-f0-9]{64}/g,                                          severity: 'critical' }],
+  ['xai',            { regex: /(?<![A-Za-z0-9_-])xai-[a-zA-Z0-9]{80}/g,                          severity: 'critical' }],
+  ['perplexity',     { regex: /(?<![A-Za-z0-9_-])pplx-[a-zA-Z0-9]{40,}/g,                        severity: 'critical' }],
+  ['mistral',        { regex: /(?:mistral_api_key|MISTRAL_API_KEY)\s*[=:]\s*["']?([a-zA-Z0-9]{32})/g, severity: 'critical' }],
+  ['together-ai',    { regex: /(?:together_api_key|TOGETHER_API_KEY)\s*[=:]\s*["']?([a-f0-9]{64})/g,  severity: 'critical' }],
+  ['fireworks-ai',   { regex: /(?<![A-Za-z0-9_-])fw_[a-zA-Z0-9]{24,}/g,                          severity: 'critical' }],
+  ['langsmith',      { regex: /lsv2_(?:pt|sk)_[a-f0-9]{32}_[a-f0-9]{10}/g,                       severity: 'critical' }],
+  ['deepseek',       { regex: /(?:deepseek_api_key|DEEPSEEK_API_KEY)\s*[=:]\s*["']?(sk-[a-f0-9]{32})/g, severity: 'critical' }],
 
   // --- Payment processors ---
+  // NOTE: `sk_live_` / `sk_test_` are not unique to Stripe — Clerk uses the
+  // same prefixes and there is no reliable discriminator in the key body, so a
+  // Clerk secret key is reported under the `stripe` rule id. The finding is
+  // correct (it IS a live secret key); only the vendor label may be wrong. The
+  // id is kept as-is because baseline fingerprints include the rule id and
+  // renaming it would silently invalidate every existing baseline entry.
   ['stripe',         { regex: /sk_live_[a-zA-Z0-9]{24,}/g,                                      severity: 'critical' }],
   ['stripe-test',    { regex: /sk_test_[a-zA-Z0-9]{24,}/g,                                      severity: 'high' }],
   ['paypal',         { regex: /access_token\$production\$[a-zA-Z0-9]{20,}/g,                    severity: 'critical' }],
@@ -124,14 +143,38 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // --- Package managers ---
   ['npm-token',      { regex: /npm_[a-zA-Z0-9]{36}/g,                                            severity: 'critical' }],
 
+  // --- Backend / infra platforms ---
+  ['supabase-token',   { regex: /(?<![A-Za-z0-9_-])sbp_[a-f0-9]{40}/g,                          severity: 'critical' }],
+  ['supabase-secret',  { regex: /(?<![A-Za-z0-9_-])sb_secret_[a-zA-Z0-9_-]{20,}/g,              severity: 'critical' }],
+  ['vercel-blob',      { regex: /vercel_blob_rw_[a-zA-Z0-9]{20,}_[a-zA-Z0-9]{20,}/g,            severity: 'critical' }],
+  ['planetscale',      { regex: /pscale_(?:tkn|pw)_[a-zA-Z0-9_-]{32,}/g,                        severity: 'critical' }],
+  ['doppler-token',    { regex: /dp\.(?:pt|st|sa|scim|audit)\.[a-zA-Z0-9]{40,}/g,               severity: 'critical' }],
+  ['databricks-token', { regex: /(?<![A-Za-z0-9_-])dapi[a-f0-9]{32}/g,                          severity: 'critical' }],
+  ['cloudflare-token', { regex: /(?:cloudflare_api_token|CLOUDFLARE_API_TOKEN)\s*[=:]\s*["']?([a-zA-Z0-9_-]{40})/g, severity: 'critical' }],
+
+  // --- SaaS / productivity ---
+  ['notion-token',   { regex: /(?<![A-Za-z0-9_-])(?:ntn_[a-zA-Z0-9]{40,}|secret_[a-zA-Z0-9]{43})/g, severity: 'critical' }],
+  ['airtable-pat',   { regex: /(?<![A-Za-z0-9_-])pat[a-zA-Z0-9]{14}\.[a-f0-9]{64}/g,            severity: 'critical' }],
+  ['figma-token',    { regex: /(?<![A-Za-z0-9_-])figd_[a-zA-Z0-9_-]{40,}/g,                     severity: 'critical' }],
+
   // --- Monitoring ---
   ['newrelic-api',   { regex: /NRAK-[a-zA-Z0-9]{26}/g,                                          severity: 'critical' }],
+  // A Sentry DSN is designed to be embedded in client-side bundles — the
+  // public key it carries only permits event ingestion, not data read. Kept at
+  // `low` for visibility under the same policy as `gcp-oauth`: real, but not a
+  // credential leak worth blocking a commit over.
+  ['sentry-dsn',     { regex: /https:\/\/[a-f0-9]{32}@o\d+\.ingest\.(?:[a-z]{2}\.)?sentry\.io\/\d+/g, severity: 'low' }],
 
   // --- E-commerce ---
   ['shopify-admin',  { regex: /shp(?:ss|at|ca)_[a-zA-Z0-9]{32}/g,                               severity: 'critical' }],
 
   // --- Keys and auth tokens ---
-  ['ssh-private-key',{ regex: /-----BEGIN [A-Z ]+ PRIVATE KEY-----/g,                            severity: 'critical' }],
+  // The algorithm prefix is optional. `-----BEGIN PRIVATE KEY-----` (PKCS#8)
+  // has no prefix at all, and it is what modern OpenSSL emits by default and
+  // what GCP service-account JSON embeds — i.e. the most common private key
+  // form in circulation. Requiring `[A-Z ]+` between BEGIN and PRIVATE meant
+  // the scanner printed "No secrets found" on a bare PKCS#8 key file.
+  ['ssh-private-key',{ regex: /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/g,                    severity: 'critical' }],
   ['jwt-token',      { regex: /eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g,            severity: 'high' }],
 
   // Generic patterns — entropy-gated AND placeholder-filtered (aggressive) to
@@ -377,6 +420,21 @@ export class SecretScanner {
           continue;
         }
 
+        // A password hash is the safe-at-rest form, not a usable credential.
+        // Seed data and fixtures are full of bcrypt/argon2 digests.
+        if (type === 'password-in-code' && isPasswordHash(rawValue)) {
+          continue;
+        }
+
+        // A bare PEM header with no key material after it is a UI label or an
+        // input placeholder, not a leaked key.
+        if (
+          type === 'ssh-private-key' &&
+          isPemHeaderWithoutBody(content, match.index + fullMatch.length)
+        ) {
+          continue;
+        }
+
         // Suppress unquoted assignments whose "value" is actually a function
         // call — e.g. `csrf_secret = _add_new_csrf_cookie(request)`. The value
         // capture group stops at `(`, so a `(` immediately following the match
@@ -389,6 +447,20 @@ export class SecretScanner {
           content[match.index + fullMatch.length] === '('
         ) {
           continue;
+        }
+
+        // Suppress unquoted assignments whose "value" is a bare reference to
+        // another identifier — e.g. `'x-api-key': scheduledIngestApiKey`. Only
+        // applies when the captured value was NOT wrapped in quotes: a quoted
+        // string is a literal, and literals are what we are hunting. Scoped to
+        // the low-precision generic assignment patterns.
+        if (GENERIC_ASSIGNMENT_IDS.has(type) && match[1] !== undefined) {
+          const valueStart = fullMatch.lastIndexOf(rawValue);
+          const charBefore = valueStart > 0 ? fullMatch[valueStart - 1] : '';
+          const quoted = charBefore === '"' || charBefore === "'";
+          if (!quoted && isCodeIdentifierReference(rawValue)) {
+            continue;
+          }
         }
 
         const line = this.lineFromIndex(lineIndex, match.index);

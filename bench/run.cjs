@@ -15,6 +15,7 @@
 
 const { execSync, spawnSync } = require('child_process');
 const fs   = require('fs');
+const os   = require('os');
 const path = require('path');
 
 const REPO_ROOT    = path.resolve(__dirname, '..');
@@ -77,18 +78,43 @@ function scanFile(cmd, filePath) {
   }
 }
 
+/**
+ * Run gitleaks on a single file.
+ *
+ * `--report-format json` alone writes the report to gitleaks' *default report
+ * path*, not stdout — stdout only carries the ASCII banner and log lines. The
+ * earlier version of this function parsed stdout, always failed, and silently
+ * scored gitleaks at zero findings on every file (reported as "Recall 0.0%,
+ * Grade F"). Always pass an explicit `--report-path` and read that file.
+ */
 function gitleaksScanFile(filePath) {
-  const result = spawnSync(
-    'gitleaks',
-    ['detect', '--source', filePath, '--report-format', 'json', '--no-git'],
-    { shell: true, encoding: 'utf-8', timeout: 30_000 },
+  const reportPath = path.join(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'vg-bench-gl-')),
+    'report.json',
   );
-  if (result.error || result.status === null) return null;
   try {
-    const parsed = JSON.parse(result.stdout || '[]');
+    const result = spawnSync(
+      'gitleaks',
+      [
+        'detect',
+        '--source', filePath,
+        '--no-git',
+        '--report-format', 'json',
+        '--report-path', reportPath,
+        '--exit-code', '0',
+      ],
+      { shell: true, encoding: 'utf-8', timeout: 30_000 },
+    );
+    if (result.error || result.status === null) return null;
+    if (!fs.existsSync(reportPath)) return [];
+    const raw = fs.readFileSync(reportPath, 'utf-8').trim();
+    if (raw === '') return [];
+    const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
   } catch {
-    return result.status === 0 ? [] : null;
+    return null;
+  } finally {
+    fs.rmSync(path.dirname(reportPath), { recursive: true, force: true });
   }
 }
 
@@ -186,12 +212,32 @@ for (const tool of tools) {
   console.log(`  Recall      : ${pct(TP, TP + FN)}  (TP / (TP+FN))`);
   console.log(`  F1          : ${f1Score > 0 ? (f1Score * 100).toFixed(1) + '%' : '—'}`);
   console.log(`  Grade       : ${toolGrade}`);
+  if (tool.name !== 'vault-guard') {
+    console.log(`  NOTE        : scored on Vault Guard's own corpus — see caveat below.`);
+  }
   console.log();
 
   if (tool.name === 'vault-guard') {
     vaultGuardMetrics = { name: tool.name, precision, recall, f1Score };
   }
 }
+
+console.log('  ' + '─'.repeat(62));
+console.log('  How to read these numbers');
+console.log('  ' + '─'.repeat(62));
+console.log('  This corpus is a REGRESSION suite, not a generalization benchmark.');
+console.log('  Nearly every clean/ fixture was added in response to a specific');
+console.log('  false positive that was then fixed, so a high score here means');
+console.log('  "no known bug came back" — it does NOT estimate accuracy on');
+console.log('  unseen code, and it must not be quoted as a headline metric.');
+if (DO_GL) {
+  console.log();
+  console.log('  Any other tool is scored on fixtures chosen to exercise Vault');
+  console.log('  Guard\'s rules and suppressions. That is a home-field corpus and');
+  console.log('  systematically understates the other tool. Treat the comparison');
+  console.log('  as "which of these does the thing WE tuned for", nothing more.');
+}
+console.log();
 
 if (ASSERT) {
   if (!vaultGuardMetrics) {

@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { SecretMatch } from './types';
 import { ConfigError } from './errors';
+import type { FailOnThreshold } from './utils/fail-on';
 
 /**
  * Shape of .vault-guard.json in a repository root.
@@ -44,6 +45,13 @@ export interface VaultGuardConfig {
    * generic catch-all patterns.  Lower = more matches but more false positives.
    */
   entropy_threshold?: number;
+  /**
+   * Minimum severity that fails the scan (non-zero exit). Findings below the
+   * threshold are still reported in text/JSON/SARIF, they just do not break
+   * the build. `"none"` reports everything and never fails, for advisory
+   * rollouts. Defaults to `"medium"`; overridden by `--fail-on`.
+   */
+  fail_on?: FailOnThreshold;
 }
 
 const CONFIG_FILENAMES = ['.vault-guard.json', '.vault-guard.local.json'];

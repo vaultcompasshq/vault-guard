@@ -139,6 +139,62 @@ const fixtures = [
       `const RESEND_API_KEY = ${JSON.stringify(['re_', 'A1b2C3d4E5f6', 'G7h8J9k0L1m2', 'N3o4P5q6R7s8'].join(''))};`,
     ],
   },
+  // --- 1.4.0 provider pack: post-2023 AI providers and backend platforms ---
+  {
+    file: 'groq.ts',
+    comment: 'True positive: Groq API key (gsk_ + 52)',
+    lines: (j) => [
+      `// ${j.comment}`,
+      `const GROQ_API_KEY = ${JSON.stringify(
+        ['gsk_', 'K3mQ8vR2xN7bL4wY', 'tD6fH9jS1cP5zA0e', 'gU3iO7kM2nB8rV4x'].join(''),
+      )};`,
+    ],
+  },
+  {
+    file: 'openrouter.ts',
+    comment: 'True positive: OpenRouter key (sk-or-v1- + 64 hex)',
+    lines: (j) => [
+      `// ${j.comment}`,
+      `const OPENROUTER_KEY = ${JSON.stringify(
+        ['sk-or-', 'v1-', '3f8a9c2e7b1d4056', 'a9e3f71c2b8d6405', '7e2c9a1f3b8d5064', 'c1e7a93f2b6d8450'].join(''),
+      )};`,
+    ],
+  },
+  {
+    file: 'xai.ts',
+    comment: 'True positive: xAI API key (xai- + 80)',
+    lines: (j) => [
+      `// ${j.comment}`,
+      `const XAI_API_KEY = ${JSON.stringify(
+        [
+          'xai-',
+          'K3mQ8vR2xN7bL4wYtD6fH9jS1cP5zA0e',
+          'gU3iO7kM2nB8rV4xW6yE1qT9sF2hJ5dG',
+          'pZ7cX3vB9nM1kL5j',
+        ].join(''),
+      )};`,
+    ],
+  },
+  {
+    file: 'supabase.ts',
+    comment: 'True positive: Supabase personal access token (sbp_ + 40 hex)',
+    lines: (j) => [
+      `// ${j.comment}`,
+      `const SUPABASE_TOKEN = ${JSON.stringify(
+        ['sbp_', '3f8a9c2e7b1d4056', 'a9e3f71c2b8d6405', '7e2c9a1f'].join(''),
+      )};`,
+    ],
+  },
+  {
+    file: 'doppler.ts',
+    comment: 'True positive: Doppler service token (dp.pt. + 43)',
+    lines: (j) => [
+      `// ${j.comment}`,
+      `const DOPPLER_TOKEN = ${JSON.stringify(
+        ['dp.', 'pt.', 'K3mQ8vR2xN7bL4wYtD6fH9jS1cP5zA0e', 'gU3iO7kM2nB'].join(''),
+      )};`,
+    ],
+  },
   {
     file: 'slack.ts',
     comment: 'True positive: Slack incoming webhook URL',

@@ -68,6 +68,7 @@ const AGGRESSIVE_MARKERS: readonly string[] = [
   'qwerty',
   'letmein',
   'your_', // your_google_places_key, your_api_key_here
+  'your-', // your-anthropic-api-key — hyphen form is just as common in docs
 ];
 
 /** Known vendor key prefixes whose remainder is often redacted with X/* in docs. */
@@ -103,11 +104,114 @@ export function isRedactedTemplateValue(value: string): boolean {
 }
 
 /**
+ * A stored password *hash* is the safe-at-rest form of a credential, not a
+ * credential. Seed data, fixtures, and migration files are full of them, and
+ * flagging them as `password-in-code` is noise: rotating them is meaningless
+ * and they cannot be used to authenticate.
+ *
+ * Covers modular crypt format (bcrypt `$2a/2b/2y$`, sha-crypt `$1/5/6$`,
+ * yescrypt `$y$`, `$argon2i/d/id$`, `$pbkdf2-*$`) and the Django/Passlib
+ * `algo$iterations$salt$hash` convention.
+ */
+export function isPasswordHash(value: string): boolean {
+  if (/^\$(?:2[abxy]?|1|5|6|7|y|gy|argon2(?:i|d|id)?|scrypt|pbkdf2(?:-[a-z0-9]+)?|sha1|md5|apr1|bcrypt)\$/i.test(value)) {
+    return true;
+  }
+  // Django: pbkdf2_sha256$390000$<salt>$<hash>, argon2$..., bcrypt_sha256$...
+  return /^(?:pbkdf2_[a-z0-9]+|argon2[a-z]*|bcrypt(?:_sha256)?|scrypt|sha1|md5|crypt|unsalted_[a-z0-9]+)\$\d*\$?/i.test(value);
+}
+
+/**
+ * True when a PEM `-----BEGIN … PRIVATE KEY-----` header is not followed by
+ * any key material.
+ *
+ * UI code and documentation carry the header on its own as a label or an
+ * input placeholder (`const privateKeyBeginsWith = '-----BEGIN RSA PRIVATE
+ * KEY-----'`). A header with no body leaks nothing. Real PEM files wrap their
+ * base64 at 64 characters per line, so requiring a single long base64 run
+ * right after the header separates the two cleanly, and still works when the
+ * key is embedded in JSON with escaped newlines.
+ */
+export function isPemHeaderWithoutBody(content: string, headerEndOffset: number): boolean {
+  const window = content.slice(headerEndOffset, headerEndOffset + 400);
+
+  // Split on real newlines and on the escaped `\n` used when a key is embedded
+  // in JSON or YAML, then strip the quoting that survives that embedding.
+  const lines = window.split(/\r?\n|\\r\\n|\\n/);
+
+  for (const line of lines) {
+    const token = line.replace(/["'`\\\s]/g, '');
+    // A PEM body wraps base64 at 64 characters, so a body line is base64 and
+    // nothing else. Requiring the *whole* line to match is what separates it
+    // from surrounding code: a long camelCase identifier such as
+    // `onUpdateDatasourceSecureJsonDataOption` is a valid base64 substring,
+    // but the line it sits on never is.
+    if (token.length >= 32 && /^[A-Za-z0-9+/]+={0,2}$/.test(token)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
  * ALL_CAPS identifiers (e.g. `PLAID_TOKEN_ENCRYPTION_KEY`) are env-var names,
  * not secret values — common in GitHub Actions `secret:NAME` checks.
  */
 export function isEnvVarNameToken(value: string): boolean {
   return /^[A-Z][A-Z0-9_]{7,}$/.test(value);
+}
+
+/**
+ * True when an **unquoted** captured value is a reference to a code
+ * identifier rather than a literal credential — e.g.
+ *
+ *     headers: { 'x-api-key': scheduledIngestApiKey }
+ *     api_key = defaultServiceCredential
+ *
+ * The generic assignment patterns capture whatever follows `:`/`=`, and in
+ * real code that is very often a variable, not a secret. An existing check
+ * covers the function-call case (`= makeKey(...)`); this covers the far more
+ * common bare-reference case.
+ *
+ * Discriminator: generated credentials are random, so they mix digits into the
+ * alphabet and do not decompose into word-shaped segments. We require the
+ * value to split (on `_` and camelCase boundaries) into **two or more**
+ * segments that are each purely alphabetic and at least two characters long.
+ *
+ *   `scheduledIngestApiKey` → scheduled | Ingest | Api | Key  → identifier
+ *   `default_service_token` → default | service | token       → identifier
+ *   `x7Kf9mQ2pL8vB3nR5wT1`  → contains digits                 → NOT identifier
+ *   `qwertyuiopasdfghjklz`  → one segment                     → NOT identifier
+ *
+ * Callers must only apply this to unquoted values on low-precision generic
+ * patterns; a quoted string literal is a literal, and vendor-anchored rules
+ * must never be weakened by it.
+ */
+export function isCodeIdentifierReference(value: string): boolean {
+  if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(value)) return false;
+  if (/\d/.test(value)) return false;
+
+  const segments = value
+    .replace(/\$/g, '_')
+    .split('_')
+    .filter(s => s.length > 0)
+    .flatMap(part => part.split(/(?=[A-Z])/));
+
+  if (segments.length < 2) return false;
+  if (!segments.every(s => s.length >= 2 && /^[A-Za-z]+$/.test(s))) return false;
+
+  // Guard against alpha-only random keys with alternating capitals
+  // (`PmZkQvXtLdRwNbGhYuJcEaSf` splits into twelve 2-char "segments"). Real
+  // identifiers are made of words, so beyond a handful of segments the mean
+  // segment length stays word-like. Values of three segments or fewer are
+  // exempt: `myApiKey` is a legitimate identifier with short parts.
+  if (segments.length > 3) {
+    const mean = segments.reduce((n, s) => n + s.length, 0) / segments.length;
+    if (mean < 3) return false;
+  }
+
+  return true;
 }
 
 /**
@@ -186,7 +290,12 @@ export function isSampleJwt(token: string): boolean {
   return (
     /"sub"\s*:\s*"1234567890"/.test(payload) ||
     /"name"\s*:\s*"John Doe"/.test(payload) ||
-    /\b1516239022\b/.test(payload)
+    /\b1516239022\b/.test(payload) ||
+    // Supabase ships fixed anon / service_role keys for local development.
+    // They are printed by `supabase start`, published in Supabase's own docs,
+    // and signed with a well-known secret, so they appear verbatim in a large
+    // share of Supabase projects. Same category as the jwt.io sample.
+    /"iss"\s*:\s*"supabase-demo"/.test(payload)
   );
 }
 

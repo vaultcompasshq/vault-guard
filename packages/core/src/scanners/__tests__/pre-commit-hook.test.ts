@@ -1,5 +1,6 @@
 import { PreCommitHook } from '../pre-commit-hook';
 import fs from 'fs';
+import { spawnSync } from 'child_process';
 import os from 'os';
 import path from 'path';
 import { execSync } from 'child_process';
@@ -69,6 +70,43 @@ describe('PreCommitHook', () => {
       expect(cmdContent).toContain('vault-guard');
       expect(cmdContent).toContain('scan --staged');
       expect(cmdContent).toMatch(/@echo off/i);
+    });
+
+    it('silences and survives the /dev/tty re-attach without a terminal', () => {
+      process.chdir(testDir);
+      preCommitHook.install({ manager: 'native' });
+
+      const hookContent = fs.readFileSync(hookPath, 'utf-8');
+
+      // A failed `exec </dev/tty` is reported by the shell itself, so a
+      // trailing `2>/dev/null` on the redirect does not suppress it. The
+      // enclosing group must be redirected, and the `|| true` must stay:
+      // under `set -e` a bare failing `exec` aborts the hook and blocks the
+      // commit outright.
+      expect(hookContent).toContain('{ exec </dev/tty; } 2>/dev/null || true');
+      expect(hookContent).not.toMatch(/exec\s*<\s*\/dev\/tty\s*2>\/dev\/null/);
+    });
+
+    it('runs to completion with no controlling terminal', () => {
+      process.chdir(testDir);
+      preCommitHook.install({ manager: 'native' });
+
+      // Run only the prologue: everything up to the `command -v` guard. That
+      // is the part that touches /dev/tty, and it must be both silent and
+      // non-fatal when stdin is not a terminal.
+      const full = fs.readFileSync(hookPath, 'utf-8');
+      const prologue = full.slice(0, full.indexOf('if ! command -v')) + 'echo PROLOGUE_OK\n';
+      const scriptPath = path.join(testDir, 'prologue.sh');
+      fs.writeFileSync(scriptPath, prologue, { mode: 0o755 });
+
+      const proc = spawnSync('/bin/sh', [scriptPath], {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      expect(proc.status).toBe(0);
+      expect(proc.stdout).toContain('PROLOGUE_OK');
+      expect(proc.stderr).not.toMatch(/dev\/tty/);
     });
 
     it('should install into core.hooksPath when set (relative to .git)', () => {

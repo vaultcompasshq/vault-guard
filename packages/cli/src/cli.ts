@@ -50,9 +50,13 @@ export function buildCli(): Command {
     .argument('[path]', 'Path to scan', '.')
     .option('-f, --format <format>', 'Output format: text | json | sarif', 'text')
     .option('--staged', 'Scan git staged files only (uses index vs HEAD)', false)
-    .action(async (path: string, options: { format: string; staged?: boolean }) => {
+    .option(
+      '--fail-on <severity>',
+      'Minimum severity that fails the scan: critical | high | medium | low | none (default: medium, or fail_on in .vault-guard.json)',
+    )
+    .action(async (path: string, options: { format: string; staged?: boolean; failOn?: string }) => {
       const format = (options.format as OutputFormat) ?? 'text';
-      const exitCode = await scanCommand(path, format, Boolean(options.staged));
+      const exitCode = await scanCommand(path, format, Boolean(options.staged), options.failOn);
       setExitCode(exitCode);
     });
 
@@ -148,8 +152,12 @@ export function buildCli(): Command {
     .command('check')
     .description('Scan files with config and baselines')
     .argument('[files...]', 'Files to check')
-    .action(async (files: string[]) => {
-      const exitCode = await checkCommand(files);
+    .option(
+      '--fail-on <severity>',
+      'Minimum severity that fails the check: critical | high | medium | low | none (default: medium, or fail_on in .vault-guard.json)',
+    )
+    .action(async (files: string[], options: { failOn?: string }) => {
+      const exitCode = await checkCommand(files, options.failOn);
       setExitCode(exitCode);
     });
 

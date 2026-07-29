@@ -36,7 +36,11 @@ const TEST_DIR_SEGMENTS = new Set([
   'tests',
   'test',
   'fixtures',
+  'fixture',
   'testdata',
+  'test-data',
+  'test_data',
+  'testfixtures',
   'spec',
   'e2e',
   'examples',
@@ -80,6 +84,37 @@ function isTestDirectorySegment(seg: string): boolean {
   );
 }
 
+/** Directory segments holding UI translation catalogues. */
+const LOCALE_DIR_SEGMENTS = new Set([
+  'locales',
+  'locale',
+  'translations',
+  'translation',
+  'i18n',
+  'lang',
+  'langs',
+]);
+
+/**
+ * Locale file basenames: `en.json`, `de-DE.yaml`, `pt_BR.yml`, `zh-Hant.json`.
+ */
+const LOCALE_BASENAME = /^[a-z]{2}(?:[-_][A-Za-z]{2,4})?\.(json|ya?ml|ts|js|po|properties)$/;
+
+/**
+ * True when a file is a translation catalogue.
+ *
+ * These are entirely natural-language strings keyed by identifiers, so a key
+ * such as `tfa_secret` or `api_key_label` puts a translated *label* where the
+ * generic assignment patterns expect a value — `tfa_secret: Zwei-Faktor-
+ * Authentifizierung` reads as a 29-character high-entropy secret. Translation
+ * files never hold real credentials.
+ */
+export function isLocalePath(filePath: string): boolean {
+  const parts = splitPathParts(filePath);
+  if (parts.some(p => LOCALE_DIR_SEGMENTS.has(p.toLowerCase()))) return true;
+  return LOCALE_BASENAME.test(path.basename(filePath));
+}
+
 /**
  * Celery / Perl-style test root: `t/unit/…`, `t/integration/…`.
  */
@@ -118,7 +153,7 @@ export function isTestFilePath(filePath: string): boolean {
  * file is still worth a `critical` alert.
  */
 function isLowPrecisionContextPath(filePath: string): boolean {
-  return isTestFilePath(filePath) || isDocumentationPath(filePath);
+  return isTestFilePath(filePath) || isDocumentationPath(filePath) || isLocalePath(filePath);
 }
 
 export function applyPathAwareSeverity(

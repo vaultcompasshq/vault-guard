@@ -81,11 +81,28 @@ describe('SecretScanner', () => {
       expect(matches.some(m => m.type === 'sendgrid-api')).toBe(true);
     });
 
-    it('detects SSH private key header', () => {
-      fs.writeFileSync(testFilePath, `-----BEGIN OPENSSH PRIVATE KEY-----`);
+    it('detects an SSH private key', () => {
+      fs.writeFileSync(
+        testFilePath,
+        [
+          '-----BEGIN OPENSSH PRIVATE KEY-----',
+          'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABlwAAAAdz',
+          '-----END OPENSSH PRIVATE KEY-----',
+        ].join('\n'),
+      );
       const matches = scanner.scan(testFilePath);
       expect(matches).toHaveLength(1);
       expect(matches[0].type).toBe('ssh-private-key');
+    });
+
+    // Behaviour change in 1.4.0: the header alone no longer counts. Public
+    // repositories carry it as a UI label / input placeholder, and a header
+    // with no base64 body after it cannot leak key material.
+    // See `isPemHeaderWithoutBody`.
+    it('ignores a PEM header with no key material after it', () => {
+      fs.writeFileSync(testFilePath, `const label = '-----BEGIN OPENSSH PRIVATE KEY-----';`);
+      const matches = scanner.scan(testFilePath);
+      expect(matches).toEqual([]);
     });
 
     it('detects PostgreSQL connection URL with a real remote host + password', () => {
