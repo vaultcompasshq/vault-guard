@@ -439,14 +439,26 @@ export function scanFiles(
  *   - The redacted match value (`sk-a…(37c)`) is shown last and intentionally
  *     low-information.
  */
-export function displayScanResults(results: ScanResult[]): void {
+export function displayScanResults(results: ScanResult[], blocking?: number): void {
   if (results.length === 0) {
     console.log(chalk.green.bold('✅ SUCCESS:'), chalk.white('No secrets found\n'));
     return;
   }
 
   const totalSecrets = results.reduce((sum, r) => sum + r.matches.length, 0);
-  console.log(chalk.red.bold('🚨 BLOCKED:'), chalk.white(`Found ${totalSecrets} secret${totalSecrets > 1 ? 's' : ''}\n`));
+  // `blocking` is how many findings sit at or above the `--fail-on` threshold.
+  // When none do we still list everything, but the headline must not say
+  // "BLOCKED" over a run that is about to exit 0.
+  const willBlock = blocking === undefined || blocking > 0;
+
+  if (willBlock) {
+    console.log(chalk.red.bold('🚨 BLOCKED:'), chalk.white(`Found ${totalSecrets} secret${totalSecrets > 1 ? 's' : ''}\n`));
+  } else {
+    console.log(
+      chalk.yellow.bold('⚠️  REPORT:'),
+      chalk.white(`Found ${totalSecrets} finding${totalSecrets > 1 ? 's' : ''} below the fail threshold\n`),
+    );
+  }
 
   for (const { file, matches } of results) {
     const relativePath = relativeForDisplay(file);
@@ -463,7 +475,9 @@ export function displayScanResults(results: ScanResult[]): void {
   }
 
   console.log('');
-  console.log(chalk.red.bold('❌ BLOCKED:'), chalk.white('Commit blocked — remove secrets before pushing\n'));
+  if (willBlock) {
+    console.log(chalk.red.bold('❌ BLOCKED:'), chalk.white('Commit blocked — remove secrets before pushing\n'));
+  }
 }
 
 /** cwd-relative when inside cwd, absolute otherwise. Matches scan-output behaviour. */
@@ -497,8 +511,10 @@ function getSeverityEmoji(severity: string): string {
       return '⚠️';
     case 'medium':
       return 'ℹ️';
+    // Not a checkmark: every line here is a finding, and a green tick beside
+    // one reads as "this file is clean".
     case 'low':
-      return '✅';
+      return '🔵';
     default:
       return '•';
   }

@@ -72,7 +72,13 @@ function scanFile(cmd, filePath) {
   if (result.error) throw result.error;
   try {
     const parsed = JSON.parse(result.stdout);
-    return Array.isArray(parsed.results) ? parsed.results : [];
+    const results = Array.isArray(parsed.results) ? parsed.results : [];
+    // Attach the set of rule ids that fired so the harness can verify the
+    // *intended* rule matched, not merely that something did.
+    results.ruleIds = new Set(
+      results.flatMap(r => (r.matches || []).map(m => m.type)),
+    );
+    return results;
   } catch {
     return [];
   }
@@ -166,6 +172,7 @@ let vaultGuardMetrics = null;
 for (const tool of tools) {
   let TP = 0, FP = 0, FN = 0, TN = 0;
   const rows = [];
+  const wrongRuleRows = [];
 
   for (const [relPath, label] of Object.entries(labels)) {
     if (relPath.startsWith('_')) continue;
@@ -178,8 +185,27 @@ for (const tool of tools) {
     const findings = tool.scan(filePath);
     const detected = Array.isArray(findings) && findings.length > 0;
 
+    // Detecting *something* is not enough. A fixture must fire the rule it was
+    // written for: a 48-character Groq key once satisfied this harness through
+    // `api-key-generic` while the `groq` rule never matched at all, and the
+    // corpus reported a clean 100%.
+    const wrongRule =
+      tool.name === 'vault-guard' &&
+      label.shouldDetect &&
+      detected &&
+      Boolean(label.rule) &&
+      findings.ruleIds instanceof Set &&
+      !findings.ruleIds.has(label.rule);
+
     let status;
-    if (label.shouldDetect && detected)  { TP++; status = 'TP ✓'; }
+    if (wrongRule) {
+      FN++;
+      status = 'RULE ✗';
+      wrongRuleRows.push(
+        `${relPath}: expected "${label.rule}", got ${[...findings.ruleIds].join(', ') || 'nothing'}`,
+      );
+    }
+    else if (label.shouldDetect && detected)  { TP++; status = 'TP ✓'; }
     else if (!label.shouldDetect && !detected) { TN++; status = 'TN ✓'; }
     else if (label.shouldDetect && !detected)  { FN++; status = 'FN ✗'; }
     else                                       { FP++; status = 'FP ✗'; }
@@ -212,6 +238,11 @@ for (const tool of tools) {
   console.log(`  Recall      : ${pct(TP, TP + FN)}  (TP / (TP+FN))`);
   console.log(`  F1          : ${f1Score > 0 ? (f1Score * 100).toFixed(1) + '%' : '—'}`);
   console.log(`  Grade       : ${toolGrade}`);
+  if (wrongRuleRows.length > 0) {
+    console.log();
+    console.log('  Fixtures matched by the WRONG rule:');
+    for (const w of wrongRuleRows) console.log(`    - ${w}`);
+  }
   if (tool.name !== 'vault-guard') {
     console.log(`  NOTE        : scored on Vault Guard's own corpus — see caveat below.`);
   }

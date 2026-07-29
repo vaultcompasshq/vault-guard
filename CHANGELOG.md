@@ -92,10 +92,32 @@ we already made for GCP OAuth client IDs.
 
 - `test-data` and `test_data` directories are recognised alongside `testdata`.
 
+- Text output contradicted itself once the gate had a threshold. A run whose
+  findings all sat below it printed "BLOCKED: Found 1 secret", listed the
+  finding, printed "Commit blocked", and then exited 0. The headline now
+  reflects whether the run actually fails. Low-severity findings are also no
+  longer marked with a green checkmark, which read as "this file is clean".
+
+- Every known advisory in the dependency tree is resolved. `pnpm audit` went
+  from 5 high and 4 moderate to zero, via overrides on `fast-uri`,
+  `brace-expansion`, `hono` and `@hono/node-server`. The `pnpm audit
+  --audit-level high` CI gate was already failing on `main` before this
+  release.
+
 - The pre-commit hook printed `/dev/tty: Device not configured` on every commit
   made without a controlling terminal. A failed `exec <` is reported by the
-  shell itself, so the `2>/dev/null` never suppressed it; the hook now checks
-  `[ -r /dev/tty ]` before re-attaching.
+  shell itself, so a `2>/dev/null` on the redirect never suppressed it. The
+  redirect now sits inside a group whose stderr is discarded. Testing
+  `[ -r /dev/tty ]` first is not a fix: the device node passes the permission
+  check and the open still fails with ENXIO.
+
+- **A benchmark fixture was passing on the wrong rule.** The Groq fixture
+  carried a 48-character key where the real format is 52, so the `groq` rule
+  never fired and `api-key-generic` matched the surrounding assignment instead.
+  The corpus reported a clean 100% while the rule under test did nothing. Every
+  positive fixture now pins the rule id it must fire, and the harness fails the
+  run if a different rule matches. Caught by driving the MCP server directly
+  rather than trusting the corpus.
 
 - **The benchmark scored gitleaks at a flat 0% recall, and that was our bug.**
   `bench/run.cjs` passed `--report-format json` with no `--report-path`.

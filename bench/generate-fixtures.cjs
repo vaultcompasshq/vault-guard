@@ -146,7 +146,7 @@ const fixtures = [
     lines: (j) => [
       `// ${j.comment}`,
       `const GROQ_API_KEY = ${JSON.stringify(
-        ['gsk_', 'K3mQ8vR2xN7bL4wY', 'tD6fH9jS1cP5zA0e', 'gU3iO7kM2nB8rV4x'].join(''),
+        ['gsk_', 'K3mQ8vR2xN7bL4wY', 'tD6fH9jS1cP5zA0e', 'gU3iO7kM2nB8rV4x', 'Wq7z'].join(''),
       )};`,
     ],
   },

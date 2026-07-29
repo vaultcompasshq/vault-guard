@@ -239,13 +239,12 @@ export async function scanCommand(
       return 0;
     }
 
-    displayScanResults(results);
+    displayScanResults(results, blocking);
 
     if (blocking === 0) {
       // Findings exist but all sit below the gate. Say so explicitly — a silent
       // exit 0 after printing findings reads like a bug.
       console.log(
-        chalk.yellow.bold('⚠️  PASS:'),
         chalk.white(
           `${totalMatches} finding(s), none at or above severity "${failOn}" — not failing the gate.`,
         ),

@@ -124,6 +124,35 @@ describe('CLI --fail-on gate', () => {
     expect(proc.stdout).toMatch(/none at or above severity "medium"/);
   });
 
+  it('does not print BLOCKED over a run that exits 0', () => {
+    const proc = run(['scan', '.']);
+
+    // The headline used to be written before the threshold existed, so a run
+    // with only sub-threshold findings announced "BLOCKED: Found 1 secret",
+    // listed it, said "Commit blocked", and then exited 0.
+    expect(proc.status).toBe(0);
+    expect(proc.stdout).not.toMatch(/BLOCKED/);
+    expect(proc.stdout).toMatch(/below the fail threshold/);
+  });
+
+  it('does print BLOCKED when the run exits 1', () => {
+    writeCriticalFinding();
+    const proc = run(['scan', '.']);
+
+    expect(proc.status).toBe(1);
+    expect(proc.stdout).toMatch(/BLOCKED/);
+  });
+
+  it('does not mark a finding with a success checkmark', () => {
+    const proc = run(['scan', '.']);
+    const findingLine = proc.stdout
+      .split('\n')
+      .find(l => l.includes('api-key-generic'));
+
+    expect(findingLine).toBeDefined();
+    expect(findingLine).not.toContain('\u2705');
+  });
+
   it('applies the same gate to `check`', () => {
     const proc = run(['check', 'docs/setup.md']);
     expect(proc.status).toBe(0);
