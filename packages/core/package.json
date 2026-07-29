@@ -46,6 +46,6 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "ignore": "^5.3.2"
+    "ignore": "^7.0.6"
   }
 }
