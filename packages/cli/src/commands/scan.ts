@@ -72,6 +72,9 @@ export async function scanCommand(
     return 1;
   }
   const failOn: FailOnThreshold = failOnResolved.threshold;
+  // True when neither the flag nor the config chose a threshold. Drives the
+  // 1.4.0 upgrade notice below: users who picked a value have already decided.
+  const gateIsImplicitDefault = failOnFlag === undefined && config.fail_on === undefined;
 
   const scanner = new SecretScanner(config);
 
@@ -216,6 +219,26 @@ export async function scanCommand(
       blocking_matches: blocking,
       ...(baselineSuppressed > 0 ? { baseline_suppressed: baselineSuppressed } : {}),
     };
+
+    // Upgrade notice for the 1.4.0 default change. Before 1.4.0 any finding
+    // failed the scan; now the implicit default is `medium`. When that
+    // difference is what decides this run's outcome (findings exist, none
+    // block, and the user never chose a threshold), say so once on stderr —
+    // stderr so JSON/SARIF stdout stays parseable, and only for the implicit
+    // default so setting `fail_on` anywhere silences it for good.
+    if (gateIsImplicitDefault && totalMatches > 0 && blocking === 0) {
+      console.error(
+        chalk.yellow(
+          `note: earlier vault-guard versions failed on any finding; since 1.4.0 the default gate is "medium".`,
+        ),
+      );
+      console.error(
+        chalk.gray(
+          `      This run would have failed before. Set "fail_on" in .vault-guard.json ("low" restores the old\n` +
+            `      behaviour, "medium" keeps this one) to silence this note.`,
+        ),
+      );
+    }
 
     if (format === 'json') {
       process.stdout.write(formatJson(results, { diagnostics, run }) + '\n');

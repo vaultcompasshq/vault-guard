@@ -92,6 +92,12 @@ we already made for GCP OAuth client IDs.
 
 - `test-data` and `test_data` directories are recognised alongside `testdata`.
 
+- Upgrading users get a one-time heads-up about the new default. When a run
+  passes only because the implicit `medium` gate spared findings that earlier
+  versions would have blocked, a note on stderr says so and points at
+  `fail_on`. Choosing any threshold explicitly, via flag or config, silences
+  it permanently.
+
 - Text output contradicted itself once the gate had a threshold. A run whose
   findings all sat below it printed "BLOCKED: Found 1 secret", listed the
   finding, printed "Commit blocked", and then exited 0. The headline now
