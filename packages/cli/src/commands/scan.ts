@@ -9,6 +9,10 @@ import {
   DiagnosticBus,
   loadBaseline,
   filterResultsByBaseline,
+  resolveFailOn,
+  countBlockingMatches,
+  FAIL_ON_VALUES,
+  type FailOnThreshold,
 } from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
 import {
@@ -32,6 +36,7 @@ export async function scanCommand(
   targetPath: string | string[],
   format: OutputFormat = 'text',
   staged = false,
+  failOnFlag?: string,
 ): Promise<number> {
   const cwd = process.cwd();
   const targetPaths = Array.isArray(targetPath) ? targetPath : [targetPath];
@@ -54,6 +59,19 @@ export async function scanCommand(
     }
     throw e;
   }
+
+  // Resolve the gate threshold before scanning so an invalid value fails fast
+  // rather than after a long scan.
+  const failOnResolved = resolveFailOn(failOnFlag, config.fail_on);
+  if (!failOnResolved.ok) {
+    console.error(
+      chalk.red('❌ Invalid fail-on value:'),
+      chalk.white(failOnResolved.invalid),
+    );
+    console.error(chalk.gray(`   Expected one of: ${FAIL_ON_VALUES.join(' | ')}\n`));
+    return 1;
+  }
+  const failOn: FailOnThreshold = failOnResolved.threshold;
 
   const scanner = new SecretScanner(config);
 
@@ -186,23 +204,27 @@ export async function scanCommand(
     results = afterBaseline;
 
     const durationMs = Date.now() - t0;
+    const totalMatches = results.reduce((n, r) => n + r.matches.length, 0);
+    const blocking = countBlockingMatches(results, failOn);
     const run = {
       duration_ms: durationMs,
       files_scanned: stats.filesScanned,
       bytes_scanned: stats.bytesScanned,
       patterns_active: scanner.getActivePatternCount(),
       diagnostics_count: diagnostics.length,
+      fail_on: failOn,
+      blocking_matches: blocking,
       ...(baselineSuppressed > 0 ? { baseline_suppressed: baselineSuppressed } : {}),
     };
 
     if (format === 'json') {
       process.stdout.write(formatJson(results, { diagnostics, run }) + '\n');
-      return results.reduce((n, r) => n + r.matches.length, 0) === 0 ? 0 : 1;
+      return blocking === 0 ? 0 : 1;
     }
 
     if (format === 'sarif') {
       process.stdout.write(formatSarif(results, { diagnostics, run }) + '\n');
-      return results.reduce((n, r) => n + r.matches.length, 0) === 0 ? 0 : 1;
+      return blocking === 0 ? 0 : 1;
     }
 
     // Text mode: print one-line diagnostic summary when any non-fatal issues occurred
@@ -217,7 +239,22 @@ export async function scanCommand(
       return 0;
     }
 
-    displayScanResults(results);
+    displayScanResults(results, blocking);
+
+    if (blocking === 0) {
+      // Findings exist but all sit below the gate. Say so explicitly — a silent
+      // exit 0 after printing findings reads like a bug.
+      console.log(
+        chalk.white(
+          `${totalMatches} finding(s), none at or above severity "${failOn}" — not failing the gate.`,
+        ),
+      );
+      console.log(
+        chalk.gray(`   Tighten with --fail-on low or "fail_on": "low" in .vault-guard.json\n`),
+      );
+      return 0;
+    }
+
     return 1;
   } catch (error) {
     console.error(chalk.red('❌ Fatal error:'), chalk.white(String(error)));

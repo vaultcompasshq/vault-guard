@@ -1,7 +1,7 @@
 {
   "name": "@vaultcompass/vault-guard-monorepo",
   "version": "1.0.0",
-  "description": "Security and optimization layer for AI-native coding (workspace root — not published)",
+  "description": "Security and optimization layer for AI-native coding (workspace root \u2014 not published)",
   "private": true,
   "scripts": {
     "build": "pnpm -r build",
@@ -45,13 +45,10 @@
   "pnpm": {
     "overrides": {
       "esbuild": "0.28.1",
-      "hono": "4.12.25",
-      "js-yaml@3": "3.15.0",
-      "js-yaml@4": "4.3.0",
-      "brace-expansion@1": "1.1.16",
-      "brace-expansion@2": "2.1.2",
-      "brace-expansion@5": "5.0.7",
-      "body-parser": "2.3.0"
+      "hono": "4.12.32",
+      "@hono/node-server": "^2.0.12",
+      "fast-uri": "^4.1.1",
+      "brace-expansion": "^5.0.8"
     }
   },
   "engines": {

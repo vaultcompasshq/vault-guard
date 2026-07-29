@@ -25,6 +25,15 @@ Patterns with a `Min entropy` value drop matches whose Shannon entropy falls bel
 | `openai` | critical | - | `g` | `(?<![A-Za-z0-9_-])sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20,}` |
 | `huggingface` | critical | - | `g` | `hf_[a-zA-Z0-9]{34,}` |
 | `replicate` | critical | - | `g` | `r8_[a-zA-Z0-9]{32}` |
+| `groq` | critical | - | `g` | `(?<![A-Za-z0-9_-])gsk_[a-zA-Z0-9]{52}` |
+| `openrouter` | critical | - | `g` | `sk-or-v1-[a-f0-9]{64}` |
+| `xai` | critical | - | `g` | `(?<![A-Za-z0-9_-])xai-[a-zA-Z0-9]{80}` |
+| `perplexity` | critical | - | `g` | `(?<![A-Za-z0-9_-])pplx-[a-zA-Z0-9]{40,}` |
+| `mistral` | critical | - | `g` | `(?:mistral_api_key\|MISTRAL_API_KEY)\\s*[=:]\\s*["']?([a-zA-Z0-9]{32})` |
+| `together-ai` | critical | - | `g` | `(?:together_api_key\|TOGETHER_API_KEY)\\s*[=:]\\s*["']?([a-f0-9]{64})` |
+| `fireworks-ai` | critical | - | `g` | `(?<![A-Za-z0-9_-])fw_[a-zA-Z0-9]{24,}` |
+| `langsmith` | critical | - | `g` | `lsv2_(?:pt\|sk)_[a-f0-9]{32}_[a-f0-9]{10}` |
+| `deepseek` | critical | - | `g` | `(?:deepseek_api_key\|DEEPSEEK_API_KEY)\\s*[=:]\\s*["']?(sk-[a-f0-9]{32})` |
 | `stripe` | critical | - | `g` | `sk_live_[a-zA-Z0-9]{24,}` |
 | `stripe-test` | high | - | `g` | `sk_test_[a-zA-Z0-9]{24,}` |
 | `paypal` | critical | - | `g` | `access_token\\$production\\$[a-zA-Z0-9]{20,}` |
@@ -49,9 +58,20 @@ Patterns with a `Min entropy` value drop matches whose Shannon entropy falls bel
 | `resend-api` | critical | 3.5 | `g` | `(?<![A-Za-z0-9_])re_[a-zA-Z0-9]{32,}` |
 | `mailgun-api` | critical | 3.5 | `g` | `key-[a-zA-Z0-9]{32}` |
 | `npm-token` | critical | - | `g` | `npm_[a-zA-Z0-9]{36}` |
+| `supabase-token` | critical | - | `g` | `(?<![A-Za-z0-9_-])sbp_[a-f0-9]{40}` |
+| `supabase-secret` | critical | - | `g` | `(?<![A-Za-z0-9_-])sb_secret_[a-zA-Z0-9_-]{20,}` |
+| `vercel-blob` | critical | - | `g` | `vercel_blob_rw_[a-zA-Z0-9]{20,}_[a-zA-Z0-9]{20,}` |
+| `planetscale` | critical | - | `g` | `pscale_(?:tkn\|pw)_[a-zA-Z0-9_-]{32,}` |
+| `doppler-token` | critical | - | `g` | `dp\\.(?:pt\|st\|sa\|scim\|audit)\\.[a-zA-Z0-9]{40,}` |
+| `databricks-token` | critical | - | `g` | `(?<![A-Za-z0-9_-])dapi[a-f0-9]{32}` |
+| `cloudflare-token` | critical | - | `g` | `(?:cloudflare_api_token\|CLOUDFLARE_API_TOKEN)\\s*[=:]\\s*["']?([a-zA-Z0-9_-]{40})` |
+| `notion-token` | critical | - | `g` | `(?<![A-Za-z0-9_-])(?:ntn_[a-zA-Z0-9]{40,}\|secret_[a-zA-Z0-9]{43})` |
+| `airtable-pat` | critical | - | `g` | `(?<![A-Za-z0-9_-])pat[a-zA-Z0-9]{14}\\.[a-f0-9]{64}` |
+| `figma-token` | critical | - | `g` | `(?<![A-Za-z0-9_-])figd_[a-zA-Z0-9_-]{40,}` |
 | `newrelic-api` | critical | - | `g` | `NRAK-[a-zA-Z0-9]{26}` |
+| `sentry-dsn` | low | - | `g` | `https:\\/\\/[a-f0-9]{32}@o\\d+\\.ingest\\.(?:[a-z]{2}\\.)?sentry\\.io\\/\\d+` |
 | `shopify-admin` | critical | - | `g` | `shp(?:ss\|at\|ca)_[a-zA-Z0-9]{32}` |
-| `ssh-private-key` | critical | - | `g` | `-----BEGIN [A-Z ]+ PRIVATE KEY-----` |
+| `ssh-private-key` | critical | - | `g` | `-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----` |
 | `jwt-token` | high | - | `g` | `eyJ[a-zA-Z0-9_-]+\\.[a-zA-Z0-9_-]+\\.[a-zA-Z0-9_-]+` |
 | `bearer-token` | high | 3.5 | `g` | `Bearer [a-zA-Z0-9_-]{20,}` |
 | `api-key-generic` | high | 3.5 | `gi` | `api[_-]?key["']?\\s*[:=]\\s*["']?([a-zA-Z0-9_-]{20,})` |

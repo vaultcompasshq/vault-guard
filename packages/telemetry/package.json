@@ -1,6 +1,6 @@
 {
   "name": "@vaultcompass/vault-guard-telemetry",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Local-only Anthropic token cost and session tracking via the Vault Guard proxy. No cloud.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -28,7 +28,7 @@
   "license": "MIT",
   "dependencies": {
     "@vaultcompass/vault-guard-core": "workspace:*",
-    "better-sqlite3": "^12.11.1"
+    "better-sqlite3": "^13.0.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",

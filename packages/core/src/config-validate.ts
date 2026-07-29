@@ -1,5 +1,6 @@
 import type { SecretMatch } from './types';
 import type { VaultGuardConfig } from './config';
+import { isFailOnThreshold } from './utils/fail-on';
 
 const SEVERITIES: ReadonlySet<string> = new Set(['critical', 'high', 'medium', 'low', 'off']);
 
@@ -23,6 +24,7 @@ export function validateVaultGuardConfig(value: unknown): { ok: true; config: Va
       'extra_patterns',
       'extra_patterns_unsafe',
       'entropy_threshold',
+      'fail_on',
     ]);
     if (!allowed.has(key)) {
       errors.push(`unknown top-level key: ${JSON.stringify(key)}`);
@@ -72,6 +74,10 @@ export function validateVaultGuardConfig(value: unknown): { ok: true; config: Va
     if (typeof o.entropy_threshold !== 'number' || !Number.isFinite(o.entropy_threshold)) {
       errors.push('entropy_threshold must be a finite number');
     }
+  }
+
+  if (o.fail_on !== undefined && !isFailOnThreshold(o.fail_on)) {
+    errors.push('fail_on must be critical|high|medium|low|none');
   }
 
   if (o.extra_patterns !== undefined) {

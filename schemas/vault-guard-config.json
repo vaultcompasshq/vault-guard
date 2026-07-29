@@ -37,6 +37,12 @@
       }
     },
     "extra_patterns_unsafe": { "type": "boolean" },
-    "entropy_threshold": { "type": "number" }
+    "entropy_threshold": { "type": "number" },
+    "fail_on": {
+      "type": "string",
+      "enum": ["critical", "high", "medium", "low", "none"],
+      "default": "medium",
+      "description": "Minimum severity that fails the scan (non-zero exit). Lower-severity findings are still reported. \"none\" never fails."
+    }
   }
 }

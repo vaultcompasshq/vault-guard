@@ -101,21 +101,46 @@ vault-guard scan . --format sarif
 vault-guard scan . --format json
 ```
 
+### What fails the build
+
+Findings at or above the **`--fail-on` threshold** produce exit code 1. Everything
+below it is still reported (text, JSON, SARIF) but does not break the gate.
+
+```bash
+vault-guard scan .                      # default: fail on medium and above
+vault-guard scan . --fail-on critical   # only criticals block
+vault-guard scan . --fail-on low        # block on anything (pre-1.4.0 behaviour)
+vault-guard scan . --fail-on none       # advisory mode: report, never fail
+```
+
+The default is `medium` because the scanner deliberately downgrades findings to
+`low` where they are usually not real leaks: generic patterns inside
+`__tests__/`, `docs/`, `*.example` files, and public identifiers such as GCP
+OAuth client IDs and Sentry DSNs. Set `"fail_on"` in `.vault-guard.json` to
+change it repo-wide. The JSON `run` block reports both `fail_on` and
+`blocking_matches`; gate on `blocking_matches`, not `summary.secrets`.
+
 Structured output includes a `run` block (timing, files/bytes scanned, active pattern count, diagnostics). See **[docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md)**.
 
 ---
 
 ## What it detects
 
-- AI/ML API keys (Anthropic, OpenAI, HuggingFace, Replicate, `sk-proj-*`)
+- AI/ML API keys (Anthropic, OpenAI, Groq, OpenRouter, xAI, Perplexity, Mistral, DeepSeek, Together, Fireworks, LangSmith, HuggingFace, Replicate)
+- Backend platforms (Supabase, Vercel Blob, PlanetScale, Doppler, Databricks, Cloudflare)
 - Payment processors (Stripe live + test, PayPal)
 - Cloud providers (AWS access keys, context-anchored AWS secret keys, GCP, Azure storage)
 - Database URLs (PostgreSQL, MySQL, MongoDB, Redis)
 - Version control tokens (GitHub classic + fine-grained PATs, GitLab, Bitbucket)
 - Communication (Slack webhooks + tokens, Discord webhooks)
+- SaaS tokens (Notion, Airtable, Figma)
 - SSH private keys, JWTs, and entropy-gated generic `api_key` / `secret` assignments
 
 Full rule reference with severities: **[docs/RULES.md](./docs/RULES.md)**.
+
+Note: `sk_live_` / `sk_test_` are used by both Stripe and Clerk and there is no
+reliable discriminator in the key body, so a Clerk secret key is reported under
+the `stripe` rule id. The finding is correct; only the vendor label may be off.
 
 ---
 
@@ -185,6 +210,7 @@ Create `.vault-guard.json` at your repo root:
 
 ```json
 {
+  "fail_on": "medium",
   "ignore": {
     "paths": ["**/__tests__/**", "fixtures/**"]
   },

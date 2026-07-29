@@ -7,25 +7,141 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.3.0] - 2026-07-21
+## [1.4.0] - 2026-07-29
+
+Two things drove this release: the AI provider rules had quietly fallen two
+years behind, and the commit gate blocked on findings the scanner itself had
+already decided were not worth blocking. Both were found by pointing Vault
+Guard at real code instead of its own fixtures.
+
+### Changed
+
+- The scan gate now defaults to `--fail-on medium`, where before any match at
+  all exited 1. That old behaviour cancelled out the scanner's own severity
+  downgrades: `path-severity.ts` drops generic findings to `low` inside
+  `__tests__/`, `docs/` and `*.example` files, and then the commit was blocked
+  anyway. Scanning three real-world repositories turned up 26 findings, every
+  one we inspected a false positive, and all three exited non-zero.
+
+  Findings under the threshold are still reported in text, JSON and SARIF.
+  They just no longer break the build. Put back the old behaviour with
+  `--fail-on low`, or `"fail_on": "low"` in `.vault-guard.json`.
+
+  `scan` and `check` both take `--fail-on critical|high|medium|low|none`, and
+  the JSON `run` block now carries `fail_on` and `blocking_matches`. If you
+  gate a build on our output, read `blocking_matches` rather than
+  `summary.secrets`.
+
+- `better-sqlite3` moved to ^13.0.2. The 12.x line has no prebuild for Node 25
+  and will not compile against its V8 headers, so telemetry, the `data`
+  commands and `vault-guard proxy` were all broken there despite `engines`
+  claiming `>=22`.
+
+- CI runs Node 22, 24 and 25 instead of 22 alone. Nothing exercised the upper
+  half of our own supported range, which is why the breakage above went
+  unnoticed.
 
 ### Added
 
-- Optional Windows `pre-commit.cmd` companion on native hook install (Git for
-  Windows still runs the POSIX `pre-commit` via `sh`).
-- `vault-guard init` advisories when Husky / Lefthook / pre-commit framework
-  layouts are present; conflict guidance without overwrites.
-- README recommended stack: Vault Guard + Gitleaks + TruffleHog.
-- VS Code extension packaging scripts for Marketplace publish (`vsce` via npx).
+Rules for the AI providers people actually wire up today: Groq, OpenRouter,
+xAI, Perplexity, Mistral, DeepSeek, Together, Fireworks and LangSmith. The AI
+set had not moved past Anthropic, OpenAI, HuggingFace and Replicate, which is
+an awkward gap for a tool that pitches itself at AI-assisted coding.
+
+Also added, since agents wire these up constantly: Supabase (personal access
+token and secret key), Vercel Blob, PlanetScale, Doppler, Databricks,
+Cloudflare API tokens, Notion, Airtable and Figma.
+
+Sentry DSNs are detected at `low`. A DSN is meant to ship inside a client
+bundle, so it is worth surfacing but not worth failing a build over, same call
+we already made for GCP OAuth client IDs.
 
 ### Fixed
 
-- **`scan --staged` reads git index blobs.** Secrets staged then deleted from
-  the worktree (`AD`) or partially staged are no longer skipped by pre-commit.
-- Init conflicts on foreign `pre-commit.cmd`; never overwrites foreign
-  companions; refreshes the optional `.cmd` on repeat native init.
-- TokenCounter extension parsing uses `path.extname` on the basename so temp
-  dirs with dots no longer mis-bucket files.
+- **PKCS#8 private keys were never detected.** The rule required an algorithm
+  name between `BEGIN` and `PRIVATE KEY`, so `-----BEGIN PRIVATE KEY-----`
+  slipped straight through. That is the default OpenSSL output and the form
+  embedded in GCP service-account JSON, and the CLI would happily print
+  "No secrets found" over a file that was nothing but a private key. Found by
+  scanning a public repo that gitleaks flagged and we did not.
+
+- Hyphenated placeholders. `your_api_key` was suppressed but
+  `your-anthropic-api-key` fired as `api-key-generic` at `high`, which shows up
+  all over `.env.example` files and READMEs.
+
+- Unquoted variable references. The generic assignment rules capture whatever
+  follows `:` or `=`, so `'x-api-key': scheduledIngestApiKey` was reported as a
+  leaked key. Unquoted values that break into word-shaped segments are now read
+  as code references. Quoted literals and every vendor-anchored rule are
+  untouched.
+
+- Password hashes. bcrypt, argon2, sha-crypt and Django/Passlib digests no
+  longer count as `password-in-code`. A hash is the safe-at-rest form of a
+  credential, and seed data is full of them. This was the single largest source
+  of noise in the dogfood run.
+
+- Bare PEM headers. UI code keeps `-----BEGIN RSA PRIVATE KEY-----` around as a
+  label or an input placeholder. A header with no base64 body after it cannot
+  leak key material, so it no longer fires. Note this is a small deliberate
+  reduction in recall.
+
+- Translation catalogues. A key like `tfa_secret` puts a translated label where
+  the generic rules expect a value, so a German 2FA label read as a
+  29-character secret. Files under `locales/`, `i18n/`, `lang/` and friends now
+  get the same downgrade as docs and tests.
+
+- `test-data` and `test_data` directories are recognised alongside `testdata`.
+
+- Text output contradicted itself once the gate had a threshold. A run whose
+  findings all sat below it printed "BLOCKED: Found 1 secret", listed the
+  finding, printed "Commit blocked", and then exited 0. The headline now
+  reflects whether the run actually fails. Low-severity findings are also no
+  longer marked with a green checkmark, which read as "this file is clean".
+
+- Every known advisory in the dependency tree is resolved. `pnpm audit` went
+  from 5 high and 4 moderate to zero, via overrides on `fast-uri`,
+  `brace-expansion`, `hono` and `@hono/node-server`. The `pnpm audit
+  --audit-level high` CI gate was already failing on `main` before this
+  release.
+
+- The pre-commit hook printed `/dev/tty: Device not configured` on every commit
+  made without a controlling terminal. A failed `exec <` is reported by the
+  shell itself, so a `2>/dev/null` on the redirect never suppressed it. The
+  redirect now sits inside a group whose stderr is discarded. Testing
+  `[ -r /dev/tty ]` first is not a fix: the device node passes the permission
+  check and the open still fails with ENXIO.
+
+- **A benchmark fixture was passing on the wrong rule.** The Groq fixture
+  carried a 48-character key where the real format is 52, so the `groq` rule
+  never fired and `api-key-generic` matched the surrounding assignment instead.
+  The corpus reported a clean 100% while the rule under test did nothing. Every
+  positive fixture now pins the rule id it must fire, and the harness fails the
+  run if a different rule matches. Caught by driving the MCP server directly
+  rather than trusting the corpus.
+
+- **The benchmark scored gitleaks at a flat 0% recall, and that was our bug.**
+  `bench/run.cjs` passed `--report-format json` with no `--report-path`.
+  Gitleaks writes its report to a file, so stdout held only the banner,
+  `JSON.parse` failed, and every file recorded zero findings. Run properly it
+  scores 91.7% precision and 57.9% recall on this corpus. The harness and
+  `bench/README.md` now also state outright that the corpus is a regression
+  suite grown from our own fixed false positives, that its score is not a
+  generalization metric, and that any cross-tool comparison on it is played at
+  home.
+
+### Dogfood
+
+Scanned roughly 82,000 files across sixteen public repositories. Findings that
+would block a commit at the new default dropped from 267 to 30, and the 30 that
+remain are genuine by shape: committed `.env` files, PEM key files, a
+service-account blob in a README, and JWT signing secrets in compose files.
+
+### Documentation
+
+`README.md` covers the gate and the wider rule set. It also now says plainly
+that Clerk secret keys get reported under the `stripe` rule id, because both
+vendors use `sk_live_` / `sk_test_` and nothing in the key body separates them.
+The id stays as it is since baseline fingerprints include it.
 
 ## [1.2.3] - 2026-07-16
 

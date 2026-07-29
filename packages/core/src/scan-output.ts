@@ -21,6 +21,14 @@ export interface JsonRunMetadata {
   diagnostics_count?: number;
   /** Matches removed because they appeared in `.vault-guard.baseline.json`. */
   baseline_suppressed?: number;
+  /** Effective gate threshold for this run (`--fail-on` / `fail_on` / default). */
+  fail_on?: string;
+  /**
+   * Matches at or above {@link fail_on}. This, not the total match count, is
+   * what drives the process exit code; integrators gating a build should read
+   * this field rather than `summary.secrets`.
+   */
+  blocking_matches?: number;
 }
 
 export interface JsonOutput {
