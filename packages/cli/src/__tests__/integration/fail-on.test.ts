@@ -153,6 +153,57 @@ describe('CLI --fail-on gate', () => {
     expect(findingLine).not.toContain('\u2705');
   });
 
+  describe('1.4.0 default-change upgrade notice', () => {
+    // The notice exists because upgrading users silently stop blocking on
+    // low findings. It must appear exactly when the default decided the
+    // outcome, and choosing any threshold explicitly must silence it.
+
+    it('appears when the implicit default is what saved the run', () => {
+      const proc = run(['scan', '.']);
+      expect(proc.status).toBe(0);
+      expect(proc.stderr).toMatch(/since 1\.4\.0 the default gate is "medium"/);
+      expect(proc.stderr).toMatch(/would have failed before/);
+    });
+
+    it('stays quiet when --fail-on was given, even at the same value', () => {
+      const proc = run(['scan', '.', '--fail-on', 'medium']);
+      expect(proc.status).toBe(0);
+      expect(proc.stderr).not.toMatch(/1\.4\.0/);
+    });
+
+    it('stays quiet when fail_on is set in config', () => {
+      fs.writeFileSync(
+        path.join(workdir, '.vault-guard.json'),
+        JSON.stringify({ fail_on: 'medium' }),
+      );
+      const proc = run(['scan', '.']);
+      expect(proc.status).toBe(0);
+      expect(proc.stderr).not.toMatch(/1\.4\.0/);
+    });
+
+    it('stays quiet when there are no findings at all', () => {
+      fs.rmSync(path.join(workdir, 'docs'), { recursive: true });
+      const proc = run(['scan', '.']);
+      expect(proc.status).toBe(0);
+      expect(proc.stderr).not.toMatch(/1\.4\.0/);
+    });
+
+    it('stays quiet when the run fails anyway', () => {
+      writeCriticalFinding();
+      const proc = run(['scan', '.']);
+      expect(proc.status).toBe(1);
+      expect(proc.stderr).not.toMatch(/1\.4\.0/);
+    });
+
+    it('goes to stderr in json mode and stdout stays parseable', () => {
+      const proc = run(['scan', '.', '--format', 'json']);
+      expect(proc.status).toBe(0);
+      expect(proc.stderr).toMatch(/since 1\.4\.0/);
+      const out = JSON.parse(proc.stdout.trim());
+      expect(out.run.blocking_matches).toBe(0);
+    });
+  });
+
   it('applies the same gate to `check`', () => {
     const proc = run(['check', 'docs/setup.md']);
     expect(proc.status).toBe(0);
