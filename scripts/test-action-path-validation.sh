@@ -57,4 +57,13 @@ if grep -nE '\[A-Za-z0-9\._/-\]\{1,256\}' action.yml >/dev/null; then
   exit 1
 fi
 
+
+# Guard: npx must not pass a bare `--` before `scan`. That separator is
+# forwarded into vault-guard argv; Commander then ignores `--format` and the
+# action tees text banners into the SARIF file.
+if grep -nE 'npx[^\n]*--[[:space:]]+scan' action.yml >/dev/null; then
+  printf 'action.yml still uses `npx … -- scan` (breaks --format / SARIF upload)\n' >&2
+  exit 1
+fi
+
 printf 'action path validation OK (%s bash %s)\n' "$(uname -s)" "${BASH_VERSION}"
