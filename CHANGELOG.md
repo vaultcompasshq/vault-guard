@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **GitHub Action path validation on macOS.** `validate_path` used bash
+  `=~` with `{1,256}`, which fails to compile where `RE_DUP_MAX` is 255
+  (macOS/BSD). Every path — including the default `.` — was rejected as
+  invalid even with no secrets present. Charset is now checked with `+`
+  plus an explicit length guard; CI runs the self-test on `macos-latest`.
+
 ## [1.4.0] - 2026-07-29
 
 Two things drove this release: the AI provider rules had quietly fallen two

@@ -105,6 +105,23 @@ jobs:
     - name: Check for private portfolio references
       run: pnpm check:private-names
 
+  # action.yml path validation must work on macOS bash (RE_DUP_MAX=255).
+  # Ubuntu alone cannot catch a `{1,N}` regression above that limit.
+  action-path-validation:
+    name: action path validation (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+    - name: Validate action path inputs
+      run: bash scripts/test-action-path-validation.sh
+
   bench:
     runs-on: ubuntu-latest
 
