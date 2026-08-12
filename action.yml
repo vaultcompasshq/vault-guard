@@ -134,11 +134,14 @@ runs:
           cd "${ROOT}/${REL}"
         fi
 
-        # `--` after the package spec stops npx from interpreting any later
-        # token as one of its own flags, regardless of what `VG_VERSION`
-        # passed validation.
+        # Do NOT put a bare `--` between the package spec and `scan`.
+        # npx forwards that `--` into vault-guard's argv; Commander then
+        # treats it as end-of-options and ignores `--format`, so `tee`
+        # writes text banners (🔍 Scanning…) into the SARIF file and
+        # upload-sarif fails. `VG_VERSION` is validated above, and the
+        # remaining tokens are ours, so npx cannot see attacker flags.
         set +e
-        npx --yes "@vaultcompass/vault-guard@${VG_VERSION}" -- scan . --format "${VG_FORMAT}" | tee "${OUT}"
+        npx --yes "@vaultcompass/vault-guard@${VG_VERSION}" scan . --format "${VG_FORMAT}" | tee "${OUT}"
         SCAN_STATUS="${PIPESTATUS[0]}"
         set -e
 

@@ -12,6 +12,13 @@ if (nodeMajor < 22) {
 
 const program = buildCli();
 
+// npx (and some wrappers) forward a leading `--` into argv. Commander treats
+// that as end-of-options, so `--format sarif` is ignored and text banners
+// pollute machine-readable stdout. Drop a single leading separator.
+if (process.argv[2] === '--') {
+  process.argv.splice(2, 1);
+}
+
 // Parse arguments and execute command
 program.parseAsync().catch((error) => {
   // Handle errors

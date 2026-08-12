@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-08-11
+
+### Fixed
+
+- **GitHub Action SARIF upload.** The composite action invoked
+  `npx … -- scan …`. npx forwards that `--` into the CLI argv; Commander
+  treats it as end-of-options and ignores `--format`, so `tee` wrote text
+  banners (`🔍 Scanning…`) into the SARIF file and `upload-sarif` failed
+  with invalid JSON. The action no longer inserts that separator, and the
+  CLI drops a single leading `--` if a wrapper still passes one.
+
 ## [1.4.0] - 2026-08-11
 
 Two things drove this release: the AI provider rules had quietly fallen two
