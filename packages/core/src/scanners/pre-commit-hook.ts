@@ -19,14 +19,16 @@ const NATIVE_HOOK_SCRIPT = `#!/bin/sh
 # vault-guard pre-commit (installed by @vaultcompass/vault-guard)
 set -e
 
-# Re-attach stdin for GUI git clients.
-# A failed \`exec <\` is reported by the shell itself, so a trailing
-# \`2>/dev/null\` on the redirect never suppressed it and every commit made
-# without a controlling terminal (CI, some GUI clients) printed
-# "/dev/tty: Device not configured". Redirecting the enclosing group is what
-# actually silences it. \`[ -r /dev/tty ]\` is not a usable guard here: the
-# device node passes the permission test and the open still fails with ENXIO.
-if [ ! -t 0 ]; then { exec </dev/tty; } 2>/dev/null || true; fi
+# Re-attach stdin for GUI git clients when possible.
+# dash (Ubuntu /bin/sh) exits the whole shell on a failed \`exec </dev/tty\`
+# even with \`|| true\` / \`set +e\` — exit status 2. Probe in a subshell first;
+# only \`exec\` in the current shell when that open succeeds. \`[ -r /dev/tty ]\`
+# is not a usable guard: the node can exist and still fail open with ENXIO.
+if [ ! -t 0 ]; then
+  if (exec </dev/tty) 2>/dev/null; then
+    exec </dev/tty
+  fi
+fi
 
 if ! command -v vault-guard >/dev/null 2>&1; then
   echo "❌ vault-guard: command not found (install: npm i -g @vaultcompass/vault-guard)"

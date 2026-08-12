@@ -78,13 +78,11 @@ describe('PreCommitHook', () => {
 
       const hookContent = fs.readFileSync(hookPath, 'utf-8');
 
-      // A failed `exec </dev/tty` is reported by the shell itself, so a
-      // trailing `2>/dev/null` on the redirect does not suppress it. The
-      // enclosing group must be redirected, and the `|| true` must stay:
-      // under `set -e` a bare failing `exec` aborts the hook and blocks the
-      // commit outright.
-      expect(hookContent).toContain('{ exec </dev/tty; } 2>/dev/null || true');
-      expect(hookContent).not.toMatch(/exec\s*<\s*\/dev\/tty\s*2>\/dev\/null/);
+      // dash exits on a failed current-shell `exec </dev/tty` even with
+      // `|| true`. The installed hook must probe in a subshell first.
+      expect(hookContent).toContain('if (exec </dev/tty) 2>/dev/null; then');
+      expect(hookContent).toMatch(/^\s*exec <\/dev\/tty$/m);
+      expect(hookContent).not.toContain('{ exec </dev/tty; }');
     });
 
     it('runs to completion with no controlling terminal', () => {

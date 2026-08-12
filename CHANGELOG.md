@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-11
+
+Two things drove this release: the AI provider rules had quietly fallen two
+years behind, and the commit gate blocked on findings the scanner itself had
+already decided were not worth blocking. Both were found by pointing Vault
+Guard at real code instead of its own fixtures.
+
 ### Fixed
 
 - **GitHub Action path validation on macOS.** `validate_path` used bash
@@ -15,12 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   invalid even with no secrets present. Charset is now checked with `+`
   plus an explicit length guard; CI runs the self-test on `macos-latest`.
 
-## [1.4.0] - 2026-07-29
-
-Two things drove this release: the AI provider rules had quietly fallen two
-years behind, and the commit gate blocked on findings the scanner itself had
-already decided were not worth blocking. Both were found by pointing Vault
-Guard at real code instead of its own fixtures.
+- **Native pre-commit hook on dash.** Failed `exec </dev/tty` aborted the
+  whole hook under Ubuntu `/bin/sh` (exit 2) even with `|| true`. Probe in a
+  subshell before re-attaching stdin in the current shell.
 
 ### Changed
 
