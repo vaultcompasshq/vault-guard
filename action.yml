@@ -15,9 +15,10 @@ inputs:
     default: latest
   path:
     description: |
-      Path to scan, relative to the workspace root. Validated against
-      `^[A-Za-z0-9._/-]{1,256}$` and rejected if it contains `..` so it cannot
-      escape `GITHUB_WORKSPACE`.
+      Path to scan, relative to the workspace root. Must be 1..256 chars of
+      `[A-Za-z0-9._/-]` and must not contain `..` so it cannot escape
+      `GITHUB_WORKSPACE`. (Charset checked with `+` plus a length guard —
+      bash `{1,256}` does not compile on macOS where `RE_DUP_MAX` is 255.)
     required: false
     default: .
   format:
@@ -26,8 +27,8 @@ inputs:
     default: sarif
   sarif-output:
     description: |
-      Output file path, relative to the workspace root. Validated against
-      `^[A-Za-z0-9._/-]{1,256}$` and rejected if it contains `..`.
+      Output file path, relative to the workspace root. Same path rules as
+      `path` (1..256 chars of `[A-Za-z0-9._/-]`, no `..`).
     required: false
     default: vault-guard-results.sarif
 
@@ -85,10 +86,14 @@ runs:
 
         # path / sarif-output: relative paths within the workspace. No `..`
         # segments (path traversal), no leading `/` (absolute escape).
+        #
+        # Charset uses `+` plus an explicit length check — not `{1,256}`.
+        # macOS bash/BSD regex sets RE_DUP_MAX=255, so `{1,256}` fails to
+        # compile and every path (including `.`) is rejected as invalid.
         validate_path() {
           local name="$1"
           local value="$2"
-          if [[ ! "${value}" =~ ^[A-Za-z0-9._/-]{1,256}$ ]]; then
+          if [[ ! "${value}" =~ ^[A-Za-z0-9._/-]+$ ]] || (( ${#value} > 256 )); then
             printf '::error::vault-guard: invalid `%s` input: %q\n' "${name}" "${value}"
             printf '::error::Allowed: 1..256 chars of [A-Za-z0-9._/-]\n'
             exit 1

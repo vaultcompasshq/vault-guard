@@ -38,6 +38,12 @@ was usable day to day, not distribution. Shipped in 1.4.0:
 
 ### Still open
 
+- [x] **P0** GitHub Action `validate_path` rejects every path on macOS runners
+      (`invalid path input: .`). Was bash `=~` with `{1,256}` vs
+      BSD/`RE_DUP_MAX` 255. Fixed with `+` plus length check; macos self-test
+      in CI. Consumers still need to bump their action pin after the patch
+      release. Dogfooded 2026-08-11 on a self-hosted Mac arm64 runner
+      (false CI red; not a secret finding).
 - [ ] **P1** Measure precision against a third-party corpus rather than our own
       fixtures. The dogfood run against ~82k files of public code is the start
       of this; it should be a repeatable script, not a one-off.
