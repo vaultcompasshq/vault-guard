@@ -39,6 +39,14 @@ jobs:
     - name: Run tests with coverage
       run: pnpm test:coverage
 
+    # Runs here as well as in ci.yml. CI gates the pull request; this gates
+    # the tag. Without it a release cut from a branch that never opened a
+    # pull request, or an admin merge during a CI outage, could publish a
+    # tarball carrying a private codename or an internal path, which is the
+    # one thing this guard exists to make impossible.
+    - name: Check for private portfolio references
+      run: pnpm check:private-names
+
     - name: Verify publish hygiene (no source maps or test artifacts in tarballs)
       run: pnpm check:pack
 
