@@ -28,12 +28,19 @@ const BANNED_HASHES = new Set([
   '59f5eae64585bb2483b57c4618b144e92011ba0656565003a42db23f029f8bd5',
   'c227174107761c30f27338905527dc53032ac5daf6d225ce9561ba4110344d7d',
   'd792a2b651ecea40434f60efb0435efcef8eb60aaefaa85f0660e718d074de76',
+  '7f5f6e890b491a749b2a764e033c6b8d19fc0a0022697d391438dd11af101b95',
+  'c3b53b09f7f132caa42bd4ddb8acd99972439acb571e9322fe9607135197154b',
 ]);
 
 const ALLOWLIST = new Set(['CONTRIBUTING.md', 'scripts/check-private-names.cjs']);
 
-// Generic internal monorepo path shape — no usernames or product names.
-const INTERNAL_PATH = /\/Users\/[^/\s]+\/Desktop\/Projects\//i;
+// Internal home-directory path shape. This previously pinned the literal
+// "Desktop/Projects" segment, which is not where this repository actually
+// lives, so the guard could not have caught a leaked path from the machine
+// it runs on. Generalised (matching dep-guard's version of this guard) to
+// any absolute /Users/<name>/... path running through a directory named
+// "projects" at any depth and in any case, rather than one fixed layout.
+const INTERNAL_PATH = /\/Users\/[^/\s]+\/(?:[^/\s]+\/)*[Pp]rojects\/[^/\s]+/;
 
 const TOKEN = /\b[a-z][a-z0-9]*(?:-[a-z0-9]+)*\b/gi;
 
