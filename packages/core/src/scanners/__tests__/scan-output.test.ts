@@ -1,5 +1,6 @@
 import path from 'path';
 import { formatJson, formatSarif, type FileScanResult } from '../../scan-output';
+import { fingerprintForMatch } from '../../match-fingerprint';
 import type { SecretMatch } from '../../types';
 
 function makeMatch(over: Partial<SecretMatch> = {}): SecretMatch {
@@ -45,6 +46,50 @@ describe('scan-output formatters', () => {
       const sarif = JSON.parse(formatSarif(results, { cwd }));
       const uri = sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri;
       expect(uri).toBe(outsideFile);
+    });
+
+    it('formatSarif emits a forward-slash relative uri with no leading ./ or /', () => {
+      const results: FileScanResult[] = [{ file: insideFile, matches: [makeMatch()] }];
+      const sarif = JSON.parse(formatSarif(results, { cwd }));
+      const uri = sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri;
+      expect(uri).toBe('src/leak.ts');
+      expect(uri).not.toMatch(/^\.\//);
+      expect(uri).not.toMatch(/^\//);
+      expect(uri).not.toContain('\\');
+    });
+
+    it('formatSarif keeps uriBaseId as %SRCROOT% alongside the relative uri', () => {
+      const results: FileScanResult[] = [{ file: insideFile, matches: [makeMatch()] }];
+      const sarif = JSON.parse(formatSarif(results, { cwd }));
+      const loc = sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation;
+      expect(loc.uriBaseId).toBe('%SRCROOT%');
+    });
+
+    it('formatSarif normalizes a Windows-style absolute input path to a forward-slash relative uri', () => {
+      const winCwd = 'C:\\repo\\project';
+      const winFile = 'C:\\repo\\project\\src\\leak.ts';
+      const results: FileScanResult[] = [{ file: winFile, matches: [makeMatch()] }];
+      const sarif = JSON.parse(formatSarif(results, { cwd: winCwd }));
+      const uri = sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri;
+      expect(uri).toBe('src/leak.ts');
+    });
+  });
+
+  describe('SARIF partialFingerprints', () => {
+    it('carries the same fingerprint value the JSON output emits, keyed vault-guard/v1', () => {
+      const cwd = '/repo/project';
+      const file = '/repo/project/src/leak.ts';
+      const match = makeMatch();
+      const results: FileScanResult[] = [{ file, matches: [match] }];
+
+      const jsonOut = JSON.parse(formatJson(results, { cwd }));
+      const expectedFingerprint = jsonOut.results[0].matches[0].fingerprint as string;
+
+      const sarif = JSON.parse(formatSarif(results, { cwd }));
+      const partialFingerprints = sarif.runs[0].results[0].partialFingerprints;
+      expect(partialFingerprints).toBeDefined();
+      expect(partialFingerprints['vault-guard/v1']).toBe(expectedFingerprint);
+      expect(partialFingerprints['vault-guard/v1']).toBe(fingerprintForMatch(cwd, file, match));
     });
   });
 

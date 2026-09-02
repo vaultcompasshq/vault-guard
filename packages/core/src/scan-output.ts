@@ -91,6 +91,35 @@ function normalizeFilePath(file: string, cwd: string | null | undefined): string
   return rel || '.';
 }
 
+/** Matches a Windows drive-letter absolute path (`C:\...`, `C:/...`) or a UNC path (`\\server\share`). */
+const WINDOWS_ABSOLUTE_PATH_RE = /^(?:[a-zA-Z]:[\\/]|\\\\)/;
+
+function isWindowsStylePath(p: string): boolean {
+  return WINDOWS_ABSOLUTE_PATH_RE.test(p);
+}
+
+/**
+ * SARIF `artifactLocation.uri` must be a relative-reference URI: forward
+ * slashes only, no leading `./`, no leading `/` (the GitHub Code Scanning
+ * SARIF spec requires this even when the scanner itself runs on Windows,
+ * where `path.relative` returns backslash-separated paths).
+ *
+ * Picks `path.win32` when either side of the comparison looks like a
+ * Windows-style path, so this is correct both when the process itself runs
+ * on Windows (native `path` is already `path.win32`) and when a
+ * Windows-style path is normalized on a POSIX host (tests, or a SARIF file
+ * produced elsewhere and re-normalized).
+ */
+function toSarifArtifactUri(file: string, cwd: string | null | undefined): string {
+  if (cwd === null) return file.split('\\').join('/');
+  const base = cwd ?? process.cwd();
+  const impl = isWindowsStylePath(file) || isWindowsStylePath(base) ? path.win32 : path;
+  if (!impl.isAbsolute(file)) return file.split('\\').join('/');
+  const rel = impl.relative(base, file);
+  if (rel.startsWith('..') || impl.isAbsolute(rel)) return file.split('\\').join('/');
+  return (rel || '.').split('\\').join('/');
+}
+
 export function formatJson(results: FileScanResult[], opts: FormatOptions = {}): string {
   const fpCwd = opts.cwd === undefined ? process.cwd() : opts.cwd;
   const output: JsonOutput = {
@@ -126,6 +155,7 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
 
 /** SARIF 2.1.0 — compatible with GitHub Code Scanning (upload-sarif action). */
 export function formatSarif(results: FileScanResult[], opts: FormatOptions = {}): string {
+  const fpCwd = opts.cwd === undefined ? process.cwd() : opts.cwd;
   const rules = [
     ...new Set(results.flatMap(r => r.matches.map(m => m.type))),
   ].map(id => ({
@@ -150,7 +180,7 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
       locations: [
         {
           physicalLocation: {
-            artifactLocation: { uri: normalizeFilePath(file, opts.cwd), uriBaseId: '%SRCROOT%' },
+            artifactLocation: { uri: toSarifArtifactUri(file, opts.cwd), uriBaseId: '%SRCROOT%' },
             region: {
               startLine: m.line,
               startColumn: m.column + 1,
@@ -159,6 +189,10 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
           },
         },
       ],
+      // Same fingerprint the JSON output emits per finding (positional: keyed
+      // on relative path + type + line + offset + matchLength). Lets GitHub
+      // Code Scanning track a finding's identity across runs.
+      partialFingerprints: { 'vault-guard/v1': fingerprintForMatch(fpCwd, file, m) },
     }))
   );
 
