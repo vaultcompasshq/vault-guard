@@ -38,7 +38,10 @@ describe('scan-output formatters', () => {
       const results: FileScanResult[] = [{ file: insideFile, matches: [makeMatch()] }];
       const sarif = JSON.parse(formatSarif(results, { cwd }));
       const uri = sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri;
-      expect(uri).toBe(path.join('src', 'leak.ts'));
+      // SARIF uris are always forward-slash, unlike formatJson's platform-native
+      // `file` field (asserted with path.join two tests up) — literal, not
+      // path.join, so this stays correct under path.win32 (src\leak.ts) too.
+      expect(uri).toBe('src/leak.ts');
     });
 
     it('formatSarif preserves paths that are outside cwd', () => {
