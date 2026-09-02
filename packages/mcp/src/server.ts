@@ -143,10 +143,17 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
     if (telemetryUnavailable) return null;
     try {
       const store = telemetryFactory();
-      if (!store.isAvailable()) {
+      // Guard both calls: an injected telemetryFactory (test double, or an
+      // older-shaped store from before isAvailable()/getUnavailableReason()
+      // existed) may not implement them. Treat that as available rather than
+      // letting a TypeError escape record_session_event.
+      const isAvailable = typeof store.isAvailable === 'function' ? store.isAvailable() : true;
+      if (!isAvailable) {
         telemetryUnavailable = true;
+        const reason =
+          typeof store.getUnavailableReason === 'function' ? store.getUnavailableReason() : null;
         process.stderr.write(
-          `vault-guard MCP: telemetry unavailable; session events will not be recorded: ${store.getUnavailableReason() ?? 'better-sqlite3 native bindings unavailable.'}\n`,
+          `vault-guard MCP: telemetry unavailable; session events will not be recorded: ${reason ?? 'better-sqlite3 native bindings unavailable.'}\n`,
         );
         return null;
       }

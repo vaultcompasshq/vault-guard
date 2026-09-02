@@ -198,6 +198,32 @@ describe('createMcpServer', () => {
     expect(calls[0]).toMatchObject({ eventType: 'revert', model: 'claude-x', linesReverted: 3 });
     await client.close();
   });
+
+  // Regression guard: a telemetryFactory returning an older-shaped store
+  // (predating isAvailable()) must degrade the same way an unavailable store
+  // does, not throw a TypeError out of record_session_event.
+  it('record_session_event degrades gracefully when an injected store has no isAvailable method', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const oldShapedStore = {
+      recordSession: (x: Record<string, unknown>) => {
+        calls.push(x);
+      },
+      // No isAvailable() here on purpose.
+    } as unknown as TelemetryStore;
+
+    const client = await connect(createMcpServer({ telemetryFactory: () => oldShapedStore }));
+    const res = await client.callTool({
+      name: 'record_session_event',
+      arguments: { event_type: 'revert' },
+    });
+
+    // Treated as available (the safe default when the check itself is
+    // absent): the old-shaped store still records normally rather than
+    // being rejected as unavailable or crashing the tool call.
+    expect(parse(res).ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    await client.close();
+  });
 });
 
 /**
