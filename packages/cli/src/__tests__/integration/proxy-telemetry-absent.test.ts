@@ -30,4 +30,34 @@ describe('proxy startup with telemetry native bindings absent', () => {
       await handle.shutdown();
     }
   });
+
+  it('prints exactly one telemetry-unavailable notice and drops the false usage-logging claim from the banner', async () => {
+    setupUpstreamMock(mockHttps);
+    const stderr = jest.spyOn(process.stderr, 'write').mockReturnValue(true);
+    try {
+      const handle = await proxyCommand({ listen: '127.0.0.1:0' });
+      try {
+        const written = stderr.mock.calls.map(c => String(c[0])).join('');
+
+        // Banner must no longer claim usage is being logged when it is not.
+        expect(written).not.toMatch(/log usage to/);
+
+        // Exactly one unavailability notice, matching the MCP server's wording style.
+        const notices = stderr.mock.calls.filter(c =>
+          String(c[0]).includes('telemetry unavailable, usage will NOT be recorded'),
+        );
+        expect(notices).toHaveLength(1);
+        // The reason itself (TelemetryUnavailableError's message) can be
+        // multi-line, same as the MCP server's equivalent notice; what must
+        // stay singular is the write call, not the line count of the reason.
+        expect(String(notices[0][0])).toMatch(
+          /^vault-guard proxy: telemetry unavailable, usage will NOT be recorded: [\s\S]+\n$/,
+        );
+      } finally {
+        await handle.shutdown();
+      }
+    } finally {
+      stderr.mockRestore();
+    }
+  });
 });
