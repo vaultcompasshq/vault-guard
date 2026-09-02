@@ -304,6 +304,13 @@ node packages/cli/dist/cli-entry.js scan /path/to/project --format json
 
 Parse `summary.secrets`, `results`, and `run` as documented in **[docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md)**.
 
+**If you are building a pass/fail gate, read `run.blocking_matches`, not `summary.secrets`.**
+`summary.secrets` is a raw count of every finding in `results`, including ones below the
+`--fail-on` threshold; it does not reflect the gate. `run.blocking_matches` is the count of
+findings at or above the effective `fail_on` threshold and is exactly what drives vault-guard's
+own exit code. An integrator gating on `summary.secrets` will fail builds that vault-guard itself
+considers passing.
+
 ---
 
 ## Docker & Homebrew
