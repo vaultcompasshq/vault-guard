@@ -3,7 +3,6 @@ import * as readline from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
 import {
   TelemetryStore,
-  TelemetryUnavailableError,
   getDefaultDbPath,
   getDbSidecarPaths,
   type DataStatusJson,
@@ -60,43 +59,38 @@ export async function dataStatusCommand(options: DataStatusOptions = {}): Promis
   const dbPath = options.dbPath ?? getDefaultDbPath();
   const asJson = Boolean(options.json);
 
-  let store: TelemetryStore;
+  const store = new TelemetryStore(dbPath);
   try {
-    store = new TelemetryStore(dbPath);
-  } catch (e) {
-    if (e instanceof TelemetryUnavailableError) {
-      const payload = {
-        error: 'telemetry_unavailable',
-        message: e.message,
-        db_path: dbPath,
-      };
+    // TelemetryStore never throws; `data status` is specifically a telemetry
+    // diagnostic, so unlike scan/statusline/MCP (which just get zeroed
+    // no-op results) it keeps reporting "unavailable" explicitly via exit
+    // code 2 rather than silently showing an all-zero status that would be
+    // indistinguishable from "genuinely no usage yet".
+    if (!store.isAvailable()) {
+      const message = store.getUnavailableReason() ?? 'better-sqlite3 native bindings unavailable.';
+      const payload = { error: 'telemetry_unavailable', message, db_path: dbPath };
       if (asJson) {
         process.stdout.write(`${JSON.stringify(payload)}\n`);
       } else {
         process.stderr.write(
-          `vault-guard data status: telemetry unavailable — ${e.message}\n` +
+          `vault-guard data status: telemetry unavailable — ${message}\n` +
             `expected db path: ${dbPath}\n`,
         );
       }
       return 2;
     }
-    throw e;
-  }
 
-  let status: DataStatusJson;
-  try {
-    status = store.getDataStatus(dbPath);
+    const status: DataStatusJson = store.getDataStatus(dbPath);
+    if (asJson) {
+      process.stdout.write(`${JSON.stringify(status)}\n`);
+      return 0;
+    }
+
+    printStatusHuman(status);
+    return 0;
   } finally {
     store.close();
   }
-
-  if (asJson) {
-    process.stdout.write(`${JSON.stringify(status)}\n`);
-    return 0;
-  }
-
-  printStatusHuman(status);
-  return 0;
 }
 
 function printStatusHuman(s: DataStatusJson): void {
@@ -274,20 +268,17 @@ export async function dataExportCommand(options: DataExportOptions): Promise<num
   const dbPath = options.dbPath ?? getDefaultDbPath();
   const format = options.format ?? 'json';
 
-  let store: TelemetryStore;
+  const store = new TelemetryStore(dbPath);
   try {
-    store = new TelemetryStore(dbPath);
-  } catch (e) {
-    if (e instanceof TelemetryUnavailableError) {
-      process.stderr.write(
-        `vault-guard data export: telemetry unavailable — ${e.message}\n`,
-      );
+    // See dataStatusCommand: `data export` is a telemetry diagnostic, so it
+    // keeps reporting "unavailable" explicitly rather than silently writing
+    // an empty export file.
+    if (!store.isAvailable()) {
+      const message = store.getUnavailableReason() ?? 'better-sqlite3 native bindings unavailable.';
+      process.stderr.write(`vault-guard data export: telemetry unavailable — ${message}\n`);
       return 2;
     }
-    throw e;
-  }
 
-  try {
     const usage = store.exportUsageEvents();
     const sessions = store.exportSessionEvents();
 

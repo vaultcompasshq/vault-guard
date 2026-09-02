@@ -25,10 +25,13 @@ const SERVER_VERSION =
 export interface McpServerOptions {
   /**
    * Factory for the telemetry store. Injectable for tests; defaults to a real
-   * {@link TelemetryStore}. Telemetry is strictly optional: if the factory
-   * throws {@link TelemetryUnavailableError} (e.g. missing `better-sqlite3`
-   * native bindings under `npx`), the scan tools remain fully functional and
-   * only `record_session_event` degrades.
+   * {@link TelemetryStore}. Telemetry is strictly optional: with
+   * `better-sqlite3` native bindings missing (e.g. under `npx` on a machine
+   * without them), the real factory's store just reports `isAvailable()
+   * === false` rather than throwing, and a test-injected factory may still
+   * throw {@link TelemetryUnavailableError} to simulate the same outcome.
+   * Either way the scan tools remain fully functional and only
+   * `record_session_event` degrades.
    */
   telemetryFactory?: () => TelemetryStore;
   /** Workspace root the MCP server is allowed to read. Defaults to `process.cwd()`. */
@@ -126,8 +129,11 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
 
   // Telemetry is optional and lazily constructed. The scan tools (the primary
   // value of this server) must never be taken down by a missing/incompatible
-  // `better-sqlite3` binding, so we never build the store eagerly and we never
-  // let TelemetryUnavailableError escape `record_session_event`.
+  // `better-sqlite3` binding: TelemetryStore itself never throws (it degrades
+  // to a no-op store; see @vaultcompass/vault-guard-telemetry's store.ts),
+  // so `getTelemetry()` treats `!store.isAvailable()` the same way it treats
+  // a thrown TelemetryUnavailableError from a test-injected `telemetryFactory`
+  // (kept below for that seam, and for any future factory that still throws).
   const telemetryFactory = options.telemetryFactory ?? ((): TelemetryStore => new TelemetryStore());
   let telemetry: TelemetryStore | null = null;
   let telemetryUnavailable = false;
@@ -136,7 +142,15 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
     if (telemetry) return telemetry;
     if (telemetryUnavailable) return null;
     try {
-      telemetry = telemetryFactory();
+      const store = telemetryFactory();
+      if (!store.isAvailable()) {
+        telemetryUnavailable = true;
+        process.stderr.write(
+          `vault-guard MCP: telemetry unavailable; session events will not be recorded: ${store.getUnavailableReason() ?? 'better-sqlite3 native bindings unavailable.'}\n`,
+        );
+        return null;
+      }
+      telemetry = store;
       return telemetry;
     } catch (e) {
       if (e instanceof TelemetryUnavailableError) {

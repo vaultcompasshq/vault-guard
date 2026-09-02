@@ -15,7 +15,7 @@ function parse(res: unknown): Record<string, unknown> {
 
 /** A no-op telemetry store standing in for a working SQLite-backed store. */
 function fakeStore(): TelemetryStore {
-  return { recordSession: () => {} } as unknown as TelemetryStore;
+  return { isAvailable: () => true, recordSession: () => {} } as unknown as TelemetryStore;
 }
 
 /** Factory that simulates missing `better-sqlite3` native bindings. */
@@ -181,6 +181,7 @@ describe('createMcpServer', () => {
   it('record_session_event records the event and returns ok:true when telemetry works', async () => {
     const calls: Array<Record<string, unknown>> = [];
     const store = {
+      isAvailable: () => true,
       recordSession: (x: Record<string, unknown>) => {
         calls.push(x);
       },

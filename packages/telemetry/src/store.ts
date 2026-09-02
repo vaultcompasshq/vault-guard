@@ -16,32 +16,18 @@ const _require = createRequire(__filename);
 // ---------------------------------------------------------------------------
 
 /**
- * Thrown when `better-sqlite3` native bindings are missing or incompatible.
- *
- * This happens when:
+ * Thrown internally when `better-sqlite3` native bindings are missing or
+ * incompatible. This happens when:
  *   - The package was installed with `--ignore-scripts` (skips node-gyp compile)
  *   - The Node.js ABI changed after install (e.g. nvm version switch)
- *   - The pre-built binary is missing for the current platform/arch
+ *   - The pre-built binary is missing for the current platform/arch (e.g. a
+ *     Windows install where node-gyp could not find a Visual Studio toolchain)
  *
- * Callers that don't strictly need telemetry should catch this and degrade
- * gracefully (e.g. `statusline` and `suggest-model`). The `proxy` command
- * intentionally lets this propagate — it is the primary telemetry writer and
- * should fail loudly rather than silently discard usage data.
- *
- * @example
- * ```ts
- * try {
- *   const store = new TelemetryStore();
- *   const payload = store.getStatuslinePayload();
- *   console.log(payload);
- * } catch (err) {
- *   if (err instanceof TelemetryUnavailableError) {
- *     console.error('Telemetry unavailable:', err.message);
- *   } else {
- *     throw err;
- *   }
- * }
- * ```
+ * {@link TelemetryStore} catches this internally and degrades to a no-op
+ * store rather than letting it escape the constructor. See "Graceful
+ * degradation" below. It stays exported for callers that want to distinguish
+ * this failure mode from a genuine bug when they inject their own loader
+ * (tests, or a factory such as the MCP server's `telemetryFactory`).
  */
 export class TelemetryUnavailableError extends Error {
   constructor(cause: unknown) {
@@ -51,6 +37,31 @@ export class TelemetryUnavailableError extends Error {
       `Underlying error: ${String(cause)}`;
     super(msg);
     this.name = 'TelemetryUnavailableError';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Once-per-process "unavailable" notice
+// ---------------------------------------------------------------------------
+
+let hasNotedUnavailable = false;
+
+/**
+ * Graceful degradation, in one place: when the native binding can't load,
+ * every {@link TelemetryStore} entry point (record*, get*, export*) becomes a
+ * safe no-op instead of throwing. This function logs that fact **at most
+ * once per process**, and only when `VG_DEBUG=1` is set. Telemetry is
+ * opt-in local tooling, so a missing native binding must never print a
+ * warning on every command (`statusline` in particular can be invoked by an
+ * editor every few seconds).
+ */
+function noteTelemetryUnavailable(cause: unknown): void {
+  if (hasNotedUnavailable) return;
+  hasNotedUnavailable = true;
+  if (process.env.VG_DEBUG === '1') {
+    process.stderr.write(
+      `vault-guard telemetry: native bindings unavailable, recording nothing this run: ${String(cause)}\n`,
+    );
   }
 }
 
@@ -276,22 +287,87 @@ function utcDayStart(d = new Date()): string {
 }
 
 export class TelemetryStore {
-  private readonly db: DatabaseType;
+  private readonly db: DatabaseType | null;
   private readonly counter = new TokenCounter();
-  private readonly saltBuf: Buffer;
+  private readonly saltBuf: Buffer | null;
+  private readonly available: boolean;
+  private readonly unavailableMessage: string | null;
   private lastRetentionPurgeMs = 0;
 
+  /**
+   * @param dbPath Defaults to `~/.vault-guard/usage.sqlite`.
+   *
+   * Never throws, even when `better-sqlite3` native bindings are missing or
+   * incompatible: in that case the store degrades to a no-op (see
+   * {@link isAvailable}) instead of raising {@link TelemetryUnavailableError}.
+   */
   constructor(dbPath?: string) {
     const resolved = dbPath ?? defaultDbPath();
-    const dir = path.dirname(resolved);
-    fs.mkdirSync(dir, { recursive: true });
-    this.saltBuf = getOrCreateTelemetrySalt();
-    // getDbClass() throws TelemetryUnavailableError if bindings missing.
-    this.db = new (getDbClass())(resolved);
-    this.db.pragma('journal_mode = WAL');
-    this.initSchema();
-    this.applyTelemetryMigrations();
-    this.maybePurgeStaleRows();
+    let db: DatabaseType | null = null;
+    let salt: Buffer | null = null;
+    let unavailableMessage: string | null = null;
+
+    try {
+      const DbCtor = getDbClass(); // throws TelemetryUnavailableError if bindings missing.
+      const dir = path.dirname(resolved);
+      fs.mkdirSync(dir, { recursive: true });
+      salt = getOrCreateTelemetrySalt();
+      const opened = new DbCtor(resolved);
+      opened.pragma('journal_mode = WAL');
+      db = opened;
+    } catch (err) {
+      db = null;
+      salt = null;
+      unavailableMessage = new TelemetryUnavailableError(err).message;
+      noteTelemetryUnavailable(err);
+    }
+
+    this.db = db;
+    this.saltBuf = salt;
+    this.available = db !== null;
+    this.unavailableMessage = unavailableMessage;
+
+    if (this.db) {
+      this.initSchema();
+      this.applyTelemetryMigrations();
+      this.maybePurgeStaleRows();
+    }
+  }
+
+  /** True when `better-sqlite3` loaded and this store is backed by a real DB. */
+  isAvailable(): boolean {
+    return this.available;
+  }
+
+  /**
+   * Human-readable reason telemetry is unavailable, or `null` when
+   * {@link isAvailable} is true. Lets callers that are specifically about
+   * inspecting telemetry (`vault-guard data status`, `data export`) report
+   * "unavailable" explicitly rather than silently show all-zero results.
+   */
+  getUnavailableReason(): string | null {
+    return this.unavailableMessage;
+  }
+
+  /**
+   * Non-null accessor for the handful of private methods that only ever run
+   * from inside `if (this.db)` (constructor init) or after an
+   * `isAvailable`/`this.db` guard in a public method. Never reachable while
+   * degraded; exists so those method bodies don't each repeat the guard.
+   */
+  private requireDb(): DatabaseType {
+    if (!this.db) {
+      throw new Error('vault-guard telemetry: internal invariant violated (db unavailable)');
+    }
+    return this.db;
+  }
+
+  /** Same invariant as {@link requireDb}: only ever reached while available, where saltBuf is always set alongside db. */
+  private requireSalt(): Buffer {
+    if (!this.saltBuf) {
+      throw new Error('vault-guard telemetry: internal invariant violated (salt unavailable)');
+    }
+    return this.saltBuf;
   }
 
   /**
@@ -299,36 +375,39 @@ export class TelemetryStore {
    * values with HMAC-SHA256 hex digests using the current salt file.
    */
   private applyTelemetryMigrations(): void {
-    const ver = Number(this.db.pragma('user_version', { simple: true }));
+    const db = this.requireDb();
+    const ver = Number(db.pragma('user_version', { simple: true }));
     if (ver >= 2) return;
 
-    const salt = this.saltBuf;
-    const uRows = this.db
+    const salt = this.requireSalt();
+    const uRows = db
       .prepare(`SELECT id, cwd FROM usage_events WHERE cwd IS NOT NULL AND cwd != ''`)
       .all() as Array<{ id: number; cwd: string }>;
-    const uUpd = this.db.prepare(`UPDATE usage_events SET cwd = ? WHERE id = ?`);
+    const uUpd = db.prepare(`UPDATE usage_events SET cwd = ? WHERE id = ?`);
     for (const r of uRows) {
       if (isStoredCwdDigest(r.cwd)) continue;
       uUpd.run(hashCwdForStore(r.cwd, salt), r.id);
     }
 
-    const sRows = this.db
+    const sRows = db
       .prepare(`SELECT id, cwd FROM session_events WHERE cwd IS NOT NULL AND cwd != ''`)
       .all() as Array<{ id: number; cwd: string }>;
-    const sUpd = this.db.prepare(`UPDATE session_events SET cwd = ? WHERE id = ?`);
+    const sUpd = db.prepare(`UPDATE session_events SET cwd = ? WHERE id = ?`);
     for (const r of sRows) {
       if (isStoredCwdDigest(r.cwd)) continue;
       sUpd.run(hashCwdForStore(r.cwd, salt), r.id);
     }
 
-    this.db.pragma('user_version = 2');
+    db.pragma('user_version = 2');
   }
 
   /**
    * Delete rows older than {@link getTelemetryRetentionDays}. Throttled to at
    * most once per hour per process to avoid hammering SQLite on hot paths.
+   * No-op when the store is unavailable.
    */
   private maybePurgeStaleRows(): void {
+    if (!this.db) return;
     const days = getTelemetryRetentionDays();
     if (days <= 0) return;
 
@@ -342,7 +421,8 @@ export class TelemetryStore {
   }
 
   private initSchema(): void {
-    this.db.exec(`
+    const db = this.requireDb();
+    db.exec(`
       CREATE TABLE IF NOT EXISTS usage_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         created_at TEXT NOT NULL,
@@ -373,8 +453,9 @@ export class TelemetryStore {
     `);
   }
 
+  /** No-op when the store is unavailable: there is no handle to close. */
   close(): void {
-    this.db.close();
+    this.db?.close();
   }
 
   /**
@@ -388,9 +469,11 @@ export class TelemetryStore {
    * with no recovery surprises.
    *
    * Best-effort: if the pragma fails (e.g. handle already closed by another
-   * shutdown path) we still attempt to close the underlying handle.
+   * shutdown path) we still attempt to close the underlying handle. No-op
+   * when the store is unavailable.
    */
   closeAndCheckpoint(): void {
+    if (!this.db) return;
     try {
       this.db.pragma('wal_checkpoint(TRUNCATE)');
     } catch {
@@ -403,7 +486,9 @@ export class TelemetryStore {
     }
   }
 
+  /** No-op (records nothing) when the store is unavailable. */
   recordUsage(input: UsageRecordInput): void {
+    if (!this.db) return;
     this.maybePurgeStaleRows();
     const created = (input.createdAt ?? new Date()).toISOString();
     let cost = input.estCostUsd;
@@ -423,7 +508,7 @@ export class TelemetryStore {
       created,
       input.provider ?? 'unknown',
       input.model ?? null,
-      hashCwdForStore(input.cwd, this.saltBuf),
+      hashCwdForStore(input.cwd, this.requireSalt()),
       input.inputTokens,
       input.outputTokens,
       cost,
@@ -431,7 +516,9 @@ export class TelemetryStore {
     );
   }
 
+  /** No-op (records nothing) when the store is unavailable. */
   recordSession(input: SessionRecordInput): void {
+    if (!this.db) return;
     this.maybePurgeStaleRows();
     const created = (input.createdAt ?? new Date()).toISOString();
     const extra =
@@ -446,7 +533,7 @@ export class TelemetryStore {
       created,
       input.eventType,
       input.model ?? null,
-      hashCwdForStore(input.cwd, this.saltBuf),
+      hashCwdForStore(input.cwd, this.requireSalt()),
       input.language ?? null,
       input.linesAccepted ?? null,
       input.linesSuggested ?? null,
@@ -455,8 +542,9 @@ export class TelemetryStore {
     );
   }
 
-  /** Count session events that represent blocked secrets today (UTC date). */
+  /** Count session events that represent blocked secrets today (UTC date). Returns 0 when unavailable. */
   secretsBlockedToday(day = utcDayStart()): number {
+    if (!this.db) return 0;
     const row = this.db
       .prepare(
         `SELECT COUNT(*) AS c FROM session_events
@@ -466,9 +554,21 @@ export class TelemetryStore {
     return row.c;
   }
 
+  /** Returns a zeroed payload (never throws) when the store is unavailable. */
   getStatuslinePayload(now = new Date()): StatuslineJson {
     const day = utcDayStart(now);
     const windowStart = `${day}T00:00:00.000Z`;
+
+    if (!this.db) {
+      return {
+        secrets_today: 0,
+        tokens_today_input: 0,
+        tokens_today_output: 0,
+        est_cost_usd: 0,
+        model: null,
+        window_start_utc: windowStart,
+      };
+    }
 
     const usage = this.db
       .prepare(
@@ -502,8 +602,17 @@ export class TelemetryStore {
   /**
    * Heuristic model hint from the last 7 days of session + usage data.
    * Prefer models with more usage and lower revert_rate when session metrics exist.
+   * Returns an empty suggestion (never throws) when the store is unavailable.
    */
   suggestModel(opts: { cwd?: string; language?: string } = {}): ModelSuggestion {
+    if (!this.db) {
+      return {
+        suggested_model: null,
+        reason: 'Telemetry is unavailable (better-sqlite3 native bindings not installed); no suggestion.',
+        by_model: [],
+      };
+    }
+
     const since = new Date();
     since.setUTCDate(since.getUTCDate() - 7);
     const sinceIso = since.toISOString();
@@ -582,9 +691,11 @@ export class TelemetryStore {
    * Read all rows from `usage_events` ordered by `id ASC`.
    *
    * Intended for `vault-guard data export`. Returns raw `cwd` strings — see
-   * {@link DataStatusJson} for the privacy-respecting alternative.
+   * {@link DataStatusJson} for the privacy-respecting alternative. Returns an
+   * empty array (never throws) when the store is unavailable.
    */
   exportUsageEvents(): UsageEventRow[] {
+    if (!this.db) return [];
     return this.db
       .prepare(
         `SELECT id, created_at, provider, model, cwd, input_tokens, output_tokens, est_cost_usd, source
@@ -597,9 +708,11 @@ export class TelemetryStore {
    * Read all rows from `session_events` ordered by `id ASC`.
    *
    * Intended for `vault-guard data export`. Returns raw `cwd` strings and
-   * the `extra_json` payload as stored.
+   * the `extra_json` payload as stored. Returns an empty array (never
+   * throws) when the store is unavailable.
    */
   exportSessionEvents(): SessionEventRow[] {
+    if (!this.db) return [];
     return this.db
       .prepare(
         `SELECT id, created_at, event_type, model, cwd, language,
@@ -640,6 +753,26 @@ export class TelemetryStore {
         }
       })
       .filter((x): x is { path: string; size_bytes: number } => x !== null);
+
+    // File-level facts (db_exists / db_size_bytes / last_write_iso / sidecars)
+    // come from fs, not the DB handle, so they stay accurate even when the
+    // store is unavailable. Row-level facts default to zero/null below.
+    if (!this.db) {
+      return {
+        db_path: dbFilePath,
+        db_exists: dbExists,
+        db_size_bytes: dbSize,
+        last_write_iso: lastWriteIso,
+        sidecars,
+        usage_events: 0,
+        session_events: 0,
+        earliest_event_iso: null,
+        latest_event_iso: null,
+        distinct_cwd_count: 0,
+        distinct_model_count: 0,
+        last_model: null,
+      };
+    }
 
     // COUNT(*) on indexed tables is cheap; we don't need to bound it.
     const usageEvents = (
