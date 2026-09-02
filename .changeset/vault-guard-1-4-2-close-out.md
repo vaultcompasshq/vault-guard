@@ -17,7 +17,7 @@
   backslash separators on Windows-style input, which is not a legal SARIF
   relative-reference URI. Both are fixed: results now carry the same
   fingerprint the JSON output already emits per finding, and the uri is
-  always scan-root-relative with forward slashes.
+  relative for files under the scan root, with forward slashes.
 - The JSON output documentation (README and docs/PRODUCT_SCOPE.md) now says
   plainly that a pass/fail gate must read `run.blocking_matches`, not
   `summary.secrets`. The first real integrator built its gate on
@@ -25,7 +25,12 @@
   unchanged.
 - `qs`, pulled in transitively through `@modelcontextprotocol/sdk` under the
   MCP package, resolved to a version with two moderate audit advisories.
-  Pinned via pnpm.overrides to a patched version; `pnpm audit` is clean.
+  Pinned via pnpm.overrides to a patched version; this repo's own
+  `pnpm audit` is clean. That override only cleans this repo's own audit,
+  though: a downstream consumer of the published MCP package still gets
+  `qs` 6.16.0 by ordinary semver range resolution, not by any guarantee.
+  The durable fix is an `@modelcontextprotocol/sdk` bump once one ships
+  with a patched `qs` in its own dependency tree.
 - `better-sqlite3` was a hard dependency of the telemetry package, which was
   in turn a hard dependency of the CLI and MCP packages, and it compiles
   from source. A Windows CI job with no Visual Studio build tools failed at
