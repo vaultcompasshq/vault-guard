@@ -12,8 +12,10 @@ import {
 import {
   MANIFEST_RELATIVE_PATH,
   defaultVaultGuardConfigJson,
+  githubWorkflowYaml,
   templateContentForPath,
 } from '../init/templates';
+import cliPackageJson from '../../package.json';
 
 function git(args: string[], cwd: string): void {
   const result = spawnSync('git', args, { cwd, stdio: 'ignore' });
@@ -221,6 +223,12 @@ describe('vault-guard init', () => {
     const plan = planInit({ cwd: testDir, manager: 'lefthook', skipConfig: true, skipWorkflow: true, skipAgentRules: true });
     expect(plan.ok).toBe(false);
     expect(plan.conflicts.some(c => c.path === 'lefthook-local.yml' && c.reason === 'foreign_hook')).toBe(true);
+  });
+
+  it('pins the workflow template Action tag to the CLI package version', () => {
+    const yaml = githubWorkflowYaml();
+    const expectedTag = `v${cliPackageJson.version}`;
+    expect(yaml).toContain(`uses: vaultcompasshq/vault-guard@${expectedTag}`);
   });
 
   it('conflicts on foreign pre-commit.cmd for native manager', () => {
