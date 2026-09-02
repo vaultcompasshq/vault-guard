@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-09-02
+
+### Fixed
+
+- **SARIF output.** Results now carry `partialFingerprints` (the same
+  positional fingerprint the JSON output emits), and `artifactLocation.uri`
+  is relative to the scan root with forward slashes for files under it.
+  Uploads to code scanning no longer leak the local filesystem layout.
+- **Init workflow template pin.** `vault-guard init` wrote a workflow
+  pinned to `@v1.2.0` for three releases. The pin is now derived from the
+  installed CLI version, and the README and Action docs were brought to
+  the current release at the same time.
+- **Windows install.** `better-sqlite3` is now an optional dependency of
+  the telemetry package. When the native binding cannot be built or
+  loaded, every command still runs; telemetry degrades to a no-op store,
+  and the proxy and MCP server say once that usage is not being recorded.
+- **Integrator guidance.** Tools consuming the JSON output should gate on
+  `run.blocking_matches`, which honours the configured threshold, not on
+  `summary.secrets`. The docs now say so.
+
+### Security
+
+- Overrides bumped for `fast-uri` (four advisories) and `qs` (two
+  advisories) reached through the MCP SDK dependency chain.
+
 ## [1.4.1] - 2026-08-11
 
 ### Fixed
