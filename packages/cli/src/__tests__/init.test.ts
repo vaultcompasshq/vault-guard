@@ -15,7 +15,7 @@ import {
   githubWorkflowYaml,
   templateContentForPath,
 } from '../init/templates';
-import cliPackageJson from '../../package.json';
+import { readCliVersion } from '../version';
 
 function git(args: string[], cwd: string): void {
   const result = spawnSync('git', args, { cwd, stdio: 'ignore' });
@@ -227,8 +227,19 @@ describe('vault-guard init', () => {
 
   it('pins the workflow template Action tag to the CLI package version', () => {
     const yaml = githubWorkflowYaml();
-    const expectedTag = `v${cliPackageJson.version}`;
-    expect(yaml).toContain(`uses: vaultcompasshq/vault-guard@${expectedTag}`);
+    const match = yaml.match(/uses: vaultcompasshq\/vault-guard@(\S+)/);
+    expect(match).not.toBeNull();
+    const pin = (match as RegExpMatchArray)[1];
+
+    // Shape guard first: this must always look like a real semver tag, not
+    // e.g. an empty string or "vundefined" if readCliVersion() ever broke.
+    expect(pin).toMatch(/^v\d+\.\d+\.\d+$/);
+
+    // Then the actual pin: derived from the CLI's own package.json version at
+    // read time (not a hardcoded literal), so a version bump (e.g. the
+    // changeset in this repo bumping package.json to 1.4.2) can never make
+    // this test stale — both sides read the same file at test time.
+    expect(pin).toBe(`v${readCliVersion()}`);
   });
 
   it('conflicts on foreign pre-commit.cmd for native manager', () => {
