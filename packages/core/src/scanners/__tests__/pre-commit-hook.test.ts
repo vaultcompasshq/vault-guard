@@ -18,11 +18,16 @@ describe('PreCommitHook', () => {
     // Isolated temp dir outside any parent Git repo.
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-precommit-'));
     execSync('git init -q', { cwd: testDir, stdio: 'ignore' });
-    // Override a *global* core.hooksPath (common on dev machines) so hooks resolve to .git/hooks.
-    execSync('git config --local core.hooksPath hooks', { cwd: testDir, stdio: 'ignore' });
     gitDir = path.join(testDir, '.git');
     hooksDir = path.join(gitDir, 'hooks');
     hookPath = path.join(hooksDir, 'pre-commit');
+    // Override a *global* core.hooksPath (common on dev machines) with an
+    // ABSOLUTE path pointing at the ordinary .git/hooks location. An
+    // absolute core.hooksPath is used exactly as given, regardless of the
+    // relative-path resolution rule under test below, so this keeps these
+    // tests exercising the plain default hook location instead of being at
+    // the mercy of the host machine's global git config.
+    execSync(`git config --local core.hooksPath "${hooksDir}"`, { cwd: testDir, stdio: 'ignore' });
   });
 
   afterEach(() => {
@@ -107,9 +112,14 @@ describe('PreCommitHook', () => {
       expect(proc.stderr).not.toMatch(/dev\/tty/);
     });
 
-    it('should install into core.hooksPath when set (relative to .git)', () => {
+    it('should install into core.hooksPath when set (relative to the working-tree root)', () => {
+      // A relative core.hooksPath resolves against the working-tree root,
+      // not against the .git directory. This test asserted the .git
+      // location until that was found to be wrong: git actually installs
+      // (and runs) the hook at the working-tree-root location, so a test
+      // that agreed with the buggy code proved nothing.
       const customHooksRel = 'my-hooks';
-      const customHooksAbs = path.join(gitDir, customHooksRel);
+      const customHooksAbs = path.join(testDir, customHooksRel);
       fs.mkdirSync(customHooksAbs, { recursive: true });
       execSync(`git config --local core.hooksPath ${customHooksRel}`, { cwd: testDir, stdio: 'ignore' });
 
@@ -121,6 +131,109 @@ describe('PreCommitHook', () => {
       expect(result.message).toContain('hooksPath');
       expect(fs.existsSync(customHookFile)).toBe(true);
       expect(fs.readFileSync(customHookFile, 'utf-8')).toContain('scan --staged');
+      // Never written under .git: that is the wrong place, and the whole
+      // point of this test is that git does not look for it there.
+      expect(fs.existsSync(path.join(gitDir, customHooksRel, 'pre-commit'))).toBe(false);
+    });
+
+    it('an absolute core.hooksPath is used exactly as given', () => {
+      const hooksAbs = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-abs-hooks-'));
+      try {
+        execSync(`git config --local core.hooksPath "${hooksAbs}"`, { cwd: testDir, stdio: 'ignore' });
+        process.chdir(testDir);
+
+        const result = preCommitHook.install({ manager: 'native' });
+
+        expect(result.success).toBe(true);
+        expect(fs.existsSync(path.join(hooksAbs, 'pre-commit'))).toBe(true);
+      } finally {
+        fs.rmSync(hooksAbs, { recursive: true, force: true });
+      }
+    });
+
+    it('with no core.hooksPath set, resolves against the git directory (needed for linked worktrees and submodules)', () => {
+      // With no core.hooksPath, hooks live in the git directory, which is
+      // NOT the working-tree root for a linked worktree or a submodule --
+      // each has its own git dir elsewhere, distinct from both its own
+      // working-tree root and the main repository's .git/hooks. This is
+      // the one branch the relative-hooksPath fix must leave alone.
+      execSync('git config --local --unset core.hooksPath', { cwd: testDir, stdio: 'ignore' });
+      execSync('git config user.email "test@example.com"', { cwd: testDir, stdio: 'ignore' });
+      execSync('git config user.name "Test"', { cwd: testDir, stdio: 'ignore' });
+      fs.writeFileSync(path.join(testDir, 'a.txt'), 'hello');
+      execSync('git add a.txt', { cwd: testDir, stdio: 'ignore' });
+      execSync('git commit -q -m init', { cwd: testDir, stdio: 'ignore' });
+
+      const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-worktree-'));
+      fs.rmdirSync(worktreeDir);
+      execSync(`git worktree add "${worktreeDir}" -q -b wt-branch`, { cwd: testDir, stdio: 'ignore' });
+
+      try {
+        const worktreeGitDir = path.resolve(
+          worktreeDir,
+          execSync('git rev-parse --git-dir', { cwd: worktreeDir, encoding: 'utf-8' }).trim(),
+        );
+        expect(worktreeGitDir).not.toBe(path.join(worktreeDir, '.git'));
+        expect(worktreeGitDir).not.toBe(gitDir);
+
+        const result = preCommitHook.install({ manager: 'native', cwd: worktreeDir });
+        expect(result.success).toBe(true);
+
+        const expectedHooksDir = path.join(worktreeGitDir, 'hooks');
+        expect(preCommitHook.getEffectiveHooksDir(worktreeDir).hooksDir).toBe(expectedHooksDir);
+        expect(fs.existsSync(path.join(expectedHooksDir, 'pre-commit'))).toBe(true);
+        expect(fs.existsSync(path.join(worktreeDir, 'hooks', 'pre-commit'))).toBe(false);
+      } finally {
+        fs.rmSync(worktreeDir, { recursive: true, force: true });
+      }
+    });
+
+    it('installs where git actually runs it: the hook fires on a real commit', () => {
+      // The proof that matters. With core.hooksPath set the way husky 9
+      // sets it (a relative path), resolving it against the .git
+      // directory instead of the working-tree root reports success while
+      // writing a hook git never reads, so the gate silently does not
+      // exist. No amount of path assertion is as convincing as making
+      // git run the thing, so this drives a real commit through a stub
+      // vault-guard that must refuse it.
+      execSync('git config --local core.hooksPath .husky/_', { cwd: testDir, stdio: 'ignore' });
+      execSync('git config user.email "test@example.com"', { cwd: testDir, stdio: 'ignore' });
+      execSync('git config user.name "Test"', { cwd: testDir, stdio: 'ignore' });
+      process.chdir(testDir);
+
+      const result = preCommitHook.install({ manager: 'native' });
+      expect(result.success).toBe(true);
+      expect(fs.existsSync(path.join(testDir, '.husky', '_', 'pre-commit'))).toBe(true);
+      expect(fs.existsSync(path.join(gitDir, '.husky', '_', 'pre-commit'))).toBe(false);
+
+      // A stub vault-guard that exits non-zero. If the installed hook is
+      // the one git runs, the commit is refused; if install wrote
+      // somewhere git does not look, the commit succeeds and the gate was
+      // never there.
+      const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-stub-bin-'));
+      try {
+        const stub = path.join(binDir, 'vault-guard');
+        fs.writeFileSync(stub, '#!/bin/sh\necho "stub vault-guard ran: $*"\nexit 1\n');
+        fs.chmodSync(stub, 0o755);
+
+        fs.writeFileSync(path.join(testDir, 'a.txt'), 'hello');
+        execSync('git add -A', { cwd: testDir, stdio: 'ignore' });
+
+        let committed = true;
+        try {
+          execSync('git commit -q -m "should be blocked"', {
+            cwd: testDir,
+            env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ''}` },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+        } catch {
+          committed = false;
+        }
+
+        expect(committed).toBe(false);
+      } finally {
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
     });
 
     it('should create hooks directory if it does not exist', () => {

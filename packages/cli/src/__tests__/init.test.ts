@@ -243,7 +243,11 @@ describe('vault-guard init', () => {
   });
 
   it('conflicts on foreign pre-commit.cmd for native manager', () => {
-    const hooksDir = path.join(testDir, '.git', 'hooks');
+    // The beforeEach hook sets a RELATIVE core.hooksPath ("hooks"), which
+    // resolves against the working-tree root, not .git -- so the foreign
+    // file has to be planted where install() will actually look, not at
+    // the old (and wrong) .git/hooks assumption.
+    const hooksDir = new PreCommitHook().getEffectiveHooksDir(testDir).hooksDir;
     fs.mkdirSync(hooksDir, { recursive: true });
     fs.writeFileSync(path.join(hooksDir, 'pre-commit.cmd'), '@echo off\necho other\n');
     const plan = planInit({

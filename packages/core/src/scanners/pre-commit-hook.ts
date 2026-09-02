@@ -114,8 +114,25 @@ repos:
 export class PreCommitHook {
   /**
    * Resolve the directory where Git expects the \`pre-commit\` executable.
-   * Honors \`core.hooksPath\` (local then global). Relative paths are resolved
-   * against the **.git** directory, per Git documentation.
+   * Honors \`core.hooksPath\` (local then global).
+   *
+   * A RELATIVE \`core.hooksPath\` resolves against the WORKING-TREE ROOT,
+   * not against the .git directory. This resolved against the .git
+   * directory until a review caught it: husky 9 sets exactly this shape
+   * (core.hooksPath=.husky/_), so a repository using husky 9 had its hook
+   * written to a path git never reads, reported as installed, and never
+   * ran. Verified by driving a real commit rather than by re-reading the
+   * documentation that was misread the first time: with
+   * core.hooksPath=.husky/_ and an executable hook planted at BOTH
+   * .husky/_/pre-commit and .git/.husky/_/pre-commit, a commit runs the
+   * former. pre-commit-hook.test.ts pins it the same way.
+   *
+   * An ABSOLUTE \`core.hooksPath\` is used exactly as given, and no
+   * \`core.hooksPath\` at all still resolves against the git directory
+   * (never the working-tree root) -- both of those are unaffected by the
+   * bug above and must stay that way: a linked worktree or a submodule
+   * has its own git directory that is not its working-tree root, and that
+   * is precisely where an unset \`core.hooksPath\` needs to keep pointing.
    */
   getEffectiveHooksDir(cwd: string): { hooksDir: string; viaHooksPath: boolean } {
     const gitDirAbs = this.resolveGitDir(cwd);
@@ -138,11 +155,12 @@ export class PreCommitHook {
       return { hooksDir: path.join(gitDirAbs, 'hooks'), viaHooksPath: false };
     }
 
-    const hooksDir = path.isAbsolute(hooksPath)
-      ? hooksPath
-      : path.join(gitDirAbs, hooksPath);
+    if (path.isAbsolute(hooksPath)) {
+      return { hooksDir: hooksPath, viaHooksPath: true };
+    }
 
-    return { hooksDir, viaHooksPath: true };
+    const worktreeRoot = this.resolveWorktreeRoot(cwd) ?? cwd;
+    return { hooksDir: path.join(worktreeRoot, hooksPath), viaHooksPath: true };
   }
 
   /**
@@ -515,6 +533,25 @@ export class PreCommitHook {
   private resolveGitDir(cwd: string): string | null {
     try {
       const rel = execSync('git rev-parse --git-dir', {
+        cwd,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+      return path.resolve(cwd, rel);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The working-tree root, or null when it cannot be determined. Asked of
+   * git rather than assumed to be \`cwd\`, so a relative \`core.hooksPath\`
+   * resolves correctly when \`install\`/\`getEffectiveHooksDir\` is called
+   * from a subdirectory of the repository.
+   */
+  private resolveWorktreeRoot(cwd: string): string | null {
+    try {
+      const rel = execSync('git rev-parse --show-toplevel', {
         cwd,
         encoding: 'utf-8',
         stdio: ['ignore', 'pipe', 'pipe'],
