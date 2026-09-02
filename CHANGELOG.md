@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-09-02
+
+### Fixed
+
+- **Hook install location with a relative `core.hooksPath`.** The path
+  was resolved against the `.git` directory; git resolves it against the
+  working-tree root. With husky 9's `core.hooksPath=.husky/_`, init wrote
+  the hook where git never looks and reported success, so the gate never
+  ran. Found by running the umbrella installer against a real clone. The
+  test now installs the hook and drives a real commit that must be
+  refused.
+
 ## [1.4.2] - 2026-09-02
 
 ### Fixed
