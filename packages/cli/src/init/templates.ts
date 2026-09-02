@@ -1,4 +1,6 @@
-/** Stable init template version — bump when file contents change materially. */
+import { readCliVersion } from '../version';
+
+/** Stable init template version; bump when file contents change materially. */
 export const INIT_TEMPLATE_VERSION = '1';
 
 export const MANIFEST_RELATIVE_PATH = '.vault-guard/manifest.json';
@@ -39,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: vaultcompasshq/vault-guard@v1.2.0
+      - uses: vaultcompasshq/vault-guard@v${readCliVersion()}
         with:
           version: latest
           path: .

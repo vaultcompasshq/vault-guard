@@ -27,7 +27,9 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@vaultcompass/vault-guard-core": "workspace:*",
+    "@vaultcompass/vault-guard-core": "workspace:*"
+  },
+  "optionalDependencies": {
     "better-sqlite3": "^13.0.2"
   },
   "devDependencies": {

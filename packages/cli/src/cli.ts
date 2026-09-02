@@ -1,5 +1,3 @@
-import * as fs from 'fs';
-import * as path from 'path';
 import { Command } from 'commander';
 import { scanCommand, OutputFormat } from './commands/scan';
 import { installHookCommand } from './commands/install-hook';
@@ -12,12 +10,7 @@ import { proxyCommand } from './commands/proxy';
 import { dataStatusCommand, dataResetCommand, dataExportCommand } from './commands/data';
 import { configValidateCommand } from './commands/config';
 import { initCommand } from './commands/init';
-
-function readCliVersion(): string {
-  const pkgPath = path.join(__dirname, '..', 'package.json');
-  const raw = fs.readFileSync(pkgPath, 'utf-8');
-  return (JSON.parse(raw) as { version: string }).version;
-}
+import { readCliVersion } from './version';
 
 function setExitCode(exitCode: number): void {
   if (exitCode !== 0) {

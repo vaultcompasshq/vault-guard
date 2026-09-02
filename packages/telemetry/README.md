@@ -8,7 +8,7 @@ Opt-in, **local-only** store for [Vault Guard](https://github.com/vaultcompasshq
 npm install @vaultcompass/vault-guard-telemetry
 ```
 
-Requires **Node.js 22+** and native `better-sqlite3` bindings (rebuilt automatically on `npm install`).
+Requires **Node.js 22+**. Native `better-sqlite3` bindings are rebuilt automatically on `npm install` where a prebuilt binary or a working compiler toolchain is available, but they are an **optional dependency**: if the install cannot produce them (for example a Windows machine without the Visual Studio build tools, or an `--ignore-scripts` install), the package still installs and still works. See "Graceful degradation" below.
 
 ## Quickstart
 
@@ -38,25 +38,21 @@ const status = store.getStatuslinePayload();
 
 ## Graceful degradation
 
-If `better-sqlite3` bindings are missing (e.g. install with `--ignore-scripts`), catch `TelemetryUnavailableError` and skip telemetry features:
+`new TelemetryStore()` never throws, even when `better-sqlite3` native bindings are missing or incompatible. In that case the store quietly becomes a no-op: every `record*` call does nothing, and every `get*`/`export*`/`suggestModel` call returns an empty or zeroed result of the normal shape (an empty array, a statusline payload with every count at zero, a suggestion with `suggested_model: null`) instead of raising an error. There is no exception to catch and no per-call special case to write:
 
 ```typescript
-import {
-  TelemetryStore,
-  TelemetryUnavailableError,
-} from '@vaultcompass/vault-guard-telemetry';
+import { TelemetryStore } from '@vaultcompass/vault-guard-telemetry';
 
-try {
-  const store = new TelemetryStore();
-  console.log(store.getStatuslinePayload());
-} catch (err) {
-  if (err instanceof TelemetryUnavailableError) {
-    // Telemetry optional; continue without it
-  } else {
-    throw err;
-  }
-}
+const store = new TelemetryStore();
+store.recordUsage({ model: 'claude-sonnet-4-20250514', inputTokens: 1200, outputTokens: 340 });
+console.log(store.getStatuslinePayload());
+// Works identically whether or not better-sqlite3 loaded; with it missing,
+// recordUsage recorded nothing and getStatuslinePayload reports all zeros.
 ```
+
+Call `store.isAvailable()` when you specifically need to distinguish "telemetry is working" from "telemetry degraded to a no-op" (the CLI's `data status` and `data export` commands do this, since their whole purpose is inspecting telemetry and an all-zero result would otherwise look identical to "no usage yet"). `store.getUnavailableReason()` returns the underlying reason as a string, or `null` when available. `TelemetryUnavailableError` stays exported for callers that inject their own loader (tests, or a factory such as the MCP server's `telemetryFactory`) and want to signal the same failure mode themselves; the store no longer throws it internally.
+
+A missing native binding is noted at most once per process, and only when `VG_DEBUG=1` is set in the environment. Telemetry is opt-in local tooling, so it must never print a warning on every command (this matters most for `statusline`, which an editor can invoke every few seconds).
 
 ## CLI usage (recommended for end users)
 

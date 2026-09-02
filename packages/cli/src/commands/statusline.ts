@@ -1,20 +1,14 @@
-import { TelemetryStore, TelemetryUnavailableError } from '@vaultcompass/vault-guard-telemetry';
+import { TelemetryStore } from '@vaultcompass/vault-guard-telemetry';
 
+// TelemetryStore never throws (a missing/incompatible better-sqlite3 native
+// binding degrades it to a no-op that reports zeroed stats), so this command
+// never needs to special-case "telemetry unavailable": it always constructs,
+// always prints something, and never prints an unavailability warning on
+// every invocation (statusline can be invoked by an editor every few
+// seconds; see @vaultcompass/vault-guard-telemetry's store.ts for the
+// single, opt-in (VG_DEBUG=1) debug notice logged once per process instead).
 export function statuslineCommand(asJson: boolean): void {
-  let store: TelemetryStore;
-  try {
-    store = new TelemetryStore();
-  } catch (e) {
-    if (e instanceof TelemetryUnavailableError) {
-      if (asJson) {
-        process.stdout.write(`${JSON.stringify({ error: 'telemetry_unavailable', message: e.message })}\n`);
-      } else {
-        process.stderr.write(`vault-guard statusline: telemetry unavailable — ${e.message}\n`);
-      }
-      return;
-    }
-    throw e;
-  }
+  const store = new TelemetryStore();
 
   try {
     const payload = store.getStatuslinePayload();

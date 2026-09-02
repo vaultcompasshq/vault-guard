@@ -188,7 +188,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: vaultcompasshq/vault-guard@v1.0.0
+      - uses: vaultcompasshq/vault-guard@v1.4.1
         with:
           version: latest
           path: .
@@ -303,6 +303,13 @@ node packages/cli/dist/cli-entry.js scan /path/to/project --format json
 ```
 
 Parse `summary.secrets`, `results`, and `run` as documented in **[docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md)**.
+
+**If you are building a pass/fail gate, read `run.blocking_matches`, not `summary.secrets`.**
+`summary.secrets` is a raw count of every finding in `results`, including ones below the
+`--fail-on` threshold; it does not reflect the gate. `run.blocking_matches` is the count of
+findings at or above the effective `fail_on` threshold and is exactly what drives vault-guard's
+own exit code. An integrator gating on `summary.secrets` will fail builds that vault-guard itself
+considers passing.
 
 ---
 

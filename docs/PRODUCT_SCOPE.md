@@ -5,7 +5,7 @@ Vault Guard is a **local-first guardrail** for AI-assisted development: catch hi
 ## In scope
 
 - **Working-tree secret patterns**: regex + entropy heuristics on files you scan (CLI, pre-commit, MCP, GitHub Action on checked-out trees).
-- **Structured output**: JSON and SARIF with run metadata (`duration_ms`, `files_scanned`, `bytes_scanned`, `patterns_active`, diagnostics) for CI and Code Scanning.
+- **Structured output**: JSON and SARIF with run metadata (`duration_ms`, `files_scanned`, `bytes_scanned`, `patterns_active`, diagnostics) for CI and Code Scanning. Integrators deciding pass/fail must read `run.blocking_matches` (findings at or above the effective `fail_on` threshold; this is what sets vault-guard's own exit code). `summary.secrets` is only a total finding count across the whole run, threshold or no threshold, and is not a pass/fail signal.
 - **Repository config**: `.vault-guard.json` (validated via `vault-guard config validate` and `schemas/vault-guard-config.json`).
 - **Baseline / grandfather list**: `.vault-guard.baseline.json` stores **fingerprints** of accepted findings (same SHA-256 as each JSON match’s `fingerprint` field: path + rule + span; no raw secret material) so known noise can be suppressed while new issues still fail the gate.
 - **Pre-commit ergonomics**: staged-file scan, hook installers, clear exit codes.

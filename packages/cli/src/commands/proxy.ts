@@ -166,11 +166,25 @@ export async function proxyCommand(opts: ProxyOptions | string): Promise<ProxyHa
     server.on('error', reject);
   });
 
+  const telemetryAvailable = store.isAvailable();
   process.stderr.write(
     `vault-guard proxy listening on http://${host}:${port}\n` +
-      `Forward Anthropic traffic here (e.g. ANTHROPIC_BASE_URL=http://${host}:${port}). ` +
-      `Non-stream JSON responses log usage to ${path.join('~', '.vault-guard', 'usage.sqlite')}.\n`,
+      `Forward Anthropic traffic here (e.g. ANTHROPIC_BASE_URL=http://${host}:${port}).` +
+      (telemetryAvailable
+        ? ` Non-stream JSON responses log usage to ${path.join('~', '.vault-guard', 'usage.sqlite')}.\n`
+        : '\n'),
   );
+  if (!telemetryAvailable) {
+    // Telemetry degrades silently to a no-op store when better-sqlite3 is
+    // unavailable (packages/telemetry/src/store.ts); the banner above must
+    // not claim usage is being logged when it is not. One notice, matching
+    // the MCP server's wording style (see server.ts's getTelemetry()).
+    process.stderr.write(
+      `vault-guard proxy: telemetry unavailable, usage will NOT be recorded: ${
+        store.getUnavailableReason() ?? 'better-sqlite3 native bindings unavailable.'
+      }\n`,
+    );
+  }
   if (options.allowEnvFallback) {
     process.stderr.write(
       `⚠️  --allow-env-fallback is active: requests without x-api-key will use ` +
