@@ -29,7 +29,7 @@ The composite action in the **repository root** runs the published
 
 ```yaml
 - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-- uses: vaultcompasshq/vault-guard@v1.4.1
+- uses: vaultcompasshq/vault-guard@v1.4.2
   id: vg
   with:
     version: latest
