@@ -139,12 +139,35 @@ function toSarifArtifactUri(
   scanRoot: string | undefined,
 ): string {
   if (cwd === null && scanRoot === undefined) return file.split('\\').join('/');
-  const base = scanRoot ?? cwd ?? process.cwd();
-  const impl = isWindowsStylePath(file) || isWindowsStylePath(base) ? path.win32 : path;
+  const anchor = cwd ?? process.cwd();
+  const impl = isWindowsStylePath(file) || isWindowsStylePath(anchor) ? path.win32 : path;
   if (!impl.isAbsolute(file)) return file.split('\\').join('/');
+  const base = resolveSarifBase(anchor, scanRoot, impl);
   const rel = impl.relative(base, file);
   if (rel.startsWith('..') || impl.isAbsolute(rel)) return file.split('\\').join('/');
   return (rel || '.').split('\\').join('/');
+}
+
+/**
+ * The effective SARIF `%SRCROOT%` base. `scanRoot` is honored only when it
+ * is genuinely outside `cwd`: a scan root nested inside cwd (or equal to
+ * it) must not narrow `%SRCROOT%` to a subdirectory, because GitHub Code
+ * Scanning (and any other SARIF consumer) resolves `%SRCROOT%` from its own
+ * knowledge of the checkout, not from this uri -- a uri relative to a
+ * subdirectory would then name a different file entirely. Mirrors
+ * `resolveScanRoot` in `packages/cli/src/utils/scan-utils.ts`, which applies
+ * the same rule when it derives `scanRoot` from the CLI's scan target in the
+ * first place.
+ */
+function resolveSarifBase(
+  cwd: string,
+  scanRoot: string | undefined,
+  impl: typeof path,
+): string {
+  if (scanRoot === undefined) return cwd;
+  const rel = impl.relative(cwd, scanRoot);
+  if (rel === '' || (!rel.startsWith('..') && !impl.isAbsolute(rel))) return cwd;
+  return scanRoot;
 }
 
 export function formatJson(results: FileScanResult[], opts: FormatOptions = {}): string {

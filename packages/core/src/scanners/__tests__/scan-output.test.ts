@@ -44,6 +44,19 @@ describe('scan-output formatters', () => {
       expect(uri).toBe('src/leak.ts');
     });
 
+    it('formatSarif keeps the uri cwd-relative when the scan root is nested inside cwd', () => {
+      // Regression: a scan root narrower than cwd must not become %SRCROOT%.
+      // GitHub Code Scanning resolves %SRCROOT% from its own knowledge of the
+      // checkout (== cwd here), so a uri relative to a subdirectory would
+      // name a different file under that root.
+      const results: FileScanResult[] = [
+        { file: '/repo/a/src/leak.ts', matches: [makeMatch()] },
+      ];
+      const sarif = JSON.parse(formatSarif(results, { cwd: '/repo', scanRoot: '/repo/a' }));
+      const uri = sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri;
+      expect(uri).toBe('a/src/leak.ts');
+    });
+
     it('formatSarif relativizes a file outside cwd but inside the scan root', () => {
       // `vault-guard scan /repo/other` run from /repo/project: the finding is
       // outside cwd, so relativizing against cwd would have to keep it absolute

@@ -60,6 +60,15 @@ export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {})
 export function resolveScanRoot(targetPaths: string[], cwd = process.cwd()): string {
   if (targetPaths.length !== 1) return cwd;
   const abs = path.resolve(cwd, targetPaths[0]);
+
+  // The target becomes the root ONLY when it is genuinely outside cwd. An
+  // in-tree absolute target (or one equal to cwd) must not narrow %SRCROOT%
+  // to a subdirectory: GitHub Code Scanning resolves %SRCROOT% from its own
+  // knowledge of the checkout, which is cwd, so a uri relative to a narrower
+  // root would end up naming a different file.
+  const rel = path.relative(cwd, abs);
+  if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) return cwd;
+
   try {
     return fs.statSync(abs).isDirectory() ? abs : path.dirname(abs);
   } catch {

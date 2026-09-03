@@ -44,6 +44,17 @@ describe('CLI SARIF stdout contract', () => {
     expect(body.version).toBe('2.1.0');
     expect(Array.isArray(body.runs)).toBe(true);
     expect(proc.status).not.toBe(0);
+
+    // Regression: fixtureDir is an absolute target, but it sits IN TREE under
+    // monorepoRoot (the cwd this scan runs from). The uri must stay rooted at
+    // cwd (fixtures/release-smoke/leaked.ts), not become root-relative to the
+    // target itself (leaked.ts) -- the latter names a different file once
+    // GitHub Code Scanning resolves %SRCROOT% back to the real checkout root.
+    const runs = body.runs as Array<{
+      results: Array<{ locations: Array<{ physicalLocation: { artifactLocation: { uri: string } } }> }>;
+    }>;
+    const loc = runs[0].results[0].locations[0].physicalLocation.artifactLocation;
+    expect(loc.uri).toBe('fixtures/release-smoke/leaked.ts');
   });
 
   it('emits a scan-root-relative uri for a target outside the cwd', () => {
