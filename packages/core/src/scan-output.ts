@@ -65,9 +65,24 @@ export interface FormatOptions {
   /**
    * Base directory to render `file` paths relative to.
    * Defaults to `process.cwd()`. Files outside this root are kept absolute.
-   * Pass `null` to skip relativization entirely.
+   * Pass `null` to skip relativization for `formatJson`'s `file` paths and
+   * for SARIF when no {@link scanRoot} is given either. A `scanRoot` still
+   * relativizes SARIF `artifactLocation.uri` (and diagnostic ctx) against
+   * itself in that case, so `cwd: null` does not skip SARIF relativization
+   * on its own.
    */
   cwd?: string | null;
+  /**
+   * Directory actually being scanned (the scan target), when it differs from
+   * {@link cwd}. SARIF only: `artifactLocation.uri` is relativized against
+   * this instead of `cwd`, so a finding outside the process cwd but inside the
+   * scan target still gets a relative uri. Defaults to `cwd`.
+   *
+   * `formatJson` ignores this field. Its `file` paths stay cwd-relative,
+   * because they are what the terminal output and the baseline fingerprints
+   * are keyed on.
+   */
+  scanRoot?: string;
   /** Non-fatal diagnostics to include in structured output. */
   diagnostics?: Diagnostic[];
   /** Scan timing / coverage stats for JSON and SARIF `runs[].properties`. */
@@ -104,20 +119,109 @@ function isWindowsStylePath(p: string): boolean {
  * SARIF spec requires this even when the scanner itself runs on Windows,
  * where `path.relative` returns backslash-separated paths).
  *
+ * The base is the scan root (the directory actually being scanned), not the
+ * process cwd. Scanning an out-of-tree target from somewhere else used to
+ * leave every uri absolute, which published the developer's home directory
+ * and OS username to whoever reads the Code Scanning upload.
+ *
+ * A file genuinely outside the scan root still stays absolute rather than
+ * becoming a `../..` traversal: SARIF relative references are resolved
+ * against `%SRCROOT%`, so a traversal out of it is not a legal uri, and there
+ * is no other root to express such a path against. In practice this only
+ * happens for a path a caller injected from outside the scan, since every
+ * file the scanner itself walks is under the target it was given -- and a
+ * non-absolute `file` is resolved against cwd below before that check runs,
+ * so a literal `..` traversal segment never reaches the returned uri either.
+ *
  * Picks `path.win32` when either side of the comparison looks like a
  * Windows-style path, so this is correct both when the process itself runs
  * on Windows (native `path` is already `path.win32`) and when a
  * Windows-style path is normalized on a POSIX host (tests, or a SARIF file
  * produced elsewhere and re-normalized).
  */
-function toSarifArtifactUri(file: string, cwd: string | null | undefined): string {
-  if (cwd === null) return file.split('\\').join('/');
-  const base = cwd ?? process.cwd();
-  const impl = isWindowsStylePath(file) || isWindowsStylePath(base) ? path.win32 : path;
-  if (!impl.isAbsolute(file)) return file.split('\\').join('/');
-  const rel = impl.relative(base, file);
-  if (rel.startsWith('..') || impl.isAbsolute(rel)) return file.split('\\').join('/');
+function toSarifArtifactUri(
+  file: string,
+  cwd: string | null | undefined,
+  scanRoot: string | undefined,
+): string {
+  if (cwd === null && scanRoot === undefined) return file.split('\\').join('/');
+  const anchor = cwd ?? process.cwd();
+  const impl = isWindowsStylePath(file) || isWindowsStylePath(anchor) ? path.win32 : path;
+  const abs = impl.isAbsolute(file) ? file : impl.resolve(anchor, file);
+  const base = resolveSarifBase(anchor, scanRoot, impl);
+  const rel = impl.relative(base, abs);
+  if (rel.startsWith('..') || impl.isAbsolute(rel)) return abs.split('\\').join('/');
   return (rel || '.').split('\\').join('/');
+}
+
+/**
+ * The effective SARIF `%SRCROOT%` base. `scanRoot` is honored only when it
+ * is genuinely outside `cwd`: a scan root nested inside cwd (or equal to
+ * it) must not narrow `%SRCROOT%` to a subdirectory, because GitHub Code
+ * Scanning (and any other SARIF consumer) resolves `%SRCROOT%` from its own
+ * knowledge of the checkout, not from this uri -- a uri relative to a
+ * subdirectory would then name a different file entirely. Mirrors
+ * `resolveScanRoot` in `packages/cli/src/utils/scan-utils.ts`, which applies
+ * the same rule when it derives `scanRoot` from the CLI's scan target in the
+ * first place.
+ */
+function resolveSarifBase(
+  cwd: string,
+  scanRoot: string | undefined,
+  impl: typeof path,
+): string {
+  if (scanRoot === undefined) return cwd;
+  const rel = impl.relative(cwd, scanRoot);
+  if (rel === '' || (!rel.startsWith('..') && !impl.isAbsolute(rel))) return cwd;
+  return scanRoot;
+}
+
+/**
+ * Diagnostic `ctx` reaches SARIF notifications as `JSON.stringify(d.ctx)`
+ * (see `formatSarif` above), and some diagnostic sources (`fs.permission_denied`,
+ * `file.read_error`) carry the scanned directory or file as an absolute path,
+ * plus a `detail` field that is `String(error)` -- Node's own fs error text
+ * often bakes that same absolute path in (e.g. "EACCES: permission denied,
+ * scandir '/abs/dir'"). Both leak exactly what `artifactLocation.uri`
+ * exists to avoid leaking, so ctx gets the same relativize-or-keep-absolute
+ * treatment before it is stringified into a notification: any absolute-path
+ * ctx value (`dir`, `path`, `file`, or any other field shaped that way) is
+ * run through {@link toSarifArtifactUri}, and any other string value has
+ * literal occurrences of the base directory stripped out.
+ */
+function sanitizeDiagnosticCtxForSarif(
+  ctx: Record<string, unknown>,
+  cwd: string | null | undefined,
+  scanRoot: string | undefined,
+): Record<string, unknown> {
+  if (cwd === null && scanRoot === undefined) return ctx;
+  const anchor = cwd ?? process.cwd();
+  const base = resolveSarifBase(anchor, scanRoot, path);
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(ctx)) {
+    if (typeof value !== 'string') {
+      out[key] = value;
+    } else if (path.isAbsolute(value)) {
+      out[key] = toSarifArtifactUri(value, cwd, scanRoot);
+    } else {
+      out[key] = stripSarifBasePath(value, base);
+    }
+  }
+  return out;
+}
+
+/**
+ * Removes literal occurrences of the SARIF base directory from a free-form
+ * string (diagnostic `detail`, which is `String(error)` and can embed the
+ * scanned path inside Node's own message text). This is not a full
+ * relative-path rewrite of the string, just enough to keep the base
+ * directory out of the document, matching what `artifactLocation.uri` does
+ * for the path fields themselves.
+ */
+function stripSarifBasePath(text: string, base: string): string {
+  if (!text.includes(base)) return text;
+  const withTrailingSep = base.endsWith(path.sep) ? base : base + path.sep;
+  return text.split(withTrailingSep).join('').split(base).join('.');
 }
 
 export function formatJson(results: FileScanResult[], opts: FormatOptions = {}): string {
@@ -180,7 +284,10 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
       locations: [
         {
           physicalLocation: {
-            artifactLocation: { uri: toSarifArtifactUri(file, opts.cwd), uriBaseId: '%SRCROOT%' },
+            artifactLocation: {
+              uri: toSarifArtifactUri(file, opts.cwd, opts.scanRoot),
+              uriBaseId: '%SRCROOT%',
+            },
             region: {
               startLine: m.line,
               startColumn: m.column + 1,
@@ -204,7 +311,9 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
       ? opts.diagnostics.map(d => ({
           id: d.code,
           level: d.severity === 'error' ? 'error' : 'warning',
-          message: { text: `${d.code}: ${JSON.stringify(d.ctx)}` },
+          message: {
+            text: `${d.code}: ${JSON.stringify(sanitizeDiagnosticCtxForSarif(d.ctx, opts.cwd, opts.scanRoot))}`,
+          },
         }))
       : undefined;
 

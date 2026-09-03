@@ -44,6 +44,74 @@ describe('CLI SARIF stdout contract', () => {
     expect(body.version).toBe('2.1.0');
     expect(Array.isArray(body.runs)).toBe(true);
     expect(proc.status).not.toBe(0);
+
+    // Regression: fixtureDir is an absolute target, but it sits IN TREE under
+    // monorepoRoot (the cwd this scan runs from). The uri must stay rooted at
+    // cwd (fixtures/release-smoke/leaked.ts), not become root-relative to the
+    // target itself (leaked.ts) -- the latter names a different file once
+    // GitHub Code Scanning resolves %SRCROOT% back to the real checkout root.
+    const runs = body.runs as Array<{
+      results: Array<{ locations: Array<{ physicalLocation: { artifactLocation: { uri: string } } }> }>;
+    }>;
+    const loc = runs[0].results[0].locations[0].physicalLocation.artifactLocation;
+    expect(loc.uri).toBe('fixtures/release-smoke/leaked.ts');
+  });
+
+  it('emits a scan-root-relative uri for a target outside the cwd', () => {
+    // Run from the monorepo root but scan an out-of-tree directory. Before the
+    // scan root was threaded through, every uri here stayed absolute and the
+    // SARIF file published the machine's home directory and username.
+    //
+    // Also covers diagnostics: an unreadable subdirectory makes the scanner
+    // emit an fs.permission_denied diagnostic whose ctx carries the locked
+    // directory's absolute path (and a `detail` string with that same path
+    // baked into Node's own error text). That diagnostic renders into a SARIF
+    // notification, so this is what makes the "no absolute path anywhere"
+    // assertion below non-vacuous -- without a diagnostic in the document,
+    // it would pass even if notification ctx were never sanitized at all.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-guard-sarif-root-'));
+    const lockedDir = path.join(tmp, 'locked');
+    const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+    try {
+      fs.mkdirSync(path.join(tmp, 'src'));
+      fs.writeFileSync(
+        path.join(tmp, 'src', 'leaked.ts'),
+        "export const k = 'sk-ant-api03-fakekeyfortesting1234567890ABCDEFGHIJ';\n",
+        'utf-8',
+      );
+      fs.mkdirSync(lockedDir);
+      if (!isRoot) {
+        fs.chmodSync(lockedDir, 0o000);
+      }
+
+      const proc = runSarifScan(['scan', tmp, '--format', 'sarif'], monorepoRoot);
+      expect(proc.error).toBeUndefined();
+
+      const body = parseStdoutSarif(proc.stdout) as {
+        runs: Array<{
+          results: Array<{ locations: Array<{ physicalLocation: { artifactLocation: { uri: string; uriBaseId: string } } }> }>;
+          tool: { driver: { notifications?: Array<{ message: { text: string } }> } };
+        }>;
+      };
+      const loc = body.runs[0].results[0].locations[0].physicalLocation.artifactLocation;
+      expect(loc.uri).toBe('src/leaked.ts');
+      expect(loc.uriBaseId).toBe('%SRCROOT%');
+
+      if (!isRoot) {
+        // root ignores the 0o000 mode, so the locked directory reads fine and
+        // no diagnostic (and no notification) is ever emitted for it.
+        expect(body.runs[0].tool.driver.notifications?.length).toBeGreaterThan(0);
+      }
+
+      // The whole point: no absolute filesystem path anywhere in the document,
+      // including inside a diagnostic notification's ctx and detail text.
+      expect(proc.stdout).not.toContain(tmp);
+    } finally {
+      if (!isRoot) {
+        fs.chmodSync(lockedDir, 0o755);
+      }
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('still honors --format when argv has a leading -- (npx passthrough)', () => {

@@ -21,6 +21,7 @@ import {
   displayScanResults,
   formatJson,
   formatSarif,
+  resolveScanRoot,
 } from '../utils/scan-utils';
 import type { Diagnostic } from '@vaultcompass/vault-guard-core';
 
@@ -246,7 +247,10 @@ export async function scanCommand(
     }
 
     if (format === 'sarif') {
-      process.stdout.write(formatSarif(results, { diagnostics, run }) + '\n');
+      // `--staged` reads paths from the git index, which are already rooted at
+      // the repo checkout, so the cwd is the right base there.
+      const scanRoot = staged ? cwd : resolveScanRoot(targetPaths, cwd);
+      process.stdout.write(formatSarif(results, { diagnostics, run, scanRoot }) + '\n');
       return blocking === 0 ? 0 : 1;
     }
 
