@@ -106,6 +106,15 @@ vault-guard scan . --format json
 Findings at or above the **`--fail-on` threshold** produce exit code 1. Everything
 below it is still reported (text, JSON, SARIF) but does not break the gate.
 
+Exit code **2** means vault-guard could not complete the scan and is refusing to
+call the result clean: `git diff --cached` failed, or `--staged` reached a staged
+file it could not read. In that case there is no `✅ SUCCESS` line, and
+`run.unscannable_files` says how many staged files went unexamined. Exit 2
+takes precedence over exit 1, so gate on **any** non-zero exit rather than on
+1 alone: a run that skipped files cannot report a complete finding set. See
+**[docs/THREAT_MODEL.md](./docs/THREAT_MODEL.md)** for why a directory scan
+reports the same condition without failing on it.
+
 ```bash
 vault-guard scan .                      # default: fail on medium and above
 vault-guard scan . --fail-on critical   # only criticals block
@@ -310,6 +319,10 @@ Parse `summary.secrets`, `results`, and `run` as documented in **[docs/PRODUCT_S
 findings at or above the effective `fail_on` threshold and is exactly what drives vault-guard's
 own exit code. An integrator gating on `summary.secrets` will fail builds that vault-guard itself
 considers passing.
+
+**Also check `run.unscannable_files`.** It is the number of files vault-guard reached but could
+not read, so their contents were never examined. When it is present and non-zero, a
+`blocking_matches` of 0 means "nothing found in what was scanned", not "nothing there".
 
 ---
 

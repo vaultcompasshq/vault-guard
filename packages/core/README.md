@@ -68,6 +68,7 @@ Full rule reference: [docs/RULES.md](https://github.com/vaultcompasshq/vault-gua
 | `fingerprintForMatch` | Baseline fingerprinting (no raw secrets stored) |
 | `scanTextFileAsync` / `scanTextFileSync` | Stream-aware file scanning |
 | `getGitStagedFilePaths` | Staged-file enumeration for hooks |
+| `getGitWorkTreeRoot` | Repository root for a directory, the base every staged path resolves against |
 
 ## Prefer the CLI?
 

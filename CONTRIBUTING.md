@@ -43,14 +43,36 @@ Use Conventional Commit-style summaries: `fix(proxy): ...`, `feat(core): ...`.
 
 ### Cutting a release
 
+Nothing lands on `main` directly, a release commit included. The version bump
+goes through a pull request like any other change, and the tag is cut only
+after `main`'s own CI is green on the merged result.
+
 ```bash
-# 1. Accumulate changesets from all merged work, then:
-pnpm version-packages    # bumps all 4 packages + writes CHANGELOG entries
+# 1. Accumulate changesets from all merged work, then branch off main:
+git checkout main && git pull
+git checkout -b release/vX.Y.Z
+
+# 2. Bump all 4 packages + write CHANGELOG entries, and commit on the branch:
+pnpm version-packages
 git add -A && git commit -m "chore(release): vX.Y.Z"
+git push -u origin release/vX.Y.Z
+
+# 3. Open a PR, get it reviewed, and merge it.
+gh pr create --base main --title "release: X.Y.Z"
+```
+
+Then, once the PR has merged and the CI run on `main` is green:
+
+```bash
+git checkout main && git pull
 git tag -a vX.Y.Z -m "vX.Y.Z: <one-line summary>"
-git push origin main && git push origin vX.Y.Z
+git push origin vX.Y.Z
 # The release.yml workflow publishes @latest automatically.
 ```
+
+Wait for `main`'s CI before tagging, not just the PR's. A registry `@latest`
+publish cannot be undone, so the tag should only ever point at a commit that
+has been validated in the state it will actually ship from.
 
 ### Soaking risky work on @next
 

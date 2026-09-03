@@ -29,6 +29,20 @@ export interface JsonRunMetadata {
    * this field rather than `summary.secrets`.
    */
   blocking_matches?: number;
+  /**
+   * Files the scan opened but could not read, so their contents were never
+   * examined. Omitted when zero.
+   *
+   * A non-zero value means the run is INCOMPLETE: `blocking_matches` counts
+   * only what the scanner actually looked at, so a clean gate result sits on
+   * top of files nobody checked. On the `--staged` path this is fatal on its
+   * own (exit 2) because that file list is exactly what is about to be
+   * committed; on a directory scan it is reported and counted but does not
+   * fail the gate, since an unreadable file inside a walked tree is an
+   * ordinary occurrence. Unreadable DIRECTORIES are not counted here -- they
+   * surface as `fs.permission_denied` diagnostics instead.
+   */
+  unscannable_files?: number;
 }
 
 export interface JsonOutput {
@@ -330,6 +344,9 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
               : {}),
             ...(opts.run.baseline_suppressed !== undefined
               ? { baseline_suppressed: opts.run.baseline_suppressed }
+              : {}),
+            ...(opts.run.unscannable_files !== undefined
+              ? { unscannable_files: opts.run.unscannable_files }
               : {}),
           },
         }
