@@ -70,6 +70,26 @@ describe('scan-output formatters', () => {
       expect(loc.uriBaseId).toBe('%SRCROOT%');
     });
 
+    it('formatSarif resolves a relative target outside cwd to a uri relative to that target', () => {
+      // Regression: `vault-guard scan ../b` run from /repo/a used to return
+      // the relative file value verbatim ("../b/src/leak.ts"), a literal `..`
+      // traversal in the uri. Non-absolute inputs must be resolved against
+      // cwd first, then relativized against the (outside-cwd) scan root.
+      const results: FileScanResult[] = [{ file: '../b/src/leak.ts', matches: [makeMatch()] }];
+      const sarif = JSON.parse(
+        formatSarif(results, { cwd: '/repo/a', scanRoot: '/repo/b' }),
+      );
+      const uri = sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri;
+      expect(uri).toBe('src/leak.ts');
+    });
+
+    it('formatSarif resolves a relative in-tree target to the cwd-relative uri', () => {
+      const results: FileScanResult[] = [{ file: 'a/src/leak.ts', matches: [makeMatch()] }];
+      const sarif = JSON.parse(formatSarif(results, { cwd: '/repo' }));
+      const uri = sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri;
+      expect(uri).toBe('a/src/leak.ts');
+    });
+
     it('formatSarif preserves paths that are outside the scan root itself', () => {
       const results: FileScanResult[] = [{ file: outsideFile, matches: [makeMatch()] }];
       const sarif = JSON.parse(formatSarif(results, { cwd, scanRoot: '/repo/other' }));

@@ -125,7 +125,9 @@ function isWindowsStylePath(p: string): boolean {
  * against `%SRCROOT%`, so a traversal out of it is not a legal uri, and there
  * is no other root to express such a path against. In practice this only
  * happens for a path a caller injected from outside the scan, since every
- * file the scanner itself walks is under the target it was given.
+ * file the scanner itself walks is under the target it was given -- and a
+ * non-absolute `file` is resolved against cwd below before that check runs,
+ * so a literal `..` traversal segment never reaches the returned uri either.
  *
  * Picks `path.win32` when either side of the comparison looks like a
  * Windows-style path, so this is correct both when the process itself runs
@@ -141,10 +143,10 @@ function toSarifArtifactUri(
   if (cwd === null && scanRoot === undefined) return file.split('\\').join('/');
   const anchor = cwd ?? process.cwd();
   const impl = isWindowsStylePath(file) || isWindowsStylePath(anchor) ? path.win32 : path;
-  if (!impl.isAbsolute(file)) return file.split('\\').join('/');
+  const abs = impl.isAbsolute(file) ? file : impl.resolve(anchor, file);
   const base = resolveSarifBase(anchor, scanRoot, impl);
-  const rel = impl.relative(base, file);
-  if (rel.startsWith('..') || impl.isAbsolute(rel)) return file.split('\\').join('/');
+  const rel = impl.relative(base, abs);
+  if (rel.startsWith('..') || impl.isAbsolute(rel)) return abs.split('\\').join('/');
   return (rel || '.').split('\\').join('/');
 }
 
