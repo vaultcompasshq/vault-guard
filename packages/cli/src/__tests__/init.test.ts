@@ -29,7 +29,14 @@ describe('vault-guard init', () => {
   const originalCwd = process.cwd();
 
   beforeEach(() => {
-    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-init-'));
+    // fs.realpathSync.native canonicalizes the temp dir right away: on
+    // Windows, mkdtempSync can hand back an 8.3 short-form path
+    // (C:\Users\RUNNER~1\...) while product code resolves the same
+    // directory to its long form (C:\Users\runneradmin\...) when building
+    // hook paths. Canonicalizing testDir once here keeps every test in
+    // this file comparing like with like instead of two spellings of the
+    // same path.
+    testDir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vg-init-')));
     git(['init', '-q'], testDir);
     git(['config', '--local', 'core.hooksPath', 'hooks'], testDir);
   });
