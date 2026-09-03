@@ -628,6 +628,11 @@ describe('PreCommitHook', () => {
       expect(resolved).toBe(path.join(fs.realpathSync(testDir), '.husky', 'pre-commit'));
     });
 
+    it('getPreCommitCmdPath returns undefined under a husky-generated hooks dir: the .cmd companion is native-only and never written there', () => {
+      buildHusky9Layout(testDir);
+      expect(preCommitHook.getPreCommitCmdPath(testDir)).toBeUndefined();
+    });
+
     it('drives a real commit through the husky 9 layout after a bare native install: a failing stub refuses it', () => {
       // The proof that matters, same style as the relative-hooksPath fix
       // above: install, then make git actually run the hook rather than

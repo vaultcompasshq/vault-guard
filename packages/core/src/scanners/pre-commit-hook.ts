@@ -249,10 +249,20 @@ export class PreCommitHook {
   }
 
   /**
-   * Absolute path to the Windows \`pre-commit.cmd\` companion (native manager only).
+   * Absolute path to the Windows \`pre-commit.cmd\` companion (native manager
+   * only). \`undefined\` under a husky-generated hooks directory: the .cmd
+   * companion is native-only and installNative's husky-redirect never
+   * writes one there (see installNative), so there is no meaningful path
+   * to report. Callers that used to guard this getter with their own
+   * isHuskyGeneratedHooksDir check (the CLI's foreignHookConflict did)
+   * can drop that guard now that it lives here instead.
    */
-  getPreCommitCmdPath(cwd: string): string {
-    return path.join(this.getEffectiveHooksDir(cwd).hooksDir, 'pre-commit.cmd');
+  getPreCommitCmdPath(cwd: string): string | undefined {
+    const { hooksDir } = this.getEffectiveHooksDir(cwd);
+    if (this.isHuskyGeneratedHooksDir(hooksDir)) {
+      return undefined;
+    }
+    return path.join(hooksDir, 'pre-commit.cmd');
   }
 
   install(options: InstallHookOptions = {}): { success: boolean; message: string; hookPath?: string } {
