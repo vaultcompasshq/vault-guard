@@ -172,7 +172,7 @@ function detectOtherHookManagers(cwd: string, selected: HookManager): InitAdviso
       manager: 'husky',
       path: '.husky/',
       guidance:
-        'Husky detected. Prefer `vault-guard init --manager husky` or `vault-guard install-hook --manager husky` so the scan runs from .husky/pre-commit. Native hooks may not run when husky owns core.hooksPath.',
+        'Husky detected. If core.hooksPath points at husky\'s generated directory, the default native manager already installs into the tracked pre-commit file automatically -- no --manager husky needed. Pass --manager husky only if you want vault-guard to manage that file directly regardless of core.hooksPath.',
     });
   }
 

@@ -206,6 +206,19 @@ describe('vault-guard init', () => {
     expect(plan.advisories.find(a => a.manager === 'husky')?.guidance).toMatch(/husky/i);
   });
 
+  it('the husky advisory no longer claims native hooks may not run: that was the bug this branch fixed', () => {
+    // The native manager now detects husky's generated hooksPath shape
+    // and installs into the tracked file automatically -- the old
+    // guidance describing that as a limitation is exactly the bug this
+    // branch fixes, and would mislead a user who already has the fix.
+    fs.mkdirSync(path.join(testDir, '.husky'), { recursive: true });
+    const plan = planInit({ cwd: testDir, manager: 'native' });
+    const guidance = plan.advisories.find(a => a.manager === 'husky')?.guidance;
+    expect(guidance).toBeDefined();
+    expect(guidance).not.toMatch(/may not run/i);
+    expect(guidance).toMatch(/automatic/i);
+  });
+
   it('does not advise husky when manager is husky', () => {
     fs.mkdirSync(path.join(testDir, '.husky'), { recursive: true });
     const plan = planInit({ cwd: testDir, manager: 'husky', skipHook: true });
