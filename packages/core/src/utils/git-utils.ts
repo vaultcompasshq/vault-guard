@@ -127,6 +127,15 @@ export function getGitStagedFilePaths(cwd: string = process.cwd()): string[] {
     '--cached',
     '--name-only',
     '--diff-filter=ACMRT',
+    // A staged submodule pointer bump is listed here as an ordinary path,
+    // but its index entry is a gitlink (mode 160000) rather than a blob, so
+    // `git show :<path>` answers "fatal: bad object". There is no content
+    // behind a gitlink for this scanner to read, and treating one as an
+    // unreadable file made every routine submodule bump block the commit
+    // with a message about detected secrets. Dropping the entry is correct,
+    // not a suppression: nothing about the pointer is scannable, and the
+    // submodule's own contents are that repository's own gate to run.
+    '--ignore-submodules=all',
     '-z',
   ];
   let out: string;
