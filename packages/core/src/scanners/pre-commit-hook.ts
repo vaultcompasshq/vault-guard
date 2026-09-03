@@ -603,7 +603,7 @@ export class PreCommitHook {
     const stillInstalled = content.includes('vault-guard') && content.includes('scan --staged');
     return {
       success: !stillInstalled,
-      message: `${relHookPath} mentions vault-guard but does not match a known vault-guard install shape; leaving it unchanged. Review and remove the vault-guard reference manually if needed.`,
+      message: `${relHookPath} mentions vault-guard but does not match the shape this version writes; it may have been written by an older vault-guard, or by hand. Leaving it unchanged. Review and remove the vault-guard reference manually if needed.`,
     };
   }
 
