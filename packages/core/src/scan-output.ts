@@ -172,6 +172,54 @@ function resolveSarifBase(
   return scanRoot;
 }
 
+/**
+ * Diagnostic `ctx` reaches SARIF notifications as `JSON.stringify(d.ctx)`
+ * (see `formatSarif` above), and some diagnostic sources (`fs.permission_denied`,
+ * `file.read_error`) carry the scanned directory or file as an absolute path,
+ * plus a `detail` field that is `String(error)` -- Node's own fs error text
+ * often bakes that same absolute path in (e.g. "EACCES: permission denied,
+ * scandir '/abs/dir'"). Both leak exactly what `artifactLocation.uri`
+ * exists to avoid leaking, so ctx gets the same relativize-or-keep-absolute
+ * treatment before it is stringified into a notification: any absolute-path
+ * ctx value (`dir`, `path`, `file`, or any other field shaped that way) is
+ * run through {@link toSarifArtifactUri}, and any other string value has
+ * literal occurrences of the base directory stripped out.
+ */
+function sanitizeDiagnosticCtxForSarif(
+  ctx: Record<string, unknown>,
+  cwd: string | null | undefined,
+  scanRoot: string | undefined,
+): Record<string, unknown> {
+  if (cwd === null && scanRoot === undefined) return ctx;
+  const anchor = cwd ?? process.cwd();
+  const base = resolveSarifBase(anchor, scanRoot, path);
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(ctx)) {
+    if (typeof value !== 'string') {
+      out[key] = value;
+    } else if (path.isAbsolute(value)) {
+      out[key] = toSarifArtifactUri(value, cwd, scanRoot);
+    } else {
+      out[key] = stripSarifBasePath(value, base);
+    }
+  }
+  return out;
+}
+
+/**
+ * Removes literal occurrences of the SARIF base directory from a free-form
+ * string (diagnostic `detail`, which is `String(error)` and can embed the
+ * scanned path inside Node's own message text). This is not a full
+ * relative-path rewrite of the string, just enough to keep the base
+ * directory out of the document, matching what `artifactLocation.uri` does
+ * for the path fields themselves.
+ */
+function stripSarifBasePath(text: string, base: string): string {
+  if (!text.includes(base)) return text;
+  const withTrailingSep = base.endsWith(path.sep) ? base : base + path.sep;
+  return text.split(withTrailingSep).join('').split(base).join('.');
+}
+
 export function formatJson(results: FileScanResult[], opts: FormatOptions = {}): string {
   const fpCwd = opts.cwd === undefined ? process.cwd() : opts.cwd;
   const output: JsonOutput = {
@@ -259,7 +307,9 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
       ? opts.diagnostics.map(d => ({
           id: d.code,
           level: d.severity === 'error' ? 'error' : 'warning',
-          message: { text: `${d.code}: ${JSON.stringify(d.ctx)}` },
+          message: {
+            text: `${d.code}: ${JSON.stringify(sanitizeDiagnosticCtxForSarif(d.ctx, opts.cwd, opts.scanRoot))}`,
+          },
         }))
       : undefined;
 

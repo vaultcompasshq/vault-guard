@@ -2,6 +2,7 @@ import path from 'path';
 import { formatJson, formatSarif, type FileScanResult } from '../../scan-output';
 import { fingerprintForMatch } from '../../match-fingerprint';
 import type { SecretMatch } from '../../types';
+import type { Diagnostic } from '../../diagnostics';
 
 function makeMatch(over: Partial<SecretMatch> = {}): SecretMatch {
   return {
@@ -210,6 +211,45 @@ describe('scan-output formatters', () => {
       expect(region.startLine).toBe(4);
       expect(region.startColumn).toBe(13);
       expect(region.endColumn).toBe(50);
+    });
+  });
+
+  describe('diagnostic ctx in SARIF notifications', () => {
+    it('does not leak the scan base through ctx path fields or detail text', () => {
+      // Diagnostics render into tool.driver.notifications via
+      // JSON.stringify(d.ctx). fs.permission_denied and file.read_error carry
+      // an absolute dir/path plus a `detail` field that is String(error),
+      // which for a Node fs error embeds that same absolute path inside its
+      // own message text (e.g. "EACCES: permission denied, scandir '...'").
+      // Both must get the same treatment as artifactLocation.uri.
+      const diagnostics: Diagnostic[] = [
+        {
+          code: 'fs.permission_denied',
+          severity: 'warning',
+          ctx: {
+            dir: '/repo/other/locked',
+            detail: "Error: EACCES: permission denied, scandir '/repo/other/locked'",
+          },
+        },
+      ];
+      const sarif = formatSarif([], { cwd: '/repo/project', scanRoot: '/repo/other', diagnostics });
+      expect(sarif).not.toContain('/repo/other');
+    });
+
+    it('relativizes a ctx path field the same way artifactLocation.uri is relativized', () => {
+      const diagnostics: Diagnostic[] = [
+        {
+          code: 'fs.permission_denied',
+          severity: 'warning',
+          ctx: { dir: '/repo/other/locked' },
+        },
+      ];
+      const sarif = JSON.parse(
+        formatSarif([], { cwd: '/repo/project', scanRoot: '/repo/other', diagnostics }),
+      );
+      const notification = sarif.runs[0].tool.driver.notifications[0];
+      expect(notification.message.text).toContain('locked');
+      expect(notification.message.text).not.toContain('/repo/other');
     });
   });
 });
