@@ -109,7 +109,9 @@ below it is still reported (text, JSON, SARIF) but does not break the gate.
 Exit code **2** means vault-guard could not complete the scan and is refusing to
 call the result clean: `git diff --cached` failed, or `--staged` reached a staged
 file it could not read. In that case there is no `✅ SUCCESS` line, and
-`run.unscannable_files` says how many staged files went unexamined. See
+`run.unscannable_files` says how many staged files went unexamined. Exit 2
+takes precedence over exit 1, so gate on **any** non-zero exit rather than on
+1 alone: a run that skipped files cannot report a complete finding set. See
 **[docs/THREAT_MODEL.md](./docs/THREAT_MODEL.md)** for why a directory scan
 reports the same condition without failing on it.
 

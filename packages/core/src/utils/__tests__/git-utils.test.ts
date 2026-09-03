@@ -2,7 +2,39 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { execSync } from 'child_process';
-import { getGitStagedFilePaths, readGitIndexFile } from '../git-utils';
+import { getGitStagedFilePaths, readGitIndexFile, STAGED_DIFF_ARGV } from '../git-utils';
+
+/**
+ * The staged listing keeps `diff.relative` from mattering in more than one
+ * way: the config is forced off in the argv AND the command runs at the
+ * worktree root. That redundancy is deliberate for a pre-commit gate, but a
+ * behaviour test can only observe the combination, so deleting the flag
+ * would leave every other test green and the belt quietly gone. These
+ * assertions are what make the flag load-bearing on its own.
+ */
+describe('staged diff argv', () => {
+  it('forces diff.relative off, before the subcommand', () => {
+    const valueAt = STAGED_DIFF_ARGV.indexOf('diff.relative=false');
+
+    expect(valueAt).toBeGreaterThan(0);
+    expect(STAGED_DIFF_ARGV[valueAt - 1]).toBe('-c');
+    // `git -c key=value <subcommand>`: a `-c` AFTER the subcommand is not a
+    // config override at all, it is an argument to the subcommand.
+    expect(STAGED_DIFF_ARGV.indexOf('diff')).toBeGreaterThan(valueAt);
+  });
+
+  it('forces core.quotePath off, before the subcommand', () => {
+    const valueAt = STAGED_DIFF_ARGV.indexOf('core.quotePath=false');
+
+    expect(valueAt).toBeGreaterThan(0);
+    expect(STAGED_DIFF_ARGV[valueAt - 1]).toBe('-c');
+    expect(STAGED_DIFF_ARGV.indexOf('diff')).toBeGreaterThan(valueAt);
+  });
+
+  it('excludes submodule gitlinks, which have no blob to scan', () => {
+    expect(STAGED_DIFF_ARGV).toContain('--ignore-submodules=all');
+  });
+});
 
 describe('git-utils staged index', () => {
   let repo: string;

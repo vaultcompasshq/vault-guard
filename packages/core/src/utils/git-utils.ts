@@ -100,6 +100,36 @@ export function getGitWorkTreeRoot(cwd: string = process.cwd()): string {
 }
 
 /**
+ * Exact argv passed to git when listing staged files, exported so the
+ * safety-critical parts of it can be asserted directly.
+ *
+ * The `-c diff.relative=false` override is deliberately BELT AND BRACES with
+ * running the command at the worktree root (see getGitStagedFilePaths):
+ * either one alone makes git's output root-relative. That redundancy is
+ * wanted in a published security gate, but redundant code that no test can
+ * observe is code the next person deletes as dead weight -- so
+ * `git-utils.test.ts` pins this argv, and removing the flag fails a test
+ * even though behaviour would not change.
+ */
+export const STAGED_DIFF_ARGV: readonly string[] = [
+  ...FORCED_GIT_CONFIG,
+  'diff',
+  '--cached',
+  '--name-only',
+  '--diff-filter=ACMRT',
+  // A staged submodule pointer bump is listed here as an ordinary path,
+  // but its index entry is a gitlink (mode 160000) rather than a blob, so
+  // `git show :<path>` answers "fatal: bad object". There is no content
+  // behind a gitlink for this scanner to read, and treating one as an
+  // unreadable file made every routine submodule bump block the commit
+  // with a message about detected secrets. Dropping the entry is correct,
+  // not a suppression: nothing about the pointer is scannable, and the
+  // submodule's own contents are that repository's own gate to run.
+  '--ignore-submodules=all',
+  '-z',
+];
+
+/**
  * Return absolute paths of files staged for commit (cached index vs HEAD).
  *
  * Uses `--diff-filter=ACMRT` so deleted index entries are excluded, but
@@ -107,13 +137,13 @@ export function getGitWorkTreeRoot(cwd: string = process.cwd()): string {
  * was later deleted from disk (`AD` in `git status`) still appears — that
  * blob will be committed and must be scanned.
  *
- * `diff.relative` is forced off for this command (see FORCED_GIT_CONFIG) and
- * the result is resolved against the worktree root rather than against
- * `cwd`. The two halves are one mechanism, not redundant belt and braces:
- * the override is what makes git's output root-relative, and resolving
- * against the root is what consumes it correctly. Deleting either one
- * reintroduces the bug, and the `staged-diff-relative` integration test
- * fails if you do.
+ * Three independent things keep `diff.relative` from deciding what the gate
+ * sees: the config is forced off in the argv, the command runs AT the
+ * worktree root where the setting has nothing to make relative, and the
+ * output is resolved against that root rather than against `cwd`. Any one of
+ * the first two would do; both are here because this is a pre-commit gate on
+ * a published package, and the failure mode is silent under-reporting rather
+ * than an error anyone would notice.
  *
  * Throws `GitError` on git failure rather than returning an empty list.
  * Returning `[]` silently on git failure would produce a false "✅ nothing
@@ -121,27 +151,11 @@ export function getGitWorkTreeRoot(cwd: string = process.cwd()): string {
  */
 export function getGitStagedFilePaths(cwd: string = process.cwd()): string[] {
   const root = getGitWorkTreeRoot(cwd);
-  const args = [
-    ...FORCED_GIT_CONFIG,
-    'diff',
-    '--cached',
-    '--name-only',
-    '--diff-filter=ACMRT',
-    // A staged submodule pointer bump is listed here as an ordinary path,
-    // but its index entry is a gitlink (mode 160000) rather than a blob, so
-    // `git show :<path>` answers "fatal: bad object". There is no content
-    // behind a gitlink for this scanner to read, and treating one as an
-    // unreadable file made every routine submodule bump block the commit
-    // with a message about detected secrets. Dropping the entry is correct,
-    // not a suppression: nothing about the pointer is scannable, and the
-    // submodule's own contents are that repository's own gate to run.
-    '--ignore-submodules=all',
-    '-z',
-  ];
+  const args = [...STAGED_DIFF_ARGV];
   let out: string;
   try {
     out = execFileSync('git', args, {
-      cwd,
+      cwd: root,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -173,6 +187,10 @@ export function getGitStagedFilePaths(cwd: string = process.cwd()): string[] {
  * "fatal: path 'pkg/deep/staged.ts' is in the index, but not 'staged.ts'"
  * and, one silent downgrade later, a clean bill of health over a real
  * staged credential.
+ *
+ * Unlike the staged listing, this command needs no worktree-root `cwd` of
+ * its own: `:<path>` is defined as root-relative, so once the path has been
+ * re-expressed the working directory git runs in cannot change the answer.
  */
 export function readGitIndexFile(cwd: string, filePath: string): string {
   const root = getGitWorkTreeRoot(cwd);

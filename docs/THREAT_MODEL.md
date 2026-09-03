@@ -76,11 +76,26 @@ closed enumeration of exactly what is about to be committed. If any staged
 file cannot be examined, the run is **incomplete**, not clean:
 
 - exit code **2** (the same "cannot vouch for this result" code used when
-  `git diff --cached` itself fails), never 0;
+  `git diff --cached` itself fails), never 0, and in preference to the
+  exit 1 that findings alone would have produced;
 - no `✅ SUCCESS` line in text output;
 - `run.unscannable_files` in JSON and in the SARIF run properties, alongside
   an error-severity `file.read_error` diagnostic (a SARIF driver
-  notification at level `error`) naming the file and the reason.
+  notification at level `error`) naming the file and the reason;
+- the installed pre-commit hooks report exit 2 as an incomplete scan rather
+  than a detection, and deliberately omit the `--no-verify` hint they give
+  for a real finding: the check did not run, so bypassing it is not the
+  remedy.
+
+A staged **submodule** pointer is not an unreadable file. Its index entry is
+a gitlink with no blob behind it, so `--ignore-submodules=all` excludes it
+from the staged listing; the submodule's own contents are that repository's
+own gate to run.
+
+Every path a staged run reports, ignore-matches or fingerprints is resolved
+against the **repository root**, not the caller's working directory, so a
+hook invoked from a subdirectory cannot publish absolute machine paths, and
+cannot silently reach a different verdict from the same index.
 
 A **directory** scan deliberately does not fail on the same condition. Its
 file set is discovered by walking a tree rather than declared by git, and
