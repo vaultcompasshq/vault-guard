@@ -188,52 +188,28 @@ describe('PreCommitHook', () => {
       }
     });
 
-    it('installs where git actually runs it: the hook fires on a real commit', () => {
-      // The proof that matters. With core.hooksPath set the way husky 9
-      // sets it (a relative path), resolving it against the .git
-      // directory instead of the working-tree root reports success while
-      // writing a hook git never reads, so the gate silently does not
-      // exist. No amount of path assertion is as convincing as making
-      // git run the thing, so this drives a real commit through a stub
-      // vault-guard that must refuse it.
+    it('with core.hooksPath set the way husky 9 sets it, installs into the tracked .husky/pre-commit, never the generated dir', () => {
+      // core.hooksPath=.husky/_ is husky 9's GENERATED, gitignored
+      // directory -- husky's own prepare script rewrites it on every
+      // `pnpm install`, so a hook written there does not survive. This
+      // test asserted exactly that wrong location (.husky/_/pre-commit) as
+      // the expected install target until that was found to be the
+      // remaining bug: a bare native install has to land in the TRACKED
+      // .husky/pre-commit file instead, the same file the husky manager
+      // targets, or the gate is silently wiped on the next install.
+      // Driving a real commit through this exact layout (no husky
+      // dispatcher present under .husky/_) is no longer a meaningful
+      // proof once the fix stops writing there -- see the "husky-generated
+      // hooks dir (husky 9)" describe block below for that proof against
+      // a full, functional husky 9 layout instead.
       execSync('git config --local core.hooksPath .husky/_', { cwd: testDir, stdio: 'ignore' });
-      execSync('git config user.email "test@example.com"', { cwd: testDir, stdio: 'ignore' });
-      execSync('git config user.name "Test"', { cwd: testDir, stdio: 'ignore' });
       process.chdir(testDir);
 
       const result = preCommitHook.install({ manager: 'native' });
       expect(result.success).toBe(true);
-      expect(fs.existsSync(path.join(testDir, '.husky', '_', 'pre-commit'))).toBe(true);
+      expect(fs.existsSync(path.join(testDir, '.husky', 'pre-commit'))).toBe(true);
+      expect(fs.existsSync(path.join(testDir, '.husky', '_', 'pre-commit'))).toBe(false);
       expect(fs.existsSync(path.join(gitDir, '.husky', '_', 'pre-commit'))).toBe(false);
-
-      // A stub vault-guard that exits non-zero. If the installed hook is
-      // the one git runs, the commit is refused; if install wrote
-      // somewhere git does not look, the commit succeeds and the gate was
-      // never there.
-      const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-stub-bin-'));
-      try {
-        const stub = path.join(binDir, 'vault-guard');
-        fs.writeFileSync(stub, '#!/bin/sh\necho "stub vault-guard ran: $*"\nexit 1\n');
-        fs.chmodSync(stub, 0o755);
-
-        fs.writeFileSync(path.join(testDir, 'a.txt'), 'hello');
-        execSync('git add -A', { cwd: testDir, stdio: 'ignore' });
-
-        let committed = true;
-        try {
-          execSync('git commit -q -m "should be blocked"', {
-            cwd: testDir,
-            env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ''}` },
-            stdio: ['ignore', 'pipe', 'pipe'],
-          });
-        } catch {
-          committed = false;
-        }
-
-        expect(committed).toBe(false);
-      } finally {
-        fs.rmSync(binDir, { recursive: true, force: true });
-      }
     });
 
     it('should create hooks directory if it does not exist', () => {
@@ -470,6 +446,156 @@ describe('PreCommitHook', () => {
       const body = fs.readFileSync(p, 'utf-8');
       expect(body).toContain('vault-guard');
       expect(body).toContain('scan --staged');
+    });
+  });
+
+  describe('isHuskyGeneratedHooksDir', () => {
+    it('detects by directory shape alone (.husky/_), even before husky populates it', () => {
+      const generatedDir = path.join(testDir, '.husky', '_');
+      expect(preCommitHook.isHuskyGeneratedHooksDir(generatedDir)).toBe(true);
+    });
+
+    it('detects by the presence of the h shim', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-nothusky-'));
+      try {
+        fs.writeFileSync(path.join(dir, 'h'), '#!/usr/bin/env sh\n');
+        expect(preCommitHook.isHuskyGeneratedHooksDir(dir)).toBe(true);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('detects by the two-line dispatcher content of pre-commit', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-nothusky-'));
+      try {
+        fs.writeFileSync(
+          path.join(dir, 'pre-commit'),
+          '#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n',
+        );
+        expect(preCommitHook.isHuskyGeneratedHooksDir(dir)).toBe(true);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('returns false for an ordinary .git/hooks directory', () => {
+      expect(preCommitHook.isHuskyGeneratedHooksDir(hooksDir)).toBe(false);
+    });
+
+    it('returns false for a directory with an unrelated pre-commit script', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-nothusky-'));
+      try {
+        fs.writeFileSync(
+          path.join(dir, 'pre-commit'),
+          '#!/bin/sh\necho "other hook"\n',
+        );
+        expect(preCommitHook.isHuskyGeneratedHooksDir(dir)).toBe(false);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('husky-generated hooks dir (husky 9)', () => {
+    // Builds a husky 9 layout by hand: core.hooksPath=.husky/_ (generated,
+    // gitignored), a two-line dispatcher plus a functional `h` shim that
+    // sources the TRACKED hook one directory up (.husky/<hookname>), and a
+    // .gitignore with a bare `*` -- the shape husky's own prepare script
+    // produces and rewrites on every install.
+    function buildHusky9Layout(dir: string): void {
+      const genDir = path.join(dir, '.husky', '_');
+      fs.mkdirSync(genDir, { recursive: true });
+      fs.writeFileSync(path.join(genDir, '.gitignore'), '*\n');
+      fs.writeFileSync(
+        path.join(genDir, 'h'),
+        '#!/usr/bin/env sh\n. "$(dirname "$0")/../pre-commit"\n',
+        { mode: 0o755 },
+      );
+      fs.writeFileSync(
+        path.join(genDir, 'pre-commit'),
+        '#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n',
+        { mode: 0o755 },
+      );
+      execSync('git config --local core.hooksPath .husky/_', { cwd: dir, stdio: 'ignore' });
+    }
+
+    it('bare native install lands the stanza in .husky/pre-commit and never touches .husky/_', () => {
+      buildHusky9Layout(testDir);
+      process.chdir(testDir);
+
+      const before = fs.readdirSync(path.join(testDir, '.husky', '_')).sort();
+
+      const result = preCommitHook.install({ manager: 'native' });
+
+      expect(result.success).toBe(true);
+      const trackedPath = path.join(testDir, '.husky', 'pre-commit');
+      expect(fs.existsSync(trackedPath)).toBe(true);
+      expect(fs.readFileSync(trackedPath, 'utf-8')).toContain('scan --staged');
+      expect(result.message).toMatch(/husky/i);
+
+      const after = fs.readdirSync(path.join(testDir, '.husky', '_')).sort();
+      expect(after).toEqual(before);
+    });
+
+    it('getPreCommitHookPath resolves the native manager to the tracked .husky/pre-commit file', () => {
+      buildHusky9Layout(testDir);
+      const resolved = preCommitHook.getPreCommitHookPath(testDir, 'native');
+      expect(resolved).toBe(path.join(testDir, '.husky', 'pre-commit'));
+    });
+
+    it('drives a real commit through the husky 9 layout after a bare native install: a failing stub refuses it', () => {
+      // The proof that matters, same style as the relative-hooksPath fix
+      // above: install, then make git actually run the hook rather than
+      // only asserting on the installed path.
+      buildHusky9Layout(testDir);
+      execSync('git config user.email "test@example.com"', { cwd: testDir, stdio: 'ignore' });
+      execSync('git config user.name "Test"', { cwd: testDir, stdio: 'ignore' });
+      process.chdir(testDir);
+
+      const result = preCommitHook.install({ manager: 'native' });
+      expect(result.success).toBe(true);
+
+      const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-stub-bin-'));
+      try {
+        const stub = path.join(binDir, 'vault-guard');
+        fs.writeFileSync(stub, '#!/bin/sh\necho "stub vault-guard ran: $*"\nexit 1\n');
+        fs.chmodSync(stub, 0o755);
+
+        fs.writeFileSync(path.join(testDir, 'a.txt'), 'hello');
+        execSync('git add -A', { cwd: testDir, stdio: 'ignore' });
+
+        let committed = true;
+        try {
+          execSync('git commit -q -m "should be blocked"', {
+            cwd: testDir,
+            env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ''}` },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+        } catch {
+          committed = false;
+        }
+
+        expect(committed).toBe(false);
+      } finally {
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    });
+
+    it('never writes under .husky/_ on uninstall either', () => {
+      buildHusky9Layout(testDir);
+      process.chdir(testDir);
+      preCommitHook.install({ manager: 'native' });
+      const before = fs.readdirSync(path.join(testDir, '.husky', '_')).sort();
+
+      const result = preCommitHook.uninstall({ manager: 'native' });
+
+      // uninstallHusky's own append-vs-fresh-file handling (unrelated to
+      // this fix) is exercised by the husky manager itself; what matters
+      // here is that native's delegation to it never touches the
+      // generated directory.
+      expect(result.success).toBe(true);
+      const after = fs.readdirSync(path.join(testDir, '.husky', '_')).sort();
+      expect(after).toEqual(before);
     });
   });
 });

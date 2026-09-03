@@ -100,6 +100,23 @@ pre-commit:
       run: vault-guard scan --staged
 `;
 
+/**
+ * Recognize husky 9's generated dispatcher: exactly two non-blank lines, a
+ * shebang, then a line sourcing "$(dirname "$0")/h". Husky 9 writes this at
+ * `<hooksDir>/<hookname>` inside the generated, gitignored directory; the
+ * real hook body lives one directory up, in the TRACKED `.husky/<hookname>`
+ * file, which this dispatcher sources via the `h` shim.
+ */
+function isHuskyDispatcherScript(content: string): boolean {
+  const lines = content
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0);
+  if (lines.length !== 2) return false;
+  if (!lines[0].startsWith('#!')) return false;
+  return lines[1].includes('dirname "$0")/h');
+}
+
 const PRE_COMMIT_CONFIG = `# See https://pre-commit.com
 repos:
   - repo: local
@@ -164,13 +181,61 @@ export class PreCommitHook {
   }
 
   /**
+   * Whether the resolved hooks directory is husky 9's GENERATED,
+   * gitignored directory (\`.husky/_\` by default) rather than a real
+   * hooks directory. Husky's own prepare script rewrites this directory on
+   * every \`pnpm install\`, so nothing vault-guard writes there survives;
+   * the durable, tracked hook lives one directory up at
+   * \`.husky/<hookname>\`.
+   *
+   * Any one of three signals is sufficient, since husky may not have
+   * populated the directory yet (a fresh \`git config core.hooksPath
+   * .husky/_\` before the first \`husky\` prepare run still counts):
+   *  - the resolved hooks dir's basename is \`_\` under a directory
+   *    literally named \`.husky\`;
+   *  - an \`h\` file (husky's shim) is present in it;
+   *  - the \`pre-commit\` file already there is the two-line dispatcher
+   *    that sources \`h\`.
+   */
+  isHuskyGeneratedHooksDir(hooksDir: string): boolean {
+    const base = path.basename(hooksDir);
+    const parentBase = path.basename(path.dirname(hooksDir));
+    if (base === '_' && parentBase === '.husky') return true;
+
+    if (fs.existsSync(path.join(hooksDir, 'h'))) return true;
+
+    const pcPath = path.join(hooksDir, 'pre-commit');
+    if (fs.existsSync(pcPath)) {
+      try {
+        const content = fs.readFileSync(pcPath, 'utf-8');
+        if (isHuskyDispatcherScript(content)) return true;
+      } catch {
+        /* ignore -- treated as not husky-generated */
+      }
+    }
+
+    return false;
+  }
+
+  /**
    * Absolute path to the \`pre-commit\` hook file for the given manager.
+   *
+   * For the \`native\` manager, when the resolved hooks directory is
+   * husky 9's generated directory (see isHuskyGeneratedHooksDir), this
+   * resolves to the TRACKED \`.husky/pre-commit\` file instead -- the same
+   * file the \`husky\` manager targets -- because nothing written under the
+   * generated directory survives husky's prepare script. See install()'s
+   * husky-delegation in installNative for the write side of this.
    */
   getPreCommitHookPath(cwd: string, manager: HookManager = 'native'): string {
     if (manager === 'husky') {
       return path.join(cwd, '.husky', 'pre-commit');
     }
-    return path.join(this.getEffectiveHooksDir(cwd).hooksDir, 'pre-commit');
+    const { hooksDir } = this.getEffectiveHooksDir(cwd);
+    if (this.isHuskyGeneratedHooksDir(hooksDir)) {
+      return path.join(cwd, '.husky', 'pre-commit');
+    }
+    return path.join(hooksDir, 'pre-commit');
   }
 
   /**
@@ -269,6 +334,24 @@ export class PreCommitHook {
 
   private installNative(cwd: string): { success: boolean; message: string; hookPath?: string } {
     const { hooksDir, viaHooksPath } = this.getEffectiveHooksDir(cwd);
+
+    // core.hooksPath points at husky 9's generated, gitignored directory
+    // (typically .husky/_). Writing there is pointless -- husky's prepare
+    // script rewrites it on every `pnpm install` -- so install into the
+    // same tracked .husky/pre-commit file the husky manager uses, and say
+    // so. Never write under the generated directory in this branch.
+    if (this.isHuskyGeneratedHooksDir(hooksDir)) {
+      const result = this.installHusky(cwd);
+      if (!result.success) {
+        return result;
+      }
+      return {
+        success: true,
+        message: `Hooks are managed by husky; installing into .husky/pre-commit. ${result.message}`,
+        hookPath: result.hookPath,
+      };
+    }
+
     const hookPath = path.join(hooksDir, 'pre-commit');
     const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
 
@@ -316,6 +399,15 @@ export class PreCommitHook {
 
   private uninstallNative(cwd: string): { success: boolean; message: string } {
     const { hooksDir } = this.getEffectiveHooksDir(cwd);
+
+    if (this.isHuskyGeneratedHooksDir(hooksDir)) {
+      const result = this.uninstallHusky(cwd);
+      return {
+        success: result.success,
+        message: `Hooks are managed by husky; ${result.message}`,
+      };
+    }
+
     const hookPath = path.join(hooksDir, 'pre-commit');
     const cmdRemoved = this.removeNativeCmdCompanion(hooksDir);
 
