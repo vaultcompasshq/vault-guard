@@ -464,6 +464,56 @@ describe('PreCommitHook', () => {
       expect(fs.existsSync(p)).toBe(true);
       expect(fs.readFileSync(p, 'utf-8')).toContain('scan --staged');
     });
+
+    it('uninstall strips only the appended stanza when vault-guard was appended to a pre-existing foreign hook', () => {
+      process.chdir(testDir);
+      fs.mkdirSync(path.join(testDir, '.husky'), { recursive: true });
+      const hookPath = path.join(testDir, '.husky', 'pre-commit');
+      fs.writeFileSync(hookPath, '#!/bin/sh\necho "pre-existing foreign hook"\n', { mode: 0o755 });
+
+      const installResult = preCommitHook.install({ manager: 'husky' });
+      expect(installResult.message).toMatch(/Appended vault-guard/);
+      expect(fs.readFileSync(hookPath, 'utf-8')).toContain('pre-existing foreign hook');
+      expect(preCommitHook.isInstalled({ manager: 'husky' })).toBe(true);
+
+      const result = preCommitHook.uninstall({ manager: 'husky' });
+
+      // Only the stanza vault-guard itself appended comes out; the
+      // pre-existing foreign content the user already had stays, and the
+      // file is not deleted (it is not ours to delete outright -- unlike
+      // a hook vault-guard wrote whole from the template).
+      expect(result.success).toBe(true);
+      expect(fs.existsSync(hookPath)).toBe(true);
+      const remaining = fs.readFileSync(hookPath, 'utf-8');
+      expect(remaining).toContain('pre-existing foreign hook');
+      expect(remaining).not.toContain('vault-guard');
+      expect(preCommitHook.isInstalled({ manager: 'husky' })).toBe(false);
+    });
+
+    it('uninstall leaves foreign content that merely mentions vault-guard alone, with an honest message, and does not falsely report success', () => {
+      process.chdir(testDir);
+      fs.mkdirSync(path.join(testDir, '.husky'), { recursive: true });
+      const hookPath = path.join(testDir, '.husky', 'pre-commit');
+      // Contains both substrings isInstalled checks for, but in NEITHER
+      // shape vault-guard itself ever writes (no whole-file header, no
+      // "# --- vault-guard ---" appended marker) -- e.g. hand-edited, or
+      // a vault-guard-written file with its header line since removed.
+      const foreignContent =
+        '#!/bin/sh\n# ask on #vault-guard-questions before touching this\nvault-guard scan --staged\necho done\n';
+      fs.writeFileSync(hookPath, foreignContent, { mode: 0o755 });
+      expect(preCommitHook.isInstalled({ manager: 'husky' })).toBe(true);
+
+      const result = preCommitHook.uninstall({ manager: 'husky' });
+
+      expect(fs.readFileSync(hookPath, 'utf-8')).toBe(foreignContent);
+      expect(preCommitHook.isInstalled({ manager: 'husky' })).toBe(true);
+      // Required: uninstall reports success only when isInstalled is
+      // false afterwards. It is still true here (we deliberately left
+      // the file untouched rather than guess at what to remove), so this
+      // must not claim success.
+      expect(result.success).toBe(false);
+      expect(result.message.toLowerCase()).toMatch(/review|manually|unchanged/);
+    });
   });
 
   describe('Lefthook manager', () => {
@@ -690,19 +740,23 @@ describe('PreCommitHook', () => {
       },
     );
 
-    it('never writes under .husky/_ on uninstall either', () => {
+    it('never writes under .husky/_ on uninstall either, and actually removes the tracked hook (isInstalled false afterwards)', () => {
       buildHusky9Layout(testDir);
       process.chdir(testDir);
       preCommitHook.install({ manager: 'native' });
       const before = fs.readdirSync(path.join(testDir, '.husky', '_')).sort();
+      const trackedPath = path.join(testDir, '.husky', 'pre-commit');
+      expect(fs.existsSync(trackedPath)).toBe(true);
 
       const result = preCommitHook.uninstall({ manager: 'native' });
 
-      // uninstallHusky's own append-vs-fresh-file handling (unrelated to
-      // this fix) is exercised by the husky manager itself; what matters
-      // here is that native's delegation to it never touches the
-      // generated directory.
+      // The redirect writes .husky/pre-commit WHOLE from HUSKY_HOOK_SCRIPT
+      // (the fresh-install path, never appended-to), so uninstall must
+      // recognize that shape and remove the file entirely -- not merely
+      // report success while leaving isInstalled true.
       expect(result.success).toBe(true);
+      expect(fs.existsSync(trackedPath)).toBe(false);
+      expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(false);
       const after = fs.readdirSync(path.join(testDir, '.husky', '_')).sort();
       expect(after).toEqual(before);
     });
@@ -789,7 +843,7 @@ describe('PreCommitHook', () => {
       expect(output).toContain('COMMIT BLOCKED');
     });
 
-    it('uninstall targets the nested tracked hook, not <cwd>/.husky', () => {
+    it('uninstall targets the nested tracked hook, not <cwd>/.husky, and actually removes it (isInstalled false afterwards)', () => {
       buildNestedHusky9Layout(testDir);
       process.chdir(testDir);
       preCommitHook.install({ manager: 'native' });
@@ -798,15 +852,15 @@ describe('PreCommitHook', () => {
 
       const result = preCommitHook.uninstall({ manager: 'native' });
 
-      // uninstallHusky's own append-vs-fresh-file handling (unrelated to
-      // this fix, and already exercised by the plain husky-9 "never
-      // writes under .husky/_ on uninstall either" test above) leaves a
-      // freshly-written (non-appended) hook file in place with a "review
-      // manually" message rather than deleting it. What matters here is
-      // that native's delegation to it targets the NESTED tracked file
-      // -- succeeding, not erroring -- rather than a fixed
-      // <cwd>/.husky/pre-commit that was never written.
+      // The redirect writes the nested tracked hook WHOLE from
+      // HUSKY_HOOK_SCRIPT (the fresh-install path, never appended-to), so
+      // uninstall must recognize that shape and remove the file entirely
+      // at the NESTED path -- not a fixed <cwd>/.husky/pre-commit that
+      // was never written, and not merely report success while leaving
+      // isInstalled true.
       expect(result.success).toBe(true);
+      expect(fs.existsSync(trackedPath)).toBe(false);
+      expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(false);
       expect(fs.existsSync(path.join(testDir, '.husky'))).toBe(false);
     });
 

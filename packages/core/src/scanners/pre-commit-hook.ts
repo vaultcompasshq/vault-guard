@@ -21,11 +21,23 @@ export interface InstallHookOptions {
 }
 
 /**
+ * Marks a hook file vault-guard wrote WHOLE, from a template -- as
+ * opposed to a stanza vault-guard appended to a pre-existing (foreign)
+ * hook it does not own. uninstallHusky uses this to decide whether it is
+ * safe to delete the file outright: present means the whole file is
+ * vault-guard's, so removing it entirely is correct; absent (even when
+ * the file mentions "vault-guard" some other way) means the file
+ * predates vault-guard or was never fully vault-guard's, so it must not
+ * be deleted wholesale.
+ */
+const VAULT_GUARD_HOOK_HEADER = '# vault-guard pre-commit (installed by @vaultcompass/vault-guard)';
+
+/**
  * Shell hook body for **native** Git hooks (`core.hooksPath` or `.git/hooks`).
  * Scans **staged files only** — fast and matches what will actually be committed.
  */
 const NATIVE_HOOK_SCRIPT = `#!/bin/sh
-# vault-guard pre-commit (installed by @vaultcompass/vault-guard)
+${VAULT_GUARD_HOOK_HEADER}
 set -e
 
 # Re-attach stdin for GUI git clients when possible.
@@ -83,6 +95,7 @@ exit /b 0
 
 /** Husky-friendly hook (sources \`_/husky.sh\` when present). */
 const HUSKY_HOOK_SCRIPT = `#!/usr/bin/env sh
+${VAULT_GUARD_HOOK_HEADER}
 if [ -f "$(dirname "$0")/_/husky.sh" ]; then
   . "$(dirname "$0")/_/husky.sh"
 fi
@@ -519,7 +532,26 @@ export class PreCommitHook {
     }
   }
 
-  /** @param huskyDir See installHusky. */
+  /**
+   * @param huskyDir See installHusky.
+   *
+   * Fix for a defect the reviewer found while checking uninstall after
+   * the redirect started routing every husky 9 repo through this
+   * function (previously only reachable via the explicit `husky`
+   * manager): when installHusky wrote the WHOLE file from
+   * HUSKY_HOOK_SCRIPT (the fresh-install path -- what both the redirect
+   * and a from-scratch \`--manager husky\` install take), there is no
+   * "# --- vault-guard ---" appended-block marker to strip, so the old
+   * logic here matched nothing, rewrote the file byte-identical, and
+   * reported success:true with isInstalled still true. Distinguishing
+   * the two shapes vault-guard itself ever produces -- the whole-file
+   * header vs. the appended-stanza marker -- fixes this: a whole-file
+   * hook is removed entirely; an appended stanza is stripped, keeping
+   * the pre-existing foreign content; anything else that merely mentions
+   * "vault-guard" in neither recognized shape is left untouched, with an
+   * honest message and success only if it happens not to still read as
+   * installed.
+   */
   private uninstallHusky(
     cwd: string,
     huskyDir: string = path.join(cwd, '.husky'),
@@ -529,23 +561,50 @@ export class PreCommitHook {
     if (!fs.existsSync(hookPath)) {
       return { success: true, message: `No ${relHookPath} to remove` };
     }
-    let content = fs.readFileSync(hookPath, 'utf-8');
+
+    const content = fs.readFileSync(hookPath, 'utf-8');
     if (!content.includes('vault-guard')) {
       return { success: true, message: `No vault-guard stanza in ${relHookPath}` };
     }
-    // Remove appended block if present.
-    content = content.replace(/\n# --- vault-guard ---[\s\S]*$/m, '');
-    // If entire file is only our husky template, delete file.
-    if (!content.includes('vault-guard')) {
-      if (content.trim().length === 0) {
+
+    // vault-guard wrote the ENTIRE file from HUSKY_HOOK_SCRIPT (whether
+    // via a fresh --manager husky install or the native husky-redirect):
+    // it is safe, and correct, to remove the file outright rather than
+    // try to strip individual lines from a template vault-guard owns.
+    if (content.includes(VAULT_GUARD_HOOK_HEADER)) {
+      fs.unlinkSync(hookPath);
+      return { success: true, message: `Removed ${relHookPath}` };
+    }
+
+    // vault-guard appended a stanza to a pre-existing (foreign) hook: strip
+    // just that stanza, preserving whatever the file had before.
+    if (content.includes('# --- vault-guard ---')) {
+      const stripped = content.replace(/\n# --- vault-guard ---[\s\S]*$/m, '');
+      if (stripped.trim().length === 0) {
         fs.unlinkSync(hookPath);
         return { success: true, message: `Removed ${relHookPath}` };
       }
-      fs.writeFileSync(hookPath, content, { mode: 0o755 });
-      return { success: true, message: `Removed vault-guard stanza from ${relHookPath}` };
+      fs.writeFileSync(hookPath, stripped, { mode: 0o755 });
+      const stillInstalled = stripped.includes('vault-guard') && stripped.includes('scan --staged');
+      return {
+        success: !stillInstalled,
+        message: stillInstalled
+          ? `Removed the appended stanza from ${relHookPath}, but it still references vault-guard -- review manually`
+          : `Removed vault-guard stanza from ${relHookPath}`,
+      };
     }
-    fs.writeFileSync(hookPath, content, { mode: 0o755 });
-    return { success: true, message: `Updated ${relHookPath} (review manually if needed)` };
+
+    // Mentions "vault-guard" somewhere, but in NEITHER shape vault-guard
+    // itself ever writes (no whole-file header, no appended-stanza
+    // marker) -- do not guess at what to remove from a file this code did
+    // not write; leave it untouched and say so honestly. Report success
+    // only if it does not still read as installed (isInstalled uses the
+    // same two-substring check).
+    const stillInstalled = content.includes('vault-guard') && content.includes('scan --staged');
+    return {
+      success: !stillInstalled,
+      message: `${relHookPath} mentions vault-guard but does not match a known vault-guard install shape; leaving it unchanged. Review and remove the vault-guard reference manually if needed.`,
+    };
   }
 
   // -------------------------------------------------------------------------

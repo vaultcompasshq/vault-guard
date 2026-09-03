@@ -75,3 +75,17 @@ vault-guard binary (exit codes 1 and 2) on PATH, asserting both that the
 commit is refused and that the stub's own announce line actually
 appears in the output -- so a crashed hook can never be mistaken for a
 real block.
+
+One more defect the reviewer found while re-checking uninstall, now
+that the redirect routes every husky 9 repo through it: uninstall only
+knew how to strip an appended "# --- vault-guard ---" block. A hook
+vault-guard wrote WHOLE from the template -- the fresh-install path,
+which is exactly what the husky redirect takes -- has no such block, so
+the old logic matched nothing, rewrote the file byte-identical, and
+reported success with the hook still installed. Fixed by giving the
+template its own header line and having uninstall recognize it: a
+whole-file hook is now removed entirely; an appended stanza is still
+just stripped, keeping whatever foreign content it was appended to;
+anything that merely mentions "vault-guard" in neither shape is left
+untouched with an honest message, and uninstall now reports success
+only when the hook no longer reads as installed afterwards.
