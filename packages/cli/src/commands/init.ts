@@ -278,12 +278,19 @@ export function planInit(options: InitOptions = {}): InitResult {
       } else {
         const hook = new PreCommitHook();
         const hookPath = hook.getPreCommitHookPath(cwd, manager);
+        // hookState.path stays ABSOLUTE (applyInit, hookMeta, and callers
+        // of planInit's `hook` field all rely on that); only the actions
+        // array entry is repo-relative, matching every 'create' action.
         if (hook.isInstalled({ cwd, manager })) {
           hookState = { manager, path: hookPath, installed: true };
-          actions.push({ kind: 'skip', path: hookPath, detail: 'hook already installed' });
+          actions.push({
+            kind: 'skip',
+            path: hookRelativePath(cwd, hookPath),
+            detail: 'hook already installed',
+          });
         } else {
           hookState = { manager, path: hookPath, installed: false };
-          actions.push({ kind: 'hook-install', path: hookPath, detail: manager });
+          actions.push({ kind: 'hook-install', path: hookRelativePath(cwd, hookPath), detail: manager });
         }
       }
     }
@@ -392,7 +399,7 @@ export function applyInit(plan: InitResult, options: InitOptions = {}): InitResu
             ...plan.actions,
             {
               kind: 'skip',
-              path: plan.hook.path ?? 'pre-commit',
+              path: plan.hook.path ? hookRelativePath(cwd, plan.hook.path) : 'pre-commit',
               detail: `hook install failed: ${result.message}`,
             },
           ],

@@ -150,6 +150,38 @@ describe('vault-guard init', () => {
     expect(plan.actions.map(a => a.path)).not.toContain('.vault-guard/mcp-snippet.json');
   });
 
+  it('hook-install action carries a repo-relative path, consistent with create actions', () => {
+    // Review item 4 (cosmetic): the hook-install action used to carry the
+    // ABSOLUTE hook path while every 'create' action carries a
+    // repo-relative one (e.g. '.vault-guard.json') -- inconsistent within
+    // the same actions array, and it leaks the host's temp-dir/home-dir
+    // layout into --json output for no reason.
+    const plan = planInit({ cwd: testDir });
+
+    const hookInstallAction = plan.actions.find(a => a.kind === 'hook-install');
+    expect(hookInstallAction).toBeDefined();
+    expect(path.isAbsolute(hookInstallAction!.path)).toBe(false);
+    expect(hookInstallAction!.path.startsWith(testDir)).toBe(false);
+
+    const createAction = plan.actions.find(a => a.kind === 'create');
+    expect(createAction).toBeDefined();
+    expect(path.isAbsolute(createAction!.path)).toBe(false);
+  });
+
+  it('the already-installed hook skip action also carries a repo-relative path', async () => {
+    expect(await initCommand({ cwd: testDir })).toBe(0);
+
+    const plan = planInit({ cwd: testDir });
+    expect(plan.alreadyInitialized).toBe(true);
+
+    const hookSkipAction = plan.actions.find(
+      a => a.kind === 'skip' && a.detail === 'hook already installed',
+    );
+    expect(hookSkipAction).toBeDefined();
+    expect(path.isAbsolute(hookSkipAction!.path)).toBe(false);
+    expect(hookSkipAction!.path.startsWith(testDir)).toBe(false);
+  });
+
   it('revertInit fails without manifest', () => {
     const result = revertInit({ cwd: testDir });
     expect(result.ok).toBe(false);
