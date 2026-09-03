@@ -68,7 +68,7 @@ See **[docs/MCP.md](./docs/MCP.md)** for the full tool reference.
 vault-guard install-hook
 ```
 
-Installs a hook that runs `vault-guard scan --staged` before every commit. Honors `core.hooksPath` (including globally-configured hook paths). When husky 9 already owns `core.hooksPath` (its generated `.husky/_` directory), the default `native` manager detects this automatically and installs into the tracked `.husky/pre-commit` file instead -- no `--manager husky` needed. Supports all major managers:
+Installs a hook that runs `vault-guard scan --staged` before every commit. Honors `core.hooksPath` (including globally-configured hook paths). When husky 9 already owns `core.hooksPath` (its generated `.husky/_` directory), the default `native` manager detects this automatically and installs into the same tracked `pre-commit` file husky's own shim runs -- no `--manager husky` needed. This also works when the package that owns husky's `.husky` is a monorepo subdirectory rather than the repo root (`core.hooksPath` like `packages/app/.husky/_`): the tracked hook lands at `packages/app/.husky/pre-commit`, matching where husky actually runs it. **Run `install-hook` (and `init`) from the git repository root, never from a package subdirectory** -- they refuse outright otherwise. Supports all major managers:
 
 ```bash
 vault-guard install-hook --manager native     # default: Git hooks / hooksPath

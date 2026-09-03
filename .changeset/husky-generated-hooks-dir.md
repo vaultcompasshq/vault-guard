@@ -24,14 +24,29 @@ wrong file.
 The fix detects a husky-generated hooks directory by directory SHAPE
 alone: a resolved basename of `_` under a directory literally named
 `.husky`. Only the native manager is affected, and only when that shape
-matches; it then installs into the tracked .husky/pre-commit file the
-same way the husky manager does, saying so in the output.
-`--manager husky` is no longer required in this case. The foreign-hook
-check now resolves to the same tracked file, so it names and inspects
-the right thing. Nothing is ever written under the generated directory,
-and husky 8 (core.hooksPath=.husky, no generated subdirectory) is
-untouched by this change -- its shape never matches, so the existing
-native install path keeps handling it exactly as before.
+matches; it then installs into the same tracked hook file husky's own
+`h` shim actually runs, saying so in the output. `--manager husky` is
+no longer required in this case. The foreign-hook check now resolves to
+the same tracked file, so it names and inspects the right thing.
+Nothing is ever written under the generated directory, and husky 8
+(core.hooksPath=.husky, no generated subdirectory) is untouched by this
+change -- its shape never matches, so the existing native install path
+keeps handling it exactly as before.
+
+The tracked-hook target is computed as the PARENT of the generated `_`
+directory, joined with the hook name -- never a fixed `<cwd>/.husky`.
+An earlier version of this fix hardcoded the latter, on the reasoning
+that it matched the explicit `husky` manager's own always-cwd
+convention; independent review proved that wrong with a functional
+husky shim and a real commit, for the ordinary monorepo shape where the
+package that owns husky's "prepare" script is not the git root
+(core.hooksPath like `packages/app/.husky/_`). Husky's shim resolves
+the tracked hook it actually executes relative to where the generated
+directory itself lives, not relative to the repository root, so the
+fixed-cwd answer reported success at a path git never read while git
+ran the nested one, unguarded. `install`/`init` must be run from the
+git repository root (not a package subdirectory) either way -- both
+already refuse outright otherwise.
 
 An earlier version of this detection also treated the presence of
 husky's `h` shim, or dispatcher-shaped content in an existing

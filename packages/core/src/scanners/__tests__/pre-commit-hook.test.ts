@@ -5,6 +5,45 @@ import os from 'os';
 import path from 'path';
 import { execSync } from 'child_process';
 
+// Drives a real commit with a stub vault-guard exiting `exitCode` on PATH,
+// and returns both whether the commit was refused and the captured output
+// -- so tests can assert the hook's own explanation actually printed, not
+// merely that the commit failed for some other reason (a crashed hook must
+// never pass as a block). Shared across describe blocks (plain husky 9,
+// nested husky 9, husky 8) since it depends only on the repo dir passed in.
+function driveCommitWithStub(
+  dir: string,
+  exitCode: number,
+): { committed: boolean; output: string } {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-stub-bin-'));
+  try {
+    const stub = path.join(binDir, 'vault-guard');
+    fs.writeFileSync(stub, `#!/bin/sh\necho "stub vault-guard ran: $*"\nexit ${exitCode}\n`);
+    fs.chmodSync(stub, 0o755);
+
+    fs.writeFileSync(path.join(dir, 'a.txt'), `hello ${exitCode}`);
+    execSync('git add -A', { cwd: dir, stdio: 'ignore' });
+
+    let committed = true;
+    let output = '';
+    try {
+      execSync(`git commit -q -m "should be blocked (exit ${exitCode})"`, {
+        cwd: dir,
+        env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ''}` },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      committed = false;
+      const e = error as { stdout?: Buffer; stderr?: Buffer };
+      output = `${e.stdout?.toString('utf-8') ?? ''}${e.stderr?.toString('utf-8') ?? ''}`;
+    }
+
+    return { committed, output };
+  } finally {
+    fs.rmSync(binDir, { recursive: true, force: true });
+  }
+}
+
 describe('PreCommitHook', () => {
   let preCommitHook: PreCommitHook;
   let testDir: string;
@@ -501,14 +540,20 @@ describe('PreCommitHook', () => {
       }
     });
 
-    it('never derives the redirect target from a computed parent of an arbitrary hooks dir: a nested relative hooksPath still targets cwd/.husky/pre-commit', () => {
+    it('derives the redirect target as the parent of the generated dir, not a fixed cwd/.husky: a nested relative hooksPath targets the nested tracked hook', () => {
       // core.hooksPath can be any relative path shaped like `.../.husky/_`
       // (basename `_` under a directory named `.husky`), not necessarily
-      // directly under the repo root. The redirect target must always be
-      // the canonical <cwd>/.husky/pre-commit -- the same fixed
-      // computation the husky manager itself uses -- never
-      // path.dirname(hooksDir), which would land in the wrong place here
-      // (<cwd>/nested/.husky/pre-commit).
+      // directly under the repo root -- this is the ordinary shape for a
+      // monorepo package that owns husky's "prepare" script but is not
+      // itself the git root. Husky's own `h` shim resolves the tracked
+      // hook it actually executes as the PARENT of the generated `_`
+      // directory plus the hook name, so the redirect target here MUST be
+      // <cwd>/nested/.husky/pre-commit, never the fixed
+      // <cwd>/.husky/pre-commit a hardcoded cwd-based computation would
+      // produce. This test previously asserted the fixed-cwd answer as
+      // correct; independent review proved that wrong with a functional
+      // shim and a real commit (see the nested-layout describe block
+      // below), so this assertion is inverted to match reality, not kept.
       const nestedGenDir = path.join(testDir, 'nested', '.husky', '_');
       fs.mkdirSync(nestedGenDir, { recursive: true });
       execSync('git config --local core.hooksPath nested/.husky/_', {
@@ -516,9 +561,14 @@ describe('PreCommitHook', () => {
         stdio: 'ignore',
       });
 
+      // realpathSync normalizes macOS's /var -> /private/var symlink so
+      // this compares the same way fs.existsSync would (path identity,
+      // not string identity): a relative core.hooksPath is resolved
+      // against git's own (symlink-resolved) worktree root.
+      const realTestDir = fs.realpathSync(testDir);
       const resolved = preCommitHook.getPreCommitHookPath(testDir, 'native');
-      expect(resolved).toBe(path.join(testDir, '.husky', 'pre-commit'));
-      expect(resolved).not.toBe(path.join(testDir, 'nested', '.husky', 'pre-commit'));
+      expect(resolved).toBe(path.join(realTestDir, 'nested', '.husky', 'pre-commit'));
+      expect(resolved).not.toBe(path.join(realTestDir, '.husky', 'pre-commit'));
     });
   });
 
@@ -552,47 +602,6 @@ describe('PreCommitHook', () => {
       execSync('git config --local core.hooksPath .husky/_', { cwd: dir, stdio: 'ignore' });
     }
 
-    // Drives a real commit with a stub vault-guard exiting `exitCode` on
-    // PATH, and returns both whether the commit was refused and the
-    // captured output -- so tests can assert the hook's own explanation
-    // actually printed, not merely that the commit failed for some other
-    // reason (a crashed hook must never pass as a block).
-    function driveCommitWithStub(
-      dir: string,
-      exitCode: number,
-    ): { committed: boolean; output: string } {
-      const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-stub-bin-'));
-      try {
-        const stub = path.join(binDir, 'vault-guard');
-        fs.writeFileSync(
-          stub,
-          `#!/bin/sh\necho "stub vault-guard ran: $*"\nexit ${exitCode}\n`,
-        );
-        fs.chmodSync(stub, 0o755);
-
-        fs.writeFileSync(path.join(dir, 'a.txt'), `hello ${exitCode}`);
-        execSync('git add -A', { cwd: dir, stdio: 'ignore' });
-
-        let committed = true;
-        let output = '';
-        try {
-          execSync(`git commit -q -m "should be blocked (exit ${exitCode})"`, {
-            cwd: dir,
-            env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ''}` },
-            stdio: ['ignore', 'pipe', 'pipe'],
-          });
-        } catch (error) {
-          committed = false;
-          const e = error as { stdout?: Buffer; stderr?: Buffer };
-          output = `${e.stdout?.toString('utf-8') ?? ''}${e.stderr?.toString('utf-8') ?? ''}`;
-        }
-
-        return { committed, output };
-      } finally {
-        fs.rmSync(binDir, { recursive: true, force: true });
-      }
-    }
-
     it('bare native install lands the stanza in .husky/pre-commit and never touches .husky/_', () => {
       buildHusky9Layout(testDir);
       process.chdir(testDir);
@@ -614,7 +623,9 @@ describe('PreCommitHook', () => {
     it('getPreCommitHookPath resolves the native manager to the tracked .husky/pre-commit file', () => {
       buildHusky9Layout(testDir);
       const resolved = preCommitHook.getPreCommitHookPath(testDir, 'native');
-      expect(resolved).toBe(path.join(testDir, '.husky', 'pre-commit'));
+      // realpathSync normalizes macOS's /var -> /private/var symlink; see
+      // the nested-hooksPath test above for why this matters here.
+      expect(resolved).toBe(path.join(fs.realpathSync(testDir), '.husky', 'pre-commit'));
     });
 
     it('drives a real commit through the husky 9 layout after a bare native install: a failing stub refuses it', () => {
@@ -689,6 +700,121 @@ describe('PreCommitHook', () => {
       expect(result.success).toBe(true);
       const after = fs.readdirSync(path.join(testDir, '.husky', '_')).sort();
       expect(after).toEqual(before);
+    });
+  });
+
+  describe('husky 9 with a nested core.hooksPath (monorepo package not at git root)', () => {
+    // BLOCKING finding from independent review: the ordinary monorepo
+    // shape has the package that owns package.json's "prepare": "husky"
+    // script somewhere other than the git root. Husky still writes its
+    // generated dir and tracked hook inside THAT package's own .husky,
+    // and core.hooksPath (set repo-wide, from the root) points at
+    // "<package>/.husky/_" -- nested below cwd, not directly under it.
+    // Husky's own `h` shim resolves the tracked hook it actually executes
+    // as the PARENT of the generated `_` directory plus the hook name:
+    // <package>/.husky/pre-commit, never <cwd>/.husky/pre-commit. A fixed
+    // cwd-based redirect target reports success at a path git never
+    // reads while git actually runs the nested one, unguarded -- proven
+    // by the reviewer with a functional shim and a real commit, and
+    // reproduced the same way here.
+    const subdir = 'packages/app';
+
+    function buildNestedHusky9Layout(rootDir: string): void {
+      const genDir = path.join(rootDir, subdir, '.husky', '_');
+      fs.mkdirSync(genDir, { recursive: true });
+      fs.writeFileSync(path.join(genDir, '.gitignore'), '*\n');
+      fs.writeFileSync(
+        path.join(genDir, 'h'),
+        '#!/usr/bin/env sh\n' +
+          'tracked="$(dirname "$(dirname "$0")")/$(basename "$0")"\n' +
+          'sh -e "$tracked" "$@"\n' +
+          'exit $?\n',
+        { mode: 0o755 },
+      );
+      fs.writeFileSync(
+        path.join(genDir, 'pre-commit'),
+        '#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n',
+        { mode: 0o755 },
+      );
+      execSync(`git config --local core.hooksPath ${subdir}/.husky/_`, {
+        cwd: rootDir,
+        stdio: 'ignore',
+      });
+    }
+
+    it('getPreCommitHookPath resolves to the nested tracked hook, not <cwd>/.husky/pre-commit', () => {
+      buildNestedHusky9Layout(testDir);
+      // realpathSync normalizes macOS's /var -> /private/var symlink; see
+      // the isHuskyGeneratedHooksDir describe block above for why this
+      // matters here (a relative core.hooksPath resolves against git's
+      // own, symlink-resolved worktree root).
+      const realTestDir = fs.realpathSync(testDir);
+      const resolved = preCommitHook.getPreCommitHookPath(testDir, 'native');
+      expect(resolved).toBe(path.join(realTestDir, subdir, '.husky', 'pre-commit'));
+      expect(resolved).not.toBe(path.join(realTestDir, '.husky', 'pre-commit'));
+    });
+
+    it('bare native install, run from the repo root, writes the nested tracked hook and never creates <cwd>/.husky', () => {
+      buildNestedHusky9Layout(testDir);
+      process.chdir(testDir);
+
+      const result = preCommitHook.install({ manager: 'native' });
+
+      expect(result.success).toBe(true);
+      const trackedPath = path.join(testDir, subdir, '.husky', 'pre-commit');
+      expect(fs.existsSync(trackedPath)).toBe(true);
+      expect(fs.readFileSync(trackedPath, 'utf-8')).toContain('scan --staged');
+      expect(result.message).toContain(`${subdir}/.husky/pre-commit`);
+      expect(fs.existsSync(path.join(testDir, '.husky'))).toBe(false);
+    });
+
+    it('drives a real commit through the nested husky 9 layout: a failing stub refuses it, with the announce line present', () => {
+      buildNestedHusky9Layout(testDir);
+      execSync('git config user.email "test@example.com"', { cwd: testDir, stdio: 'ignore' });
+      execSync('git config user.name "Test"', { cwd: testDir, stdio: 'ignore' });
+      process.chdir(testDir);
+
+      const result = preCommitHook.install({ manager: 'native' });
+      expect(result.success).toBe(true);
+
+      const { committed, output } = driveCommitWithStub(testDir, 1);
+
+      expect(committed).toBe(false);
+      expect(output).toContain('stub vault-guard ran: scan --staged');
+      expect(output).toContain('COMMIT BLOCKED');
+    });
+
+    it('uninstall targets the nested tracked hook, not <cwd>/.husky', () => {
+      buildNestedHusky9Layout(testDir);
+      process.chdir(testDir);
+      preCommitHook.install({ manager: 'native' });
+      const trackedPath = path.join(testDir, subdir, '.husky', 'pre-commit');
+      expect(fs.existsSync(trackedPath)).toBe(true);
+
+      const result = preCommitHook.uninstall({ manager: 'native' });
+
+      // uninstallHusky's own append-vs-fresh-file handling (unrelated to
+      // this fix, and already exercised by the plain husky-9 "never
+      // writes under .husky/_ on uninstall either" test above) leaves a
+      // freshly-written (non-appended) hook file in place with a "review
+      // manually" message rather than deleting it. What matters here is
+      // that native's delegation to it targets the NESTED tracked file
+      // -- succeeding, not erroring -- rather than a fixed
+      // <cwd>/.husky/pre-commit that was never written.
+      expect(result.success).toBe(true);
+      expect(fs.existsSync(path.join(testDir, '.husky'))).toBe(false);
+    });
+
+    it('idempotence: isInstalled and a second bare install both read the nested tracked hook', () => {
+      buildNestedHusky9Layout(testDir);
+      process.chdir(testDir);
+      expect(preCommitHook.install({ manager: 'native' }).success).toBe(true);
+
+      expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(true);
+
+      const second = preCommitHook.install({ manager: 'native' });
+      expect(second.success).toBe(true);
+      expect(second.message).toMatch(/already contains vault-guard/i);
     });
   });
 
