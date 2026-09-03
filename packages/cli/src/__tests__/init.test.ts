@@ -242,6 +242,118 @@ describe('vault-guard init', () => {
     expect(pin).toBe(`v${readCliVersion()}`);
   });
 
+  describe('husky-generated hooks dir (husky 9)', () => {
+    // Same husky 9 shape as the core package's fixture: core.hooksPath is
+    // the generated, gitignored .husky/_ directory; the tracked hook lives
+    // one directory up at .husky/<hookname>.
+    function buildHusky9Layout(dir: string): void {
+      const genDir = path.join(dir, '.husky', '_');
+      fs.mkdirSync(genDir, { recursive: true });
+      fs.writeFileSync(path.join(genDir, '.gitignore'), '*\n');
+      fs.writeFileSync(
+        path.join(genDir, 'h'),
+        '#!/usr/bin/env sh\n. "$(dirname "$0")/../pre-commit"\n',
+        { mode: 0o755 },
+      );
+      fs.writeFileSync(
+        path.join(genDir, 'pre-commit'),
+        '#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n',
+        { mode: 0o755 },
+      );
+      git(['config', '--local', 'core.hooksPath', '.husky/_'], dir);
+    }
+
+    it('bare init lands the vault-guard stanza in .husky/pre-commit, not .husky/_', async () => {
+      buildHusky9Layout(testDir);
+
+      const code = await initCommand({
+        cwd: testDir,
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+      expect(code).toBe(0);
+
+      const trackedPath = path.join(testDir, '.husky', 'pre-commit');
+      expect(fs.existsSync(trackedPath)).toBe(true);
+      expect(fs.readFileSync(trackedPath, 'utf-8')).toContain('scan --staged');
+    });
+
+    it('never writes under .husky/_ during init', async () => {
+      buildHusky9Layout(testDir);
+      const before = fs.readdirSync(path.join(testDir, '.husky', '_')).sort();
+
+      await initCommand({ cwd: testDir, skipConfig: true, skipWorkflow: true, skipAgentRules: true });
+
+      const after = fs.readdirSync(path.join(testDir, '.husky', '_')).sort();
+      expect(after).toEqual(before);
+    });
+
+    it('bare init reports already installed when .husky/pre-commit already has the vault-guard stanza', () => {
+      buildHusky9Layout(testDir);
+      fs.writeFileSync(
+        path.join(testDir, '.husky', 'pre-commit'),
+        '#!/usr/bin/env sh\nvault-guard scan --staged\n',
+        { mode: 0o755 },
+      );
+
+      const plan = planInit({
+        cwd: testDir,
+        manager: 'native',
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+
+      expect(plan.ok).toBe(true);
+      expect(plan.hook?.installed).toBe(true);
+      expect(plan.hook?.path).toBe(path.join(testDir, '.husky', 'pre-commit'));
+    });
+
+    it('names .husky/pre-commit as the conflict when a foreign tracked hook already exists there', async () => {
+      buildHusky9Layout(testDir);
+      fs.writeFileSync(
+        path.join(testDir, '.husky', 'pre-commit'),
+        '#!/usr/bin/env sh\necho custom-hook\n',
+        { mode: 0o755 },
+      );
+
+      const code = await initCommand({
+        cwd: testDir,
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+      expect(code).toBe(2);
+
+      const plan = planInit({
+        cwd: testDir,
+        manager: 'native',
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+      expect(
+        plan.conflicts.some(c => c.path === '.husky/pre-commit' && c.reason === 'foreign_hook'),
+      ).toBe(true);
+    });
+
+    it('dry-run reports the tracked .husky/pre-commit path, not the generated dir', () => {
+      buildHusky9Layout(testDir);
+
+      const plan = planInit({
+        cwd: testDir,
+        dryRun: true,
+        manager: 'native',
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+
+      expect(plan.hook?.path).toBe(path.join(testDir, '.husky', 'pre-commit'));
+    });
+  });
+
   it('conflicts on foreign pre-commit.cmd for native manager', () => {
     // The beforeEach hook sets a RELATIVE core.hooksPath ("hooks"), which
     // resolves against the working-tree root, not .git -- so the foreign

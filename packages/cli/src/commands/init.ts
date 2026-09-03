@@ -145,13 +145,20 @@ function foreignHookConflict(
     }
   }
 
-  const cmdPath = hook.getPreCommitCmdPath(cwd);
-  if (fs.existsSync(cmdPath)) {
-    const content = readFileIfExists(cmdPath) ?? '';
-    const isOurs =
-      content.includes('vault-guard') && content.includes('scan --staged');
-    if (content.trim().length > 0 && !isOurs) {
-      return { path: hookRelativePath(cwd, cmdPath), reason: 'foreign_hook' };
+  // The Windows .cmd companion is native-only and never written under
+  // husky's generated hooks dir (see installNative's husky delegation) --
+  // skip this check there so a stray file left inside .husky/_ can never
+  // be misread as a foreign hook.
+  const { hooksDir } = hook.getEffectiveHooksDir(cwd);
+  if (!hook.isHuskyGeneratedHooksDir(hooksDir)) {
+    const cmdPath = hook.getPreCommitCmdPath(cwd);
+    if (fs.existsSync(cmdPath)) {
+      const content = readFileIfExists(cmdPath) ?? '';
+      const isOurs =
+        content.includes('vault-guard') && content.includes('scan --staged');
+      if (content.trim().length > 0 && !isOurs) {
+        return { path: hookRelativePath(cwd, cmdPath), reason: 'foreign_hook' };
+      }
     }
   }
 
