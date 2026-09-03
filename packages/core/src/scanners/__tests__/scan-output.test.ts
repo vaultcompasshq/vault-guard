@@ -92,17 +92,27 @@ describe('scan-output formatters', () => {
     });
 
     it('formatSarif preserves paths that are outside the scan root itself', () => {
-      const results: FileScanResult[] = [{ file: outsideFile, matches: [makeMatch()] }];
+      // Weaker version of this test used a file outside BOTH cwd and
+      // scanRoot, which would also pass if the function relativized against
+      // cwd and ignored scanRoot entirely. insideFile is outside scanRoot but
+      // inside cwd, so this only passes if scanRoot -- not cwd -- is the base
+      // actually being checked against.
+      const results: FileScanResult[] = [{ file: insideFile, matches: [makeMatch()] }];
       const sarif = JSON.parse(formatSarif(results, { cwd, scanRoot: '/repo/other' }));
       const uri = sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri;
-      expect(uri).toBe(outsideFile);
+      expect(uri).toBe(insideFile);
     });
 
     it('formatSarif falls back to cwd as the base when no scan root is given', () => {
-      const results: FileScanResult[] = [{ file: outsideFile, matches: [makeMatch()] }];
+      // Weaker version of this test used outsideFile, which stays absolute
+      // and so would also pass if the fallback were literally
+      // process.cwd() (the real vault-guard checkout, unrelated to `cwd`
+      // here) rather than the actual opts.cwd value. insideFile only comes
+      // back relative if the fallback is genuinely `cwd`.
+      const results: FileScanResult[] = [{ file: insideFile, matches: [makeMatch()] }];
       const sarif = JSON.parse(formatSarif(results, { cwd }));
       const uri = sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri;
-      expect(uri).toBe(outsideFile);
+      expect(uri).toBe('src/leak.ts');
     });
 
     it('formatJson ignores the scan root and stays relative to cwd', () => {

@@ -58,6 +58,9 @@ export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {})
  * outside the cwd simply stays absolute.
  */
 export function resolveScanRoot(targetPaths: string[], cwd = process.cwd()): string {
+  // The `scan` CLI command's positional is non-variadic, so it never passes
+  // more than one path here; this branch exists for programmatic callers of
+  // this function that scan several targets at once.
   if (targetPaths.length !== 1) return cwd;
   const abs = path.resolve(cwd, targetPaths[0]);
 

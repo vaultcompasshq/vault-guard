@@ -65,7 +65,11 @@ export interface FormatOptions {
   /**
    * Base directory to render `file` paths relative to.
    * Defaults to `process.cwd()`. Files outside this root are kept absolute.
-   * Pass `null` to skip relativization entirely.
+   * Pass `null` to skip relativization for `formatJson`'s `file` paths and
+   * for SARIF when no {@link scanRoot} is given either. A `scanRoot` still
+   * relativizes SARIF `artifactLocation.uri` (and diagnostic ctx) against
+   * itself in that case, so `cwd: null` does not skip SARIF relativization
+   * on its own.
    */
   cwd?: string | null;
   /**
