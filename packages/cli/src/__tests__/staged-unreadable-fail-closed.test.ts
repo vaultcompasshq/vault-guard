@@ -19,7 +19,13 @@ import { scanCommand } from '../commands/scan';
  * The trigger used here is a genuinely unreadable index entry -- the loose
  * object backing a staged blob is removed, as a pruned or corrupted object
  * store would leave it -- rather than a mocked failure, so the test exercises
- * git's real error path.
+ * git's real error path. It is also portable: nothing here depends on POSIX
+ * file modes, so these cases run on Windows too.
+ *
+ * The companion case for a directory scan needs `chmod 0o000`, which does
+ * not deny reads on Windows, so it lives in
+ * `__tests__/integration/directory-scan-unreadable.test.ts` -- the directory
+ * `pnpm test:windows` excludes.
  */
 describe('scan --staged fails closed on an unreadable staged file', () => {
   const SECRET =
@@ -152,74 +158,5 @@ describe('scan --staged fails closed on an unreadable staged file', () => {
       ]),
     );
     expect(code).toBe(2);
-  });
-});
-
-/**
- * The scope decision, pinned deliberately.
- *
- * A directory walk is an OPEN set discovered by the scanner, not a closed
- * list of what is about to be committed. Unreadable entries in it are
- * ordinary on a real developer machine (root-owned caches, half-removed
- * node_modules, sockets, other users' files), and making them fatal would
- * turn `vault-guard scan .` into a command that refuses to run for reasons
- * the user cannot fix -- whose predictable outcome is that people stop
- * running it, which is strictly worse for the thing this tool defends. So
- * the directory path keeps DIAGNOSING: the unreadable file is reported and
- * counted, and the gate's exit code still reflects the findings only.
- *
- * The fail-closed promise is load-bearing on the staged path, and that is
- * where it is enforced.
- */
-describe('directory scan keeps diagnosing an unreadable file', () => {
-  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-  let dir: string;
-  let locked: string;
-  let stdout: string[];
-  const originalCwd = process.cwd();
-
-  beforeEach(() => {
-    dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vg-dir-unreadable-')));
-    locked = path.join(dir, 'locked.env');
-    fs.writeFileSync(path.join(dir, 'clean.ts'), 'export const x = 1;\n');
-    fs.writeFileSync(locked, 'SECRET=sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n');
-    if (!isRoot) fs.chmodSync(locked, 0o000);
-    process.chdir(dir);
-
-    stdout = [];
-    jest.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
-      stdout.push(args.map(String).join(' '));
-    });
-    jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    jest.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
-      stdout.push(String(chunk));
-      return true;
-    });
-    jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
-  });
-
-  afterEach(() => {
-    jest.restoreAllMocks();
-    process.chdir(originalCwd);
-    if (!isRoot) fs.chmodSync(locked, 0o644);
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
-
-  it('does not fail the gate, and counts the file it could not read', async () => {
-    if (isRoot) return; // root reads the 0o000 file, so there is nothing to diagnose
-
-    const code = await scanCommand('.', 'json', false);
-
-    const body = JSON.parse(stdout.join('\n').trim()) as {
-      run?: { unscannable_files?: number };
-      diagnostics?: Array<{ code: string; severity: string }>;
-    };
-    expect(body.run?.unscannable_files).toBe(1);
-    expect(body.diagnostics).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ code: 'file.read_error', severity: 'error' }),
-      ]),
-    );
-    expect(code).toBe(0);
   });
 });
