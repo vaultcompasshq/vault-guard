@@ -92,10 +92,29 @@ a gitlink with no blob behind it, so `--ignore-submodules=all` excludes it
 from the staged listing; the submodule's own contents are that repository's
 own gate to run.
 
-Every path a staged run reports, ignore-matches or fingerprints is resolved
-against the **repository root**, not the caller's working directory, so a
-hook invoked from a subdirectory cannot publish absolute machine paths, and
-cannot silently reach a different verdict from the same index.
+#### A staged run is anchored at the repository root
+
+A staged run resolves **everything** from the repository root, not from the
+directory it was invoked in: the `.vault-guard.json` it loads, the
+`.vault-guard.baseline.json` it consults, the `ignore` patterns it matches,
+the fingerprints it computes, and every path it prints or serializes. Two
+consequences follow, and both are intended:
+
+- The same index gives the same verdict from any directory. A hook invoked
+  from a subdirectory cannot publish absolute machine paths, cannot apply an
+  `ignore` rule the root-level run would not have applied, and cannot
+  produce a baseline fingerprint that only matches on one machine's layout.
+- **A config or baseline that lives only in a subdirectory is not consulted
+  on a staged run.** Only the repository root and above are searched. This
+  is deliberate: the staged file set is repository-wide, so the rules
+  applied to it must be repository-wide too. A per-directory config cannot
+  govern files outside its own directory, and loading one that then matched
+  against the root would make `ignore.paths: ["fixtures/**"]` mean
+  `<root>/fixtures/` to the matcher and `sub/fixtures/` to whoever wrote it,
+  silently exempting staged files nobody exempted.
+
+A **directory** scan is unaffected and still loads its config from the
+directory it was pointed at, which is also the tree it walks.
 
 A **directory** scan deliberately does not fail on the same condition. Its
 file set is discovered by walking a tree rather than declared by git, and

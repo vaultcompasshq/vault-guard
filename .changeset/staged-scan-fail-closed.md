@@ -45,9 +45,23 @@ A staged **submodule** pointer bump no longer blocks the commit. Its index
 entry is a gitlink rather than a blob, so there is no content to scan;
 `--ignore-submodules=all` drops it from the staged listing.
 
-Staged paths are now rendered, serialized, ignore-matched and fingerprinted
-against the **repository root** rather than the caller's working directory.
-Running the hook from a subdirectory previously emitted absolute machine
-paths in JSON `file` and SARIF `uri` for anything above that directory, and
-made both `ignore` matching and baseline fingerprints depend on where the
-hook was invoked from.
+A staged run is now anchored entirely at the **repository root** rather than
+at the caller's working directory: the config it loads, the baseline it
+consults, the `ignore` patterns it matches, the fingerprints it computes and
+every path it prints or serializes. Running the hook from a subdirectory
+previously emitted absolute machine paths in JSON `file` and SARIF `uri` for
+anything above that directory, applied `ignore` rules a root-level run would
+not have applied, and produced baseline fingerprints that only matched on one
+machine's layout.
+
+**Behaviour change for per-directory configs.** A `.vault-guard.json` or
+`.vault-guard.baseline.json` that lives only in a SUBDIRECTORY is no longer
+consulted on a staged run; only the repository root and above are searched.
+The staged file set is repository-wide, so the rules applied to it have to be
+repository-wide too. Loading a nested config and then matching it against the
+root was the bug: `ignore.paths: ["fixtures/**"]` in `sub/.vault-guard.json`
+meant `<root>/fixtures/` to the matcher and `sub/fixtures/` to whoever wrote
+it, so a staged secret at the root was silently exempted while the directory
+the author meant to exempt was scanned. Move such a config to the repository
+root to keep it in effect for `--staged`. A directory scan is unaffected and
+still loads its config from the directory it was pointed at.

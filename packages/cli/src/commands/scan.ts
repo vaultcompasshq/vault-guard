@@ -45,9 +45,42 @@ export async function scanCommand(
   const targetPaths = Array.isArray(targetPath) ? targetPath : [targetPath];
   const targetLabel = targetPaths.length === 1 ? targetPaths[0] : `${targetPaths.length} paths`;
 
+  // Base for every path this run renders, serializes, ignore-matches and
+  // fingerprints, and the directory its config is loaded from.
+  //
+  // A directory scan is anchored at the cwd, which is also the directory it
+  // walked. A `--staged` run is anchored at the REPOSITORY ROOT: its file
+  // list comes from the index and spans the whole worktree, so when the hook
+  // runs from a subdirectory some staged files sit above the cwd. Anchored
+  // at the cwd those fall out of `path.relative` and come back absolute --
+  // publishing the developer's home directory and username into JSON and
+  // into SARIF uris that still claim `uriBaseId: "%SRCROOT%"` -- and both
+  // `ignore` matching and baseline fingerprints silently become functions of
+  // wherever the caller happened to be standing.
+  //
+  // Resolved HERE, before loadConfig, because the config has to come from
+  // the same place its `ignore` patterns will be matched against. Loading
+  // `sub/.vault-guard.json` and then matching its `ignore.paths` against the
+  // root makes `fixtures/**` mean `<root>/fixtures/` to the matcher and
+  // `sub/fixtures/` to whoever wrote it, which exempts staged files nobody
+  // exempted.
+  let outputBase = cwd;
+  if (staged) {
+    try {
+      outputBase = getGitWorkTreeRoot(cwd);
+    } catch {
+      // Deliberately not diagnosed here, and not swallowed either: the
+      // staged branch below runs isInsideGitWorkTree and then
+      // getGitStagedFilePaths, which produce the right message and a
+      // non-zero exit for exactly these failures. Only a SUCCESSFUL lookup
+      // is memoised, so that call genuinely re-runs and genuinely throws.
+      outputBase = cwd;
+    }
+  }
+
   let config;
   try {
-    config = loadConfig(cwd);
+    config = loadConfig(outputBase);
   } catch (e) {
     if (e instanceof ConfigError) {
       console.error(chalk.red('❌ Config error:'), chalk.white(e.message));
@@ -129,18 +162,6 @@ export async function scanCommand(
   // Files the scanner reached but could not read. On the staged path this is
   // fatal (see below); on a directory scan it is reported but not fatal.
   const unreadable: UnreadableFile[] = [];
-
-  // Base for every path this run renders, serializes, ignore-matches and
-  // fingerprints. A directory scan is anchored at the cwd, which is also the
-  // directory it walked. A `--staged` run is anchored at the REPOSITORY ROOT:
-  // its file list comes from the index and spans the whole worktree, so when
-  // the hook runs from a subdirectory some staged files sit above the cwd.
-  // Anchored at the cwd those fall out of `path.relative` and come back
-  // absolute -- publishing the developer's home directory and username into
-  // JSON and into SARIF uris that still claim `uriBaseId: "%SRCROOT%"` -- and
-  // both `ignore` matching and baseline fingerprints silently become
-  // functions of wherever the caller happened to be standing.
-  let outputBase = cwd;
   const t0 = Date.now();
 
   try {
@@ -154,9 +175,9 @@ export async function scanCommand(
 
       let stagedFiles: string[];
       try {
-        // Memoised, so this costs no extra git process beyond the one
-        // getGitStagedFilePaths already makes.
-        outputBase = getGitWorkTreeRoot(cwd);
+        // outputBase was resolved above, before the config load. If that
+        // lookup failed it was left as `cwd` and NOT reported; this call
+        // repeats it internally and is where the failure surfaces.
         stagedFiles = getGitStagedFilePaths(cwd);
       } catch (e) {
         if (e instanceof GitError) {

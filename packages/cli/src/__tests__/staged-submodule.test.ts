@@ -26,6 +26,7 @@ describe('scan --staged ignores a staged submodule pointer', () => {
 
   let repo: string;
   let stdout: string[];
+  let stderr: string[];
   const originalCwd = process.cwd();
 
   const stageGitlink = (at: string): void => {
@@ -48,15 +49,24 @@ describe('scan --staged ignores a staged submodule pointer', () => {
     process.chdir(repo);
 
     stdout = [];
+    stderr = [];
     jest.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
       stdout.push(args.map(String).join(' '));
     });
-    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    // Captured, not discarded: the incomplete-scan report writes through
+    // console.error, so asserting its absence against stdout alone would be
+    // an assertion that can never fail.
+    jest.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      stderr.push(args.map(String).join(' '));
+    });
     jest.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
       stdout.push(String(chunk));
       return true;
     });
-    jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    jest.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderr.push(String(chunk));
+      return true;
+    });
   });
 
   afterEach(() => {
@@ -70,7 +80,11 @@ describe('scan --staged ignores a staged submodule pointer', () => {
 
     const code = await scanCommand('.', 'text', true);
 
-    expect(stdout.join('\n')).not.toMatch(/INCOMPLETE/);
+    // The incomplete-scan report goes to stderr, so that is where its
+    // absence has to be asserted. A gitlink must produce no warning of any
+    // kind either: it is not a file that failed to scan, it is not a file.
+    expect(stderr.join('\n')).not.toMatch(/INCOMPLETE/);
+    expect(stderr.join('\n')).not.toMatch(/warning/i);
     expect(code).toBe(0);
   });
 
