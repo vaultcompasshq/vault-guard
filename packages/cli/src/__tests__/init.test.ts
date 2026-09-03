@@ -150,6 +150,38 @@ describe('vault-guard init', () => {
     expect(plan.actions.map(a => a.path)).not.toContain('.vault-guard/mcp-snippet.json');
   });
 
+  it('hook-install action carries a repo-relative path, consistent with create actions', () => {
+    // Review item 4 (cosmetic): the hook-install action used to carry the
+    // ABSOLUTE hook path while every 'create' action carries a
+    // repo-relative one (e.g. '.vault-guard.json') -- inconsistent within
+    // the same actions array, and it leaks the host's temp-dir/home-dir
+    // layout into --json output for no reason.
+    const plan = planInit({ cwd: testDir });
+
+    const hookInstallAction = plan.actions.find(a => a.kind === 'hook-install');
+    expect(hookInstallAction).toBeDefined();
+    expect(path.isAbsolute(hookInstallAction!.path)).toBe(false);
+    expect(hookInstallAction!.path.startsWith(testDir)).toBe(false);
+
+    const createAction = plan.actions.find(a => a.kind === 'create');
+    expect(createAction).toBeDefined();
+    expect(path.isAbsolute(createAction!.path)).toBe(false);
+  });
+
+  it('the already-installed hook skip action also carries a repo-relative path', async () => {
+    expect(await initCommand({ cwd: testDir })).toBe(0);
+
+    const plan = planInit({ cwd: testDir });
+    expect(plan.alreadyInitialized).toBe(true);
+
+    const hookSkipAction = plan.actions.find(
+      a => a.kind === 'skip' && a.detail === 'hook already installed',
+    );
+    expect(hookSkipAction).toBeDefined();
+    expect(path.isAbsolute(hookSkipAction!.path)).toBe(false);
+    expect(hookSkipAction!.path.startsWith(testDir)).toBe(false);
+  });
+
   it('revertInit fails without manifest', () => {
     const result = revertInit({ cwd: testDir });
     expect(result.ok).toBe(false);
@@ -206,6 +238,19 @@ describe('vault-guard init', () => {
     expect(plan.advisories.find(a => a.manager === 'husky')?.guidance).toMatch(/husky/i);
   });
 
+  it('the husky advisory no longer claims native hooks may not run: that was the bug this branch fixed', () => {
+    // The native manager now detects husky's generated hooksPath shape
+    // and installs into the tracked file automatically -- the old
+    // guidance describing that as a limitation is exactly the bug this
+    // branch fixes, and would mislead a user who already has the fix.
+    fs.mkdirSync(path.join(testDir, '.husky'), { recursive: true });
+    const plan = planInit({ cwd: testDir, manager: 'native' });
+    const guidance = plan.advisories.find(a => a.manager === 'husky')?.guidance;
+    expect(guidance).toBeDefined();
+    expect(guidance).not.toMatch(/may not run/i);
+    expect(guidance).toMatch(/automatic/i);
+  });
+
   it('does not advise husky when manager is husky', () => {
     fs.mkdirSync(path.join(testDir, '.husky'), { recursive: true });
     const plan = planInit({ cwd: testDir, manager: 'husky', skipHook: true });
@@ -240,6 +285,291 @@ describe('vault-guard init', () => {
     // changeset in this repo bumping package.json to 1.4.2) can never make
     // this test stale — both sides read the same file at test time.
     expect(pin).toBe(`v${readCliVersion()}`);
+  });
+
+  describe('husky-generated hooks dir (husky 9)', () => {
+    // Same husky 9 shape as the core package's fixture: core.hooksPath is
+    // the generated, gitignored .husky/_ directory; the tracked hook lives
+    // one directory up at .husky/<hookname>.
+    function buildHusky9Layout(dir: string, options: { absoluteHooksPath?: boolean } = {}): void {
+      const genDir = path.join(dir, '.husky', '_');
+      fs.mkdirSync(genDir, { recursive: true });
+      fs.writeFileSync(path.join(genDir, '.gitignore'), '*\n');
+      fs.writeFileSync(
+        path.join(genDir, 'h'),
+        '#!/usr/bin/env sh\n. "$(dirname "$0")/../pre-commit"\n',
+        { mode: 0o755 },
+      );
+      fs.writeFileSync(
+        path.join(genDir, 'pre-commit'),
+        '#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n',
+        { mode: 0o755 },
+      );
+      // Absolute core.hooksPath is used exactly as given (no
+      // git-rev-parse-based worktree-root resolution), so a test that
+      // compares the RELATIVE conflict path string stays clean even on a
+      // host (macOS) where the OS temp dir is itself behind a symlink;
+      // see the "false positives" describe block above for the same
+      // workaround and why it is needed.
+      const hooksPathValue = options.absoluteHooksPath ? genDir : '.husky/_';
+      git(['config', '--local', 'core.hooksPath', hooksPathValue], dir);
+    }
+
+    it('bare init lands the vault-guard stanza in .husky/pre-commit, not .husky/_', async () => {
+      buildHusky9Layout(testDir);
+
+      const code = await initCommand({
+        cwd: testDir,
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+      expect(code).toBe(0);
+
+      const trackedPath = path.join(testDir, '.husky', 'pre-commit');
+      expect(fs.existsSync(trackedPath)).toBe(true);
+      expect(fs.readFileSync(trackedPath, 'utf-8')).toContain('scan --staged');
+    });
+
+    it('never writes under .husky/_ during init', async () => {
+      buildHusky9Layout(testDir);
+      const before = fs.readdirSync(path.join(testDir, '.husky', '_')).sort();
+
+      await initCommand({ cwd: testDir, skipConfig: true, skipWorkflow: true, skipAgentRules: true });
+
+      const after = fs.readdirSync(path.join(testDir, '.husky', '_')).sort();
+      expect(after).toEqual(before);
+    });
+
+    it('bare init reports already installed when .husky/pre-commit already has the vault-guard stanza', () => {
+      buildHusky9Layout(testDir);
+      fs.writeFileSync(
+        path.join(testDir, '.husky', 'pre-commit'),
+        '#!/usr/bin/env sh\nvault-guard scan --staged\n',
+        { mode: 0o755 },
+      );
+
+      const plan = planInit({
+        cwd: testDir,
+        manager: 'native',
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+
+      expect(plan.ok).toBe(true);
+      expect(plan.hook?.installed).toBe(true);
+      // realpathSync normalizes macOS's /var -> /private/var symlink:
+      // plan.hook.path is the ABSOLUTE hook path (unlike conflict paths,
+      // never relativized), resolved against git's own (symlink-resolved)
+      // worktree root for this relative core.hooksPath.
+      expect(plan.hook?.path).toBe(path.join(fs.realpathSync(testDir), '.husky', 'pre-commit'));
+    });
+
+    it('names .husky/pre-commit as the conflict when a foreign tracked hook already exists there', async () => {
+      buildHusky9Layout(testDir, { absoluteHooksPath: true });
+      fs.writeFileSync(
+        path.join(testDir, '.husky', 'pre-commit'),
+        '#!/usr/bin/env sh\necho custom-hook\n',
+        { mode: 0o755 },
+      );
+
+      const code = await initCommand({
+        cwd: testDir,
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+      expect(code).toBe(2);
+
+      const plan = planInit({
+        cwd: testDir,
+        manager: 'native',
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+      expect(
+        plan.conflicts.some(c => c.path === '.husky/pre-commit' && c.reason === 'foreign_hook'),
+      ).toBe(true);
+    });
+
+    it('dry-run reports the tracked .husky/pre-commit path, not the generated dir', () => {
+      buildHusky9Layout(testDir);
+
+      const plan = planInit({
+        cwd: testDir,
+        dryRun: true,
+        manager: 'native',
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+
+      expect(plan.hook?.path).toBe(path.join(fs.realpathSync(testDir), '.husky', 'pre-commit'));
+    });
+  });
+
+  describe('husky 9 with a nested core.hooksPath (monorepo package not at git root)', () => {
+    // BLOCKING finding from independent review: the ordinary monorepo
+    // shape has the package that owns husky's "prepare" script somewhere
+    // other than the git root, e.g. packages/app. core.hooksPath (set
+    // repo-wide, from the root) then points at "packages/app/.husky/_",
+    // nested below cwd, and husky's own `h` shim resolves the tracked
+    // hook it actually executes as the PARENT of that generated `_`
+    // directory: packages/app/.husky/pre-commit, never
+    // <cwd>/.husky/pre-commit. init must name and target the nested
+    // path, never a fixed <cwd>/.husky/pre-commit.
+    const subdir = 'packages/app';
+
+    function buildNestedHusky9Layout(
+      rootDir: string,
+      options: { absoluteHooksPath?: boolean } = {},
+    ): void {
+      const genDir = path.join(rootDir, subdir, '.husky', '_');
+      fs.mkdirSync(genDir, { recursive: true });
+      fs.writeFileSync(path.join(genDir, '.gitignore'), '*\n');
+      fs.writeFileSync(
+        path.join(genDir, 'h'),
+        '#!/usr/bin/env sh\n. "$(dirname "$0")/../pre-commit"\n',
+        { mode: 0o755 },
+      );
+      fs.writeFileSync(
+        path.join(genDir, 'pre-commit'),
+        '#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n',
+        { mode: 0o755 },
+      );
+      // Absolute core.hooksPath is used exactly as given (no
+      // git-rev-parse-based worktree-root resolution), so a test that
+      // compares the RELATIVE conflict path string stays clean even on a
+      // host (macOS) where the OS temp dir is itself behind a symlink.
+      const hooksPathValue = options.absoluteHooksPath ? genDir : `${subdir}/.husky/_`;
+      git(['config', '--local', 'core.hooksPath', hooksPathValue], rootDir);
+    }
+
+    it('bare init lands the vault-guard stanza at the nested tracked hook, not <cwd>/.husky', async () => {
+      buildNestedHusky9Layout(testDir);
+
+      const code = await initCommand({
+        cwd: testDir,
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+      expect(code).toBe(0);
+
+      const trackedPath = path.join(testDir, subdir, '.husky', 'pre-commit');
+      expect(fs.existsSync(trackedPath)).toBe(true);
+      expect(fs.readFileSync(trackedPath, 'utf-8')).toContain('scan --staged');
+      expect(fs.existsSync(path.join(testDir, '.husky'))).toBe(false);
+    });
+
+    it('names the nested tracked hook, not <cwd>/.husky/pre-commit, as the conflict when a foreign hook already exists there', async () => {
+      buildNestedHusky9Layout(testDir, { absoluteHooksPath: true });
+      const trackedPath = path.join(testDir, subdir, '.husky', 'pre-commit');
+      fs.writeFileSync(trackedPath, '#!/usr/bin/env sh\necho custom-hook\n', { mode: 0o755 });
+
+      const code = await initCommand({
+        cwd: testDir,
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+      expect(code).toBe(2);
+
+      const plan = planInit({
+        cwd: testDir,
+        manager: 'native',
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+      expect(
+        plan.conflicts.some(
+          c => c.path === `${subdir}/.husky/pre-commit` && c.reason === 'foreign_hook',
+        ),
+      ).toBe(true);
+      expect(plan.conflicts.every(c => c.path !== '.husky/pre-commit')).toBe(true);
+    });
+  });
+
+  describe('false positives that must not redirect to .husky/pre-commit', () => {
+    // Amendment: only directory shape (basename `_` under a directory
+    // named `.husky`) may trigger the redirect. These two shapes each
+    // defeat the old (now removed) h-shim / dispatcher-content signals
+    // while failing the shape check -- init must refuse the foreign hook
+    // at its REAL location, never redirect it to .husky/pre-commit, and
+    // never create a .husky directory.
+
+    it('refuses a foreign hook at .githooks/pre-commit, the real location, when an unrelated file named h sits beside it', async () => {
+      const hooksDirAbs = path.join(testDir, '.githooks');
+      fs.mkdirSync(hooksDirAbs, { recursive: true });
+      fs.writeFileSync(path.join(hooksDirAbs, 'h'), '#!/usr/bin/env sh\necho unrelated\n');
+      fs.writeFileSync(path.join(hooksDirAbs, 'pre-commit'), '#!/bin/sh\necho custom-hook\n', {
+        mode: 0o755,
+      });
+      // Absolute core.hooksPath is used exactly as given (no
+      // git-rev-parse-based worktree-root resolution), so the printed
+      // relative conflict path stays a clean .githooks/pre-commit even on
+      // a host (macOS) where the OS temp dir is itself behind a symlink.
+      git(['config', '--local', 'core.hooksPath', hooksDirAbs], testDir);
+
+      const code = await initCommand({
+        cwd: testDir,
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+
+      expect(code).toBe(2);
+      expect(fs.existsSync(path.join(testDir, '.husky'))).toBe(false);
+
+      const plan = planInit({
+        cwd: testDir,
+        manager: 'native',
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+      expect(
+        plan.conflicts.some(c => c.path === '.githooks/pre-commit' && c.reason === 'foreign_hook'),
+      ).toBe(true);
+      expect(plan.conflicts.every(c => c.path !== '.husky/pre-commit')).toBe(true);
+    });
+
+    it('refuses a dispatcher-shaped foreign hook at .git/hooks/pre-commit, the real default location, with no core.hooksPath set', async () => {
+      git(['config', '--local', '--unset', 'core.hooksPath'], testDir);
+      const hooksDirAbs = new PreCommitHook().getEffectiveHooksDir(testDir).hooksDir;
+      fs.mkdirSync(hooksDirAbs, { recursive: true });
+      fs.writeFileSync(
+        path.join(hooksDirAbs, 'pre-commit'),
+        '#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n',
+        { mode: 0o755 },
+      );
+
+      const code = await initCommand({
+        cwd: testDir,
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+
+      expect(code).toBe(2);
+      expect(fs.existsSync(path.join(testDir, '.husky'))).toBe(false);
+
+      const plan = planInit({
+        cwd: testDir,
+        manager: 'native',
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+      expect(
+        plan.conflicts.some(
+          c => c.path === '.git/hooks/pre-commit' && c.reason === 'foreign_hook',
+        ),
+      ).toBe(true);
+    });
   });
 
   it('conflicts on foreign pre-commit.cmd for native manager', () => {

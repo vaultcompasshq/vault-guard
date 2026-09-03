@@ -145,11 +145,15 @@ function foreignHookConflict(
     }
   }
 
+  // The Windows .cmd companion is native-only and never written under
+  // husky's generated hooks dir (see installNative's husky delegation).
+  // getPreCommitCmdPath itself returns undefined there now, so a stray
+  // file left inside .husky/_ can never be misread as a foreign hook --
+  // no separate isHuskyGeneratedHooksDir guard needed here.
   const cmdPath = hook.getPreCommitCmdPath(cwd);
-  if (fs.existsSync(cmdPath)) {
+  if (cmdPath && fs.existsSync(cmdPath)) {
     const content = readFileIfExists(cmdPath) ?? '';
-    const isOurs =
-      content.includes('vault-guard') && content.includes('scan --staged');
+    const isOurs = content.includes('vault-guard') && content.includes('scan --staged');
     if (content.trim().length > 0 && !isOurs) {
       return { path: hookRelativePath(cwd, cmdPath), reason: 'foreign_hook' };
     }
@@ -168,7 +172,7 @@ function detectOtherHookManagers(cwd: string, selected: HookManager): InitAdviso
       manager: 'husky',
       path: '.husky/',
       guidance:
-        'Husky detected. Prefer `vault-guard init --manager husky` or `vault-guard install-hook --manager husky` so the scan runs from .husky/pre-commit. Native hooks may not run when husky owns core.hooksPath.',
+        'Husky detected. If core.hooksPath points at husky\'s generated directory, the default native manager already installs into the tracked pre-commit file automatically -- no --manager husky needed. Pass --manager husky only if you want vault-guard to manage that file directly regardless of core.hooksPath.',
     });
   }
 
@@ -274,12 +278,19 @@ export function planInit(options: InitOptions = {}): InitResult {
       } else {
         const hook = new PreCommitHook();
         const hookPath = hook.getPreCommitHookPath(cwd, manager);
+        // hookState.path stays ABSOLUTE (applyInit, hookMeta, and callers
+        // of planInit's `hook` field all rely on that); only the actions
+        // array entry is repo-relative, matching every 'create' action.
         if (hook.isInstalled({ cwd, manager })) {
           hookState = { manager, path: hookPath, installed: true };
-          actions.push({ kind: 'skip', path: hookPath, detail: 'hook already installed' });
+          actions.push({
+            kind: 'skip',
+            path: hookRelativePath(cwd, hookPath),
+            detail: 'hook already installed',
+          });
         } else {
           hookState = { manager, path: hookPath, installed: false };
-          actions.push({ kind: 'hook-install', path: hookPath, detail: manager });
+          actions.push({ kind: 'hook-install', path: hookRelativePath(cwd, hookPath), detail: manager });
         }
       }
     }
@@ -388,7 +399,7 @@ export function applyInit(plan: InitResult, options: InitOptions = {}): InitResu
             ...plan.actions,
             {
               kind: 'skip',
-              path: plan.hook.path ?? 'pre-commit',
+              path: plan.hook.path ? hookRelativePath(cwd, plan.hook.path) : 'pre-commit',
               detail: `hook install failed: ${result.message}`,
             },
           ],
