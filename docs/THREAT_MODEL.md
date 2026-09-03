@@ -65,7 +65,32 @@ Vault Guard does not, and will not, claim to defend against:
 | `.vault-guard.json`     | ReDoS via `extra_patterns`                          | `validateRegexSafety` (length cap 256, quantifier-density cap, shape check). |
 | `.vault-guard.json`     | Cross-trust load from a parent directory            | `loadConfig` walks only between `startDir` and the nearest `.git` root.       |
 | `.vault-guard.json`     | Silent default fallback on parse error              | `loadConfig` throws `ConfigError`; CLI exits non-zero with the parser message. |
+| Repository git config   | `diff.relative` shrinks the staged file list        | Config forced off per invocation (`git -c diff.relative=false ...`); staged paths resolved against the worktree root, never the caller's cwd. |
+| Git index               | A staged blob the scanner cannot read               | Counted in `run.unscannable_files`; `--staged` exits **2** and prints no success line (see "Fail-closed behaviour"). |
 | File contents (matched) | Token-leak surface on output                        | `maskValue` reduces to 4-char prefix + length tag; SARIF message omits value. |
+
+#### Fail-closed behaviour
+
+`vault-guard scan --staged` is the pre-commit gate, and its file list is a
+closed enumeration of exactly what is about to be committed. If any staged
+file cannot be examined, the run is **incomplete**, not clean:
+
+- exit code **2** (the same "cannot vouch for this result" code used when
+  `git diff --cached` itself fails), never 0;
+- no `✅ SUCCESS` line in text output;
+- `run.unscannable_files` in JSON and in the SARIF run properties, alongside
+  an error-severity `file.read_error` diagnostic (a SARIF driver
+  notification at level `error`) naming the file and the reason.
+
+A **directory** scan deliberately does not fail on the same condition. Its
+file set is discovered by walking a tree rather than declared by git, and
+unreadable entries in it are ordinary on a real machine (root-owned caches,
+sockets, other users' files). It reports them the same way (the diagnostic
+and the `unscannable_files` count are emitted identically) but the exit code
+still reflects findings only. Making a directory walk unrunnable for reasons
+the user cannot fix would push people to stop running it, which protects
+nothing. Integrators who want the stricter rule on a directory scan can gate
+on `run.unscannable_files` themselves.
 
 ### `vault-guard install-hook`
 

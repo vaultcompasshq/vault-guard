@@ -22,6 +22,7 @@ import {
   formatJson,
   formatSarif,
   resolveScanRoot,
+  type UnreadableFile,
 } from '../utils/scan-utils';
 import type { Diagnostic } from '@vaultcompass/vault-guard-core';
 
@@ -124,6 +125,9 @@ export async function scanCommand(
   }
 
   const stats = { filesScanned: 0, bytesScanned: 0 };
+  // Files the scanner reached but could not read. On the staged path this is
+  // fatal (see below); on a directory scan it is reported but not fatal.
+  const unreadable: UnreadableFile[] = [];
   const t0 = Date.now();
 
   try {
@@ -166,6 +170,7 @@ export async function scanCommand(
         progress: format === 'text',
         bus,
         stats,
+        unreadable,
         configIgnorePatterns,
         fromGitIndex: true,
         cwd,
@@ -177,6 +182,7 @@ export async function scanCommand(
         progress: format === 'text',
         bus,
         stats,
+        unreadable,
         configIgnorePatterns,
       });
     }
@@ -219,7 +225,25 @@ export async function scanCommand(
       fail_on: failOn,
       blocking_matches: blocking,
       ...(baselineSuppressed > 0 ? { baseline_suppressed: baselineSuppressed } : {}),
+      ...(unreadable.length > 0 ? { unscannable_files: unreadable.length } : {}),
     };
+
+    // A staged file vault-guard could not read is a file it did not check,
+    // and the staged list is exactly what is about to be committed -- so the
+    // run cannot claim to have cleared the commit. This is the one place the
+    // fail-closed promise is load-bearing, and it is enforced here rather
+    // than left to a "N warning(s)" line the caller has to notice.
+    //
+    // A directory scan deliberately does NOT do this: its file set is
+    // discovered rather than declared, and unreadable entries in it are
+    // ordinary (root-owned caches, sockets, other users' files). Failing
+    // there would make the command unrunnable for reasons the user cannot
+    // fix, and a gate people stop running protects nothing.
+    const stagedScanIncomplete = staged && unreadable.length > 0;
+    // Exit 2 is already this CLI's "cannot vouch for the result" code -- the
+    // GitError branch above uses it for the same reason. Exit 1 means
+    // "scanned fine, found something", which this run did not establish.
+    const INCOMPLETE_SCAN_EXIT = 2;
 
     // Upgrade notice for the 1.4.0 default change. Before 1.4.0 any finding
     // failed the scan; now the implicit default is `medium`. When that
@@ -242,7 +266,11 @@ export async function scanCommand(
     }
 
     if (format === 'json') {
+      // The document is still emitted: CI wants the artifact even when the
+      // run failed, and `run.unscannable_files` plus the error-severity
+      // `file.read_error` diagnostics inside it say why.
       process.stdout.write(formatJson(results, { diagnostics, run }) + '\n');
+      if (stagedScanIncomplete) return INCOMPLETE_SCAN_EXIT;
       return blocking === 0 ? 0 : 1;
     }
 
@@ -251,6 +279,7 @@ export async function scanCommand(
       // the repo checkout, so the cwd is the right base there.
       const scanRoot = staged ? cwd : resolveScanRoot(targetPaths, cwd);
       process.stdout.write(formatSarif(results, { diagnostics, run, scanRoot }) + '\n');
+      if (stagedScanIncomplete) return INCOMPLETE_SCAN_EXIT;
       return blocking === 0 ? 0 : 1;
     }
 
@@ -259,6 +288,32 @@ export async function scanCommand(
       console.error(
         chalk.yellow(`⚠️  ${diagnostics.length} warning(s) — run with --json for details`),
       );
+    }
+
+    if (stagedScanIncomplete) {
+      console.error(
+        chalk.red.bold('❌ INCOMPLETE:'),
+        chalk.white(
+          `${unreadable.length} staged file(s) could not be read and were not scanned\n`,
+        ),
+      );
+      for (const { file, reason } of unreadable) {
+        console.error(`  ${chalk.cyan(file)}`);
+        console.error(`    ${chalk.gray(reason)}`);
+      }
+      // Anything that DID scan is still worth showing; the reader needs both
+      // "here is what I found" and "here is what I never looked at".
+      if (results.length > 0) {
+        console.error('');
+        displayScanResults(results, blocking);
+      }
+      console.error(
+        chalk.gray(
+          '\n   vault-guard could not examine every staged file.\n' +
+            '   Refusing to produce a ✅ result that may be incorrect.\n',
+        ),
+      );
+      return INCOMPLETE_SCAN_EXIT;
     }
 
     if (results.length === 0) {

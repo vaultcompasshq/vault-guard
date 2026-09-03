@@ -96,6 +96,14 @@ export interface ScanTelemetryStats {
   bytesScanned: number;
 }
 
+/** One file the scanner reached but could not read, so never examined. */
+export interface UnreadableFile {
+  /** cwd-relative where possible, for display and structured output. */
+  file: string;
+  /** Why the read failed, as reported by the underlying error. */
+  reason: string;
+}
+
 export interface ScanOptions {
   verbose?: boolean;
   maxSize?: number;
@@ -104,6 +112,18 @@ export interface ScanOptions {
   concurrency?: number;
   bus?: DiagnosticBus;
   stats?: ScanTelemetryStats;
+  /**
+   * Filled with one entry per file that was reached but could not be read,
+   * so its contents were never examined.
+   *
+   * This is deliberately separate from the `file.read_error` diagnostic that
+   * describes the same event. A diagnostic is advisory and gets summarised as
+   * "N warning(s)"; this list is what the caller uses to decide whether the
+   * run may claim success at all. `scanCommand` treats a non-empty list as
+   * fatal on the `--staged` path and as reportable-but-not-fatal on a
+   * directory scan.
+   */
+  unreadable?: UnreadableFile[];
   /**
    * Combined gitignore-style patterns from `config.ignore.paths` and
    * `config.ignore.patterns`. Applied to every file before scanning so that
@@ -161,7 +181,11 @@ export async function scanFileListAsync(
         const rel = path.relative(cwd, file).split(path.sep).join('/');
         if (skipBinary && isBinaryFile(file)) return;
 
-        const content = readGitIndexFile(cwd, rel);
+        // Pass the ABSOLUTE path. `git show :<path>` resolves against the
+        // worktree root, not the process cwd, and `rel` is cwd-relative --
+        // handing it over is what broke every staged scan launched from a
+        // subdirectory. `rel` stays for display only.
+        const content = readGitIndexFile(cwd, file);
         if (skipBinary && content.includes('\0')) return;
 
         const byteLen = Buffer.byteLength(content, 'utf-8');
@@ -215,6 +239,10 @@ export async function scanFileListAsync(
         results.push({ file, matches });
       }
     } catch (error) {
+      options.unreadable?.push({
+        file: path.relative(cwd, file),
+        reason: String(error),
+      });
       if (options.bus) {
         options.bus.add({
           code: 'file.read_error',
@@ -333,6 +361,10 @@ export async function scanFilesAsync(
           results.push({ file, matches });
         }
       } catch (error) {
+        options.unreadable?.push({
+          file: path.relative(process.cwd(), file),
+          reason: String(error),
+        });
         if (options.bus) {
           options.bus.add({
             code: 'file.read_error',
@@ -444,6 +476,10 @@ export function scanFiles(
           results.push({ file, matches });
         }
       } catch (error) {
+        options.unreadable?.push({
+          file: path.relative(process.cwd(), file),
+          reason: String(error),
+        });
         if (options.bus) {
           options.bus.add({
             code: 'file.read_error',
