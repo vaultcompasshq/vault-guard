@@ -100,23 +100,6 @@ pre-commit:
       run: vault-guard scan --staged
 `;
 
-/**
- * Recognize husky 9's generated dispatcher: exactly two non-blank lines, a
- * shebang, then a line sourcing "$(dirname "$0")/h". Husky 9 writes this at
- * `<hooksDir>/<hookname>` inside the generated, gitignored directory; the
- * real hook body lives one directory up, in the TRACKED `.husky/<hookname>`
- * file, which this dispatcher sources via the `h` shim.
- */
-function isHuskyDispatcherScript(content: string): boolean {
-  const lines = content
-    .split('\n')
-    .map(line => line.trim())
-    .filter(line => line.length > 0);
-  if (lines.length !== 2) return false;
-  if (!lines[0].startsWith('#!')) return false;
-  return lines[1].includes('dirname "$0")/h');
-}
-
 const PRE_COMMIT_CONFIG = `# See https://pre-commit.com
 repos:
   - repo: local
@@ -188,33 +171,27 @@ export class PreCommitHook {
    * the durable, tracked hook lives one directory up at
    * \`.husky/<hookname>\`.
    *
-   * Any one of three signals is sufficient, since husky may not have
-   * populated the directory yet (a fresh \`git config core.hooksPath
-   * .husky/_\` before the first \`husky\` prepare run still counts):
-   *  - the resolved hooks dir's basename is \`_\` under a directory
-   *    literally named \`.husky\`;
-   *  - an \`h\` file (husky's shim) is present in it;
-   *  - the \`pre-commit\` file already there is the two-line dispatcher
-   *    that sources \`h\`.
+   * This is deliberately narrow: the ONLY signal that may trigger the
+   * redirect is the directory SHAPE -- a resolved basename of \`_\` under a
+   * directory literally named \`.husky\`. Two false-positive shapes were
+   * caught by review before shipping and must never redirect:
+   *  - core.hooksPath pointing at an unrelated directory (e.g. .githooks)
+   *    that happens to contain a file literally named \`h\` -- an \`h\` file
+   *    is not evidence of husky on its own, only the directory shape is;
+   *  - a dispatcher-shaped pre-commit file (the same two-line shebang
+   *    body husky 9 writes) sitting somewhere that is NOT \`.husky/_\`
+   *    (e.g. plain \`.git/hooks/pre-commit\`) -- content shape alone is not
+   *    evidence either, since a foreign hook can coincidentally look like
+   *    this.
+   * Neither the \`h\` shim nor dispatcher-shaped content is checked at all
+   * here; they would only ever have been used to confirm a shape match,
+   * never to trigger one on their own, and the shape check alone is both
+   * necessary and sufficient for every case this fix needs to handle.
    */
   isHuskyGeneratedHooksDir(hooksDir: string): boolean {
     const base = path.basename(hooksDir);
     const parentBase = path.basename(path.dirname(hooksDir));
-    if (base === '_' && parentBase === '.husky') return true;
-
-    if (fs.existsSync(path.join(hooksDir, 'h'))) return true;
-
-    const pcPath = path.join(hooksDir, 'pre-commit');
-    if (fs.existsSync(pcPath)) {
-      try {
-        const content = fs.readFileSync(pcPath, 'utf-8');
-        if (isHuskyDispatcherScript(content)) return true;
-      } catch {
-        /* ignore -- treated as not husky-generated */
-      }
-    }
-
-    return false;
+    return base === '_' && parentBase === '.husky';
   }
 
   /**

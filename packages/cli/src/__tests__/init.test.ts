@@ -354,6 +354,85 @@ describe('vault-guard init', () => {
     });
   });
 
+  describe('false positives that must not redirect to .husky/pre-commit', () => {
+    // Amendment: only directory shape (basename `_` under a directory
+    // named `.husky`) may trigger the redirect. These two shapes each
+    // defeat the old (now removed) h-shim / dispatcher-content signals
+    // while failing the shape check -- init must refuse the foreign hook
+    // at its REAL location, never redirect it to .husky/pre-commit, and
+    // never create a .husky directory.
+
+    it('refuses a foreign hook at .githooks/pre-commit, the real location, when an unrelated file named h sits beside it', async () => {
+      const hooksDirAbs = path.join(testDir, '.githooks');
+      fs.mkdirSync(hooksDirAbs, { recursive: true });
+      fs.writeFileSync(path.join(hooksDirAbs, 'h'), '#!/usr/bin/env sh\necho unrelated\n');
+      fs.writeFileSync(path.join(hooksDirAbs, 'pre-commit'), '#!/bin/sh\necho custom-hook\n', {
+        mode: 0o755,
+      });
+      // Absolute core.hooksPath is used exactly as given (no
+      // git-rev-parse-based worktree-root resolution), so the printed
+      // relative conflict path stays a clean .githooks/pre-commit even on
+      // a host (macOS) where the OS temp dir is itself behind a symlink.
+      git(['config', '--local', 'core.hooksPath', hooksDirAbs], testDir);
+
+      const code = await initCommand({
+        cwd: testDir,
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+
+      expect(code).toBe(2);
+      expect(fs.existsSync(path.join(testDir, '.husky'))).toBe(false);
+
+      const plan = planInit({
+        cwd: testDir,
+        manager: 'native',
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+      expect(
+        plan.conflicts.some(c => c.path === '.githooks/pre-commit' && c.reason === 'foreign_hook'),
+      ).toBe(true);
+      expect(plan.conflicts.every(c => c.path !== '.husky/pre-commit')).toBe(true);
+    });
+
+    it('refuses a dispatcher-shaped foreign hook at .git/hooks/pre-commit, the real default location, with no core.hooksPath set', async () => {
+      git(['config', '--local', '--unset', 'core.hooksPath'], testDir);
+      const hooksDirAbs = new PreCommitHook().getEffectiveHooksDir(testDir).hooksDir;
+      fs.mkdirSync(hooksDirAbs, { recursive: true });
+      fs.writeFileSync(
+        path.join(hooksDirAbs, 'pre-commit'),
+        '#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n',
+        { mode: 0o755 },
+      );
+
+      const code = await initCommand({
+        cwd: testDir,
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+
+      expect(code).toBe(2);
+      expect(fs.existsSync(path.join(testDir, '.husky'))).toBe(false);
+
+      const plan = planInit({
+        cwd: testDir,
+        manager: 'native',
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+      expect(
+        plan.conflicts.some(
+          c => c.path === '.git/hooks/pre-commit' && c.reason === 'foreign_hook',
+        ),
+      ).toBe(true);
+    });
+  });
+
   it('conflicts on foreign pre-commit.cmd for native manager', () => {
     // The beforeEach hook sets a RELATIVE core.hooksPath ("hooks"), which
     // resolves against the working-tree root, not .git -- so the foreign
