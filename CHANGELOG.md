@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.4] - 2026-09-03
+
+### Fixed
+
+- **Husky-managed repositories.** husky 9 points `core.hooksPath` at
+  `.husky/_`, a generated directory it rewrites on every install. Init
+  wrote the hook there and reported success, and the next install
+  removed it. When the hooks directory is named `_` under `.husky`,
+  install, uninstall, and detection now use that `.husky` directory's
+  own tracked hook, including a nested husky directory. husky 8 and
+  repositories without husky are unchanged.
+- **Uninstall reported success without removing anything.** A hook
+  written whole from the husky template had no stanza marker to strip,
+  so uninstall rewrote it unchanged and said it succeeded. The template
+  now carries a header line; uninstall removes a whole-file hook, strips
+  only an appended stanza, leaves anything else alone with an honest
+  message, and reports success only when the hook is really gone. A hook
+  written by an older release is left in place and named as such.
+
 ## [1.4.3] - 2026-09-02
 
 ### Fixed
