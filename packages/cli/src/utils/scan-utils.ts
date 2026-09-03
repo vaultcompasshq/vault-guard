@@ -29,18 +29,31 @@ export interface ScanFormatOptions {
    * `formatJson`, whose `file` paths stay cwd-relative.
    */
   scanRoot?: string;
+  /**
+   * Base for `formatJson`'s `file` paths and for match fingerprints, and the
+   * anchor SARIF resolves `scanRoot` against. Defaults to `process.cwd()`,
+   * which is right for a directory scan.
+   *
+   * A `--staged` run must pass the repository root instead. Its file list
+   * comes from the index and therefore spans the whole worktree, including
+   * files ABOVE the cwd when the hook runs from a subdirectory. Those fall
+   * out of `path.relative(cwd, ...)` and would otherwise be serialized as
+   * absolute machine paths, and fingerprinted against a base that changes
+   * with whatever directory the caller happened to be standing in.
+   */
+  cwd?: string;
 }
 
 export function formatJson(results: ScanResult[], opts: ScanFormatOptions = {}): string {
   return formatJsonResults(results, {
-    cwd: process.cwd(),
+    cwd: opts.cwd ?? process.cwd(),
     diagnostics: opts.diagnostics,
     run: opts.run,
   });
 }
 export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {}): string {
   return formatSarifResults(results, {
-    cwd: process.cwd(),
+    cwd: opts.cwd ?? process.cwd(),
     scanRoot: opts.scanRoot,
     diagnostics: opts.diagnostics,
     run: opts.run,
@@ -511,12 +524,20 @@ export function scanFiles(
  *   - Most modern terminals (iTerm2, Windows Terminal, VS Code, JetBrains)
  *     auto-link `path:line:col` so users can cmd/ctrl-click directly to the
  *     source — no copy-paste, no greppable secret value needed.
- *   - Paths are cwd-relative for the same reason JSON/SARIF are: avoids
+ *   - Paths are relative to `base` for the same reason JSON/SARIF are: avoids
  *     leaking the developer's home dir / username when output is shared.
  *   - The redacted match value (`sk-a…(37c)`) is shown last and intentionally
  *     low-information.
+ *
+ * `base` defaults to `process.cwd()`. A `--staged` run passes the repository
+ * root, because its findings can sit above the directory the hook ran from
+ * and would otherwise print as absolute machine paths.
  */
-export function displayScanResults(results: ScanResult[], blocking?: number): void {
+export function displayScanResults(
+  results: ScanResult[],
+  blocking?: number,
+  base: string = process.cwd(),
+): void {
   if (results.length === 0) {
     console.log(chalk.green.bold('✅ SUCCESS:'), chalk.white('No secrets found\n'));
     return;
@@ -538,7 +559,7 @@ export function displayScanResults(results: ScanResult[], blocking?: number): vo
   }
 
   for (const { file, matches } of results) {
-    const relativePath = relativeForDisplay(file);
+    const relativePath = relativeForDisplay(file, base);
 
     for (const match of matches) {
       const severityColor = getSeverityColor(match.severity);
@@ -557,10 +578,10 @@ export function displayScanResults(results: ScanResult[], blocking?: number): vo
   }
 }
 
-/** cwd-relative when inside cwd, absolute otherwise. Matches scan-output behaviour. */
-function relativeForDisplay(file: string): string {
+/** Relative to `base` when inside it, absolute otherwise. Matches scan-output behaviour. */
+function relativeForDisplay(file: string, base: string): string {
   if (!path.isAbsolute(file)) return file;
-  const rel = path.relative(process.cwd(), file);
+  const rel = path.relative(base, file);
   if (rel.startsWith('..') || path.isAbsolute(rel)) return file;
   return rel || '.';
 }

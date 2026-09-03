@@ -88,13 +88,18 @@ describe('scan --staged ignores diff.relative', () => {
     const fromRoot = runStagedScan(repo, ['--format', 'json']);
     const fromSub = runStagedScan(path.join(repo, 'pkg', 'deep'), ['--format', 'json']);
 
+    // Compare the RAW `file` field, not its basename. Normalizing with
+    // path.basename here is exactly what hid a second defect: the file SET
+    // was right, but every path above the cwd was still being serialized as
+    // an absolute machine path, and a basename comparison cannot see that.
     const filesOf = (stdout: string): string[] => {
       const body = JSON.parse(stdout.trim()) as { results: Array<{ file: string }> };
-      return body.results.map(r => path.basename(r.file)).sort();
+      return body.results.map(r => r.file).sort();
     };
 
     expect(filesOf(fromSub.stdout)).toEqual(filesOf(fromRoot.stdout));
-    expect(filesOf(fromSub.stdout)).toEqual(['staged.ts', 'top.env']);
+    expect(filesOf(fromSub.stdout)).toEqual(['pkg/deep/staged.ts', 'top.env']);
+    expect(fromSub.stdout).not.toContain(repo);
     expect(fromSub.status).toBe(1);
   });
 });

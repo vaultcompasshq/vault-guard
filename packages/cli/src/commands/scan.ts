@@ -5,6 +5,7 @@ import {
   GitError,
   mapPatternRejectionReasonToDiagnosticCode,
   getGitStagedFilePaths,
+  getGitWorkTreeRoot,
   isInsideGitWorkTree,
   DiagnosticBus,
   loadBaseline,
@@ -128,6 +129,18 @@ export async function scanCommand(
   // Files the scanner reached but could not read. On the staged path this is
   // fatal (see below); on a directory scan it is reported but not fatal.
   const unreadable: UnreadableFile[] = [];
+
+  // Base for every path this run renders, serializes, ignore-matches and
+  // fingerprints. A directory scan is anchored at the cwd, which is also the
+  // directory it walked. A `--staged` run is anchored at the REPOSITORY ROOT:
+  // its file list comes from the index and spans the whole worktree, so when
+  // the hook runs from a subdirectory some staged files sit above the cwd.
+  // Anchored at the cwd those fall out of `path.relative` and come back
+  // absolute -- publishing the developer's home directory and username into
+  // JSON and into SARIF uris that still claim `uriBaseId: "%SRCROOT%"` -- and
+  // both `ignore` matching and baseline fingerprints silently become
+  // functions of wherever the caller happened to be standing.
+  let outputBase = cwd;
   const t0 = Date.now();
 
   try {
@@ -141,6 +154,9 @@ export async function scanCommand(
 
       let stagedFiles: string[];
       try {
+        // Memoised, so this costs no extra git process beyond the one
+        // getGitStagedFilePaths already makes.
+        outputBase = getGitWorkTreeRoot(cwd);
         stagedFiles = getGitStagedFilePaths(cwd);
       } catch (e) {
         if (e instanceof GitError) {
@@ -173,7 +189,7 @@ export async function scanCommand(
         unreadable,
         configIgnorePatterns,
         fromGitIndex: true,
-        cwd,
+        cwd: outputBase,
       });
     } else {
       results = await scanFilesAsync(targetPaths, scanner, {
@@ -190,7 +206,7 @@ export async function scanCommand(
     // Merge bus diagnostics
     diagnostics.push(...bus.drain());
 
-    const baselineLoad = loadBaseline(cwd);
+    const baselineLoad = loadBaseline(outputBase);
     if (baselineLoad.parseError) {
       diagnostics.push({
         code: 'baseline.invalid',
@@ -207,7 +223,7 @@ export async function scanCommand(
     }
 
     const { results: afterBaseline, suppressed: baselineSuppressed } = filterResultsByBaseline(
-      process.cwd(),
+      outputBase,
       results,
       baselineLoad.fingerprints,
     );
@@ -269,16 +285,19 @@ export async function scanCommand(
       // The document is still emitted: CI wants the artifact even when the
       // run failed, and `run.unscannable_files` plus the error-severity
       // `file.read_error` diagnostics inside it say why.
-      process.stdout.write(formatJson(results, { diagnostics, run }) + '\n');
+      process.stdout.write(formatJson(results, { diagnostics, run, cwd: outputBase }) + '\n');
       if (stagedScanIncomplete) return INCOMPLETE_SCAN_EXIT;
       return blocking === 0 ? 0 : 1;
     }
 
     if (format === 'sarif') {
-      // `--staged` reads paths from the git index, which are already rooted at
-      // the repo checkout, so the cwd is the right base there.
-      const scanRoot = staged ? cwd : resolveScanRoot(targetPaths, cwd);
-      process.stdout.write(formatSarif(results, { diagnostics, run, scanRoot }) + '\n');
+      // `--staged` reads paths from the git index, so the repository root is
+      // the right base there -- not the cwd, which a hook invoked from a
+      // subdirectory would otherwise make the base for files above it.
+      const scanRoot = staged ? outputBase : resolveScanRoot(targetPaths, cwd);
+      process.stdout.write(
+        formatSarif(results, { diagnostics, run, scanRoot, cwd: outputBase }) + '\n',
+      );
       if (stagedScanIncomplete) return INCOMPLETE_SCAN_EXIT;
       return blocking === 0 ? 0 : 1;
     }
@@ -305,7 +324,7 @@ export async function scanCommand(
       // "here is what I found" and "here is what I never looked at".
       if (results.length > 0) {
         console.error('');
-        displayScanResults(results, blocking);
+        displayScanResults(results, blocking, outputBase);
       }
       console.error(
         chalk.gray(
@@ -321,7 +340,7 @@ export async function scanCommand(
       return 0;
     }
 
-    displayScanResults(results, blocking);
+    displayScanResults(results, blocking, outputBase);
 
     if (blocking === 0) {
       // Findings exist but all sit below the gate. Say so explicitly — a silent
