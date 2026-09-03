@@ -23,6 +23,12 @@ export type { JsonOutput, JsonRunMetadata };
 export interface ScanFormatOptions {
   diagnostics?: Diagnostic[];
   run?: JsonRunMetadata;
+  /**
+   * Directory the scan actually walked. SARIF uris are relativized against it
+   * so an out-of-tree target does not publish absolute local paths. Ignored by
+   * `formatJson`, whose `file` paths stay cwd-relative.
+   */
+  scanRoot?: string;
 }
 
 export function formatJson(results: ScanResult[], opts: ScanFormatOptions = {}): string {
@@ -35,9 +41,32 @@ export function formatJson(results: ScanResult[], opts: ScanFormatOptions = {}):
 export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {}): string {
   return formatSarifResults(results, {
     cwd: process.cwd(),
+    scanRoot: opts.scanRoot,
     diagnostics: opts.diagnostics,
     run: opts.run,
   });
+}
+
+/**
+ * The directory a SARIF run should treat as `%SRCROOT%`.
+ *
+ * Only a single target gets its own root. With several targets there is no one
+ * directory that contains them all except a common ancestor, and that ancestor
+ * is often `/` or the user's home, which would turn every uri into a
+ * "relative" path that still spells out the machine's layout. Falling back to
+ * the cwd in that case keeps the pre-existing behaviour, where anything
+ * outside the cwd simply stays absolute.
+ */
+export function resolveScanRoot(targetPaths: string[], cwd = process.cwd()): string {
+  if (targetPaths.length !== 1) return cwd;
+  const abs = path.resolve(cwd, targetPaths[0]);
+  try {
+    return fs.statSync(abs).isDirectory() ? abs : path.dirname(abs);
+  } catch {
+    // Unreadable or missing target: the scan will report nothing for it, so the
+    // base does not matter. Its parent is still the closest honest answer.
+    return path.dirname(abs);
+  }
 }
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB

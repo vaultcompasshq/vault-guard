@@ -44,11 +44,39 @@ describe('scan-output formatters', () => {
       expect(uri).toBe('src/leak.ts');
     });
 
-    it('formatSarif preserves paths that are outside cwd', () => {
+    it('formatSarif relativizes a file outside cwd but inside the scan root', () => {
+      // `vault-guard scan /repo/other` run from /repo/project: the finding is
+      // outside cwd, so relativizing against cwd would have to keep it absolute
+      // and leak the local filesystem layout into a Code Scanning upload.
+      const results: FileScanResult[] = [
+        { file: '/repo/other/src/leak.ts', matches: [makeMatch()] },
+      ];
+      const sarif = JSON.parse(formatSarif(results, { cwd, scanRoot: '/repo/other' }));
+      const loc = sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation;
+      expect(loc.uri).toBe('src/leak.ts');
+      expect(loc.uriBaseId).toBe('%SRCROOT%');
+    });
+
+    it('formatSarif preserves paths that are outside the scan root itself', () => {
+      const results: FileScanResult[] = [{ file: outsideFile, matches: [makeMatch()] }];
+      const sarif = JSON.parse(formatSarif(results, { cwd, scanRoot: '/repo/other' }));
+      const uri = sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri;
+      expect(uri).toBe(outsideFile);
+    });
+
+    it('formatSarif falls back to cwd as the base when no scan root is given', () => {
       const results: FileScanResult[] = [{ file: outsideFile, matches: [makeMatch()] }];
       const sarif = JSON.parse(formatSarif(results, { cwd }));
       const uri = sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri;
       expect(uri).toBe(outsideFile);
+    });
+
+    it('formatJson ignores the scan root and stays relative to cwd', () => {
+      const results: FileScanResult[] = [
+        { file: '/repo/other/src/leak.ts', matches: [makeMatch()] },
+      ];
+      const out = JSON.parse(formatJson(results, { cwd, scanRoot: '/repo/other' }));
+      expect(out.results[0].file).toBe('/repo/other/src/leak.ts');
     });
 
     it('formatSarif emits a forward-slash relative uri with no leading ./ or /', () => {

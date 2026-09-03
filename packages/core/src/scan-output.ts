@@ -68,6 +68,17 @@ export interface FormatOptions {
    * Pass `null` to skip relativization entirely.
    */
   cwd?: string | null;
+  /**
+   * Directory actually being scanned (the scan target), when it differs from
+   * {@link cwd}. SARIF only: `artifactLocation.uri` is relativized against
+   * this instead of `cwd`, so a finding outside the process cwd but inside the
+   * scan target still gets a relative uri. Defaults to `cwd`.
+   *
+   * `formatJson` ignores this field. Its `file` paths stay cwd-relative,
+   * because they are what the terminal output and the baseline fingerprints
+   * are keyed on.
+   */
+  scanRoot?: string;
   /** Non-fatal diagnostics to include in structured output. */
   diagnostics?: Diagnostic[];
   /** Scan timing / coverage stats for JSON and SARIF `runs[].properties`. */
@@ -104,15 +115,31 @@ function isWindowsStylePath(p: string): boolean {
  * SARIF spec requires this even when the scanner itself runs on Windows,
  * where `path.relative` returns backslash-separated paths).
  *
+ * The base is the scan root (the directory actually being scanned), not the
+ * process cwd. Scanning an out-of-tree target from somewhere else used to
+ * leave every uri absolute, which published the developer's home directory
+ * and OS username to whoever reads the Code Scanning upload.
+ *
+ * A file genuinely outside the scan root still stays absolute rather than
+ * becoming a `../..` traversal: SARIF relative references are resolved
+ * against `%SRCROOT%`, so a traversal out of it is not a legal uri, and there
+ * is no other root to express such a path against. In practice this only
+ * happens for a path a caller injected from outside the scan, since every
+ * file the scanner itself walks is under the target it was given.
+ *
  * Picks `path.win32` when either side of the comparison looks like a
  * Windows-style path, so this is correct both when the process itself runs
  * on Windows (native `path` is already `path.win32`) and when a
  * Windows-style path is normalized on a POSIX host (tests, or a SARIF file
  * produced elsewhere and re-normalized).
  */
-function toSarifArtifactUri(file: string, cwd: string | null | undefined): string {
-  if (cwd === null) return file.split('\\').join('/');
-  const base = cwd ?? process.cwd();
+function toSarifArtifactUri(
+  file: string,
+  cwd: string | null | undefined,
+  scanRoot: string | undefined,
+): string {
+  if (cwd === null && scanRoot === undefined) return file.split('\\').join('/');
+  const base = scanRoot ?? cwd ?? process.cwd();
   const impl = isWindowsStylePath(file) || isWindowsStylePath(base) ? path.win32 : path;
   if (!impl.isAbsolute(file)) return file.split('\\').join('/');
   const rel = impl.relative(base, file);
@@ -180,7 +207,10 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
       locations: [
         {
           physicalLocation: {
-            artifactLocation: { uri: toSarifArtifactUri(file, opts.cwd), uriBaseId: '%SRCROOT%' },
+            artifactLocation: {
+              uri: toSarifArtifactUri(file, opts.cwd, opts.scanRoot),
+              uriBaseId: '%SRCROOT%',
+            },
             region: {
               startLine: m.line,
               startColumn: m.column + 1,

@@ -46,6 +46,35 @@ describe('CLI SARIF stdout contract', () => {
     expect(proc.status).not.toBe(0);
   });
 
+  it('emits a scan-root-relative uri for a target outside the cwd', () => {
+    // Run from the monorepo root but scan an out-of-tree directory. Before the
+    // scan root was threaded through, every uri here stayed absolute and the
+    // SARIF file published the machine's home directory and username.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-guard-sarif-root-'));
+    try {
+      fs.mkdirSync(path.join(tmp, 'src'));
+      fs.writeFileSync(
+        path.join(tmp, 'src', 'leaked.ts'),
+        "export const k = 'sk-ant-api03-fakekeyfortesting1234567890ABCDEFGHIJ';\n",
+        'utf-8',
+      );
+
+      const proc = runSarifScan(['scan', tmp, '--format', 'sarif'], monorepoRoot);
+      expect(proc.error).toBeUndefined();
+
+      const body = parseStdoutSarif(proc.stdout) as {
+        runs: Array<{ results: Array<{ locations: Array<{ physicalLocation: { artifactLocation: { uri: string; uriBaseId: string } } }> }> }>;
+      };
+      const loc = body.runs[0].results[0].locations[0].physicalLocation.artifactLocation;
+      expect(loc.uri).toBe('src/leaked.ts');
+      expect(loc.uriBaseId).toBe('%SRCROOT%');
+      // The whole point: no absolute filesystem path anywhere in the document.
+      expect(proc.stdout).not.toContain(tmp);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('still honors --format when argv has a leading -- (npx passthrough)', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-guard-sarif-ddash-'));
     try {
