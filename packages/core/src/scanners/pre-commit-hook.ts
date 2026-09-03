@@ -57,12 +57,28 @@ if ! command -v vault-guard >/dev/null 2>&1; then
 fi
 
 echo "🔍 vault-guard: scanning staged files..."
-if vault-guard scan --staged; then
+# Capture the status rather than branching on \`if vault-guard ...\`: after a
+# bare \`if\` with no else branch, \`$?\` is the IF STATEMENT's status (0), not
+# the command's, so the exit code would be lost. \`|| status=$?\` also keeps
+# \`set -e\` from aborting here, because the failure is handled.
+status=0
+vault-guard scan --staged || status=$?
+
+if [ "$status" -eq 0 ]; then
   echo "✅ vault-guard: no secrets in staged files"
   exit 0
 fi
 
 echo ""
+if [ "$status" -eq 2 ]; then
+  # Exit 2 means vault-guard could not finish the scan, not that it found
+  # something. Claiming secrets were detected would be false, and offering
+  # --no-verify beside it would recommend skipping a check that never ran.
+  echo "❌ COMMIT BLOCKED: vault-guard could not complete the scan"
+  echo "   See the message above for what went unexamined. This commit has not been checked."
+  exit 1
+fi
+
 echo "❌ COMMIT BLOCKED: secrets detected in staged files"
 echo "💡 Fix or unstage, then retry. Emergency bypass (discouraged): git commit --no-verify"
 exit 1
@@ -82,6 +98,14 @@ if errorlevel 1 (
 
 echo 🔍 vault-guard: scanning staged files...
 call vault-guard scan --staged
+REM \`if errorlevel N\` is true for anything >= N, so 2 must be tested BEFORE
+REM 1 or an incomplete scan would fall into the secrets-detected branch.
+if errorlevel 2 (
+  echo.
+  echo ❌ COMMIT BLOCKED: vault-guard could not complete the scan
+  echo    See the message above for what went unexamined. This commit has not been checked.
+  exit /b 1
+)
 if errorlevel 1 (
   echo.
   echo ❌ COMMIT BLOCKED: secrets detected in staged files
@@ -106,12 +130,25 @@ if ! command -v vault-guard >/dev/null 2>&1; then
 fi
 
 echo "🔍 vault-guard: scanning staged files..."
-vault-guard scan --staged || {
+status=0
+vault-guard scan --staged || status=$?
+
+if [ "$status" -eq 2 ]; then
+  # Could not finish the scan, as opposed to finding something. No
+  # --no-verify hint here: the check never ran, so bypassing it is not the
+  # remedy. See the native template for the same reasoning.
+  echo ""
+  echo "❌ COMMIT BLOCKED: vault-guard could not complete the scan"
+  echo "   See the message above for what went unexamined. This commit has not been checked."
+  exit 1
+fi
+
+if [ "$status" -ne 0 ]; then
   echo ""
   echo "❌ COMMIT BLOCKED: secrets detected in staged files"
   echo "💡 git commit --no-verify to bypass (discouraged)"
   exit 1
-}
+fi
 echo "✅ vault-guard: no secrets in staged files"
 `;
 

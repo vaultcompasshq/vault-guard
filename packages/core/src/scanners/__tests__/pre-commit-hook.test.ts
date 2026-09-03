@@ -1021,4 +1021,86 @@ describe('PreCommitHook', () => {
       expect(content).toContain('scan --staged');
     });
   });
+
+  /**
+   * Exit 2 means vault-guard could not finish the scan, not that it found
+   * something. Reporting that as "secrets detected" and offering
+   * `--no-verify` in the same breath is the worst possible advice: the check
+   * did not run, and the suggested response is to skip it entirely. Both
+   * templates must tell the truth and withhold the bypass hint here, while
+   * keeping the existing wording for exit 1.
+   *
+   * Driven as real commits with a stub `vault-guard` on PATH, because the
+   * bug is in shell control flow (`$?` after a bare `if` is the `if`'s own
+   * status, not the command's), which reading the template cannot catch.
+   */
+  describe('hook messaging distinguishes an incomplete scan from a finding', () => {
+    const setUpRepo = (): void => {
+      execSync('git config user.email "test@example.com"', { cwd: testDir, stdio: 'ignore' });
+      execSync('git config user.name "Test"', { cwd: testDir, stdio: 'ignore' });
+      process.chdir(testDir);
+    };
+
+    describe.each([
+      ['native', () => preCommitHook.install({ manager: 'native' })],
+      ['husky', () => preCommitHook.install({ manager: 'husky' })],
+    ] as const)('%s template', (manager, install) => {
+      beforeEach(() => {
+        setUpRepo();
+        if (manager === 'husky') {
+          // The husky manager writes .husky/pre-commit; point git at it so a
+          // real commit actually runs the template under test.
+          fs.mkdirSync(path.join(testDir, '.husky'), { recursive: true });
+          execSync('git config --local core.hooksPath .husky', {
+            cwd: testDir,
+            stdio: 'ignore',
+          });
+        }
+        expect(install().success).toBe(true);
+      });
+
+      it('refuses the commit and says the scan did not complete on exit 2', () => {
+        const { committed, output } = driveCommitWithStub(testDir, 2);
+
+        expect(committed).toBe(false);
+        expect(output).toMatch(/could not complete the scan/i);
+        expect(output).not.toMatch(/secrets detected/i);
+      });
+
+      it('offers no bypass hint on exit 2', () => {
+        const { output } = driveCommitWithStub(testDir, 2);
+
+        expect(output).not.toContain('--no-verify');
+      });
+
+      it('still reports a finding as secrets detected on exit 1', () => {
+        const { committed, output } = driveCommitWithStub(testDir, 1);
+
+        expect(committed).toBe(false);
+        expect(output).toMatch(/secrets detected/i);
+        expect(output).toContain('--no-verify');
+      });
+
+      it('still lets a clean scan through on exit 0', () => {
+        const { committed } = driveCommitWithStub(testDir, 0);
+
+        expect(committed).toBe(true);
+      });
+    });
+
+    it('checks errorlevel 2 before errorlevel 1 in the Windows .cmd companion', () => {
+      setUpRepo();
+      preCommitHook.install({ manager: 'native' });
+
+      const cmd = fs.readFileSync(path.join(hooksDir, 'pre-commit.cmd'), 'utf-8');
+
+      // Anchor after the scan call: an earlier `if errorlevel 1` guards the
+      // command-not-found check and is not part of this ordering.
+      const afterScan = cmd.slice(cmd.indexOf('call vault-guard scan --staged'));
+      expect(afterScan).toContain('errorlevel 2');
+      // `if errorlevel N` is true for anything >= N, so the 2 branch is only
+      // ever reachable when it is tested first.
+      expect(afterScan.indexOf('errorlevel 2')).toBeLessThan(afterScan.indexOf('errorlevel 1'));
+    });
+  });
 });
