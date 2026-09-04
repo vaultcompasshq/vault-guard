@@ -1,6 +1,24 @@
 # Vault Guard
 
-**The security layer for AI-assisted coding.** Stop secrets from landing in your repo, whether you typed them or an AI agent pasted them.
+Vault Guard reads the text of the files you point it at, and reports the
+credentials it finds in them, before a commit lands or before an agent's
+proposed edit is applied.
+
+<!-- guardrails-family: shared block, keep it identical in dep-guard, vault-guard, intent-guard and conductor -->
+The Vault & Compass guardrails are three gates over an AI-assisted coding
+session: [dep-guard](https://www.npmjs.com/package/@vaultcompass/dep-guard)
+checks what comes in (hallucinated package names, typosquats, tampered
+lockfile entries),
+[vault-guard](https://www.npmjs.com/package/@vaultcompass/vault-guard) checks
+what goes out (credentials about to be committed), and
+[intent-guard](https://www.npmjs.com/package/@vaultcompass/intent-guard)
+checks the change against what was approved (drift from a frozen intent
+contract, and change budgets). Each one installs, configures and runs on its
+own;
+[conductor](https://www.npmjs.com/package/@vaultcompass/conductor) is the
+optional umbrella that runs them from one policy file, one hook and one
+report.
+<!-- /guardrails-family -->
 
 ```bash
 npm install -g @vaultcompass/vault-guard
@@ -8,13 +26,33 @@ npm install -g @vaultcompass/vault-guard
 
 ---
 
-## Why Vault Guard
+## Why
 
-AI coding agents (Cursor, Claude Code, Copilot, …) are fast, and they routinely paste API keys, connection strings, and tokens directly into your editor. Vault Guard catches them before they reach a commit or a prompt:
+A pasted key arrives as an ordinary edit. It is a few characters in a
+config file or a test fixture, it does not look different from the lines
+around it, and nobody reads a generated diff closely enough to spot it.
+Vault Guard sits at the three points a credential passes through on its way
+into a repository: the edit an agent proposes (an MCP server exposes
+`scan_text`, `scan_file` and `scan_workspace`, so a client can ask before
+applying), the staged diff (a pre-commit hook running `vault-guard scan
+--staged`), and the checkout in CI (a GitHub Action that writes SARIF for
+code scanning).
 
-- **MCP server**: gives Cursor, Claude Code, and other MCP clients local tools to scan proposed edits, files, and workspaces before changes are applied.
-- **Pre-commit hook**: blocks staged files containing secrets across all hook managers (native, Husky, Lefthook, pre-commit).
-- **GitHub Action**: integrates with Code Scanning via SARIF; one workflow step.
+It catches credentials that have a shape it can recognise: vendor key
+formats, database connection URLs, SSH private keys, JWTs, and generic
+`api_key` or `secret` assignments whose value clears an entropy gate. The
+vendors are listed under [What it detects](#what-it-detects) and the rules
+with their severities are in [docs/RULES.md](./docs/RULES.md).
+
+It does not read Git history. A key that was committed months ago and
+deleted since is invisible to a working-tree scan, and finding it is
+Gitleaks' or TruffleHog's job rather than this tool's; that boundary is
+deliberate and [docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md) records it
+as such. It does not check whether a key it found still works, does not
+look inside dependency trees or published tarballs, and does not judge
+whether a package is malicious. The miss it will make most often is a
+credential with no distinctive prefix or format, held in a plainly named
+variable, at an entropy the generic rules let through.
 
 ---
 
@@ -35,7 +73,7 @@ Creates `.vault-guard.json`, a GitHub Actions workflow, local agent guardrail fi
 vault-guard init --dry-run
 ```
 
-Init never overwrites existing files — resolve conflicts manually. To undo:
+Init never overwrites existing files: resolve conflicts manually. To undo:
 
 ```bash
 vault-guard init --revert
@@ -80,7 +118,7 @@ vault-guard install-hook --manager precommit  # .pre-commit-config.yaml (only if
 **Windows:** `scan`, `check`, MCP, and CI workflows are supported on Windows.
 Native hook install writes a POSIX `pre-commit` script (Git for Windows runs it
 via `sh`, same as Git Bash) plus an optional `pre-commit.cmd` for clients that
-call `.cmd` hooks directly — `git.exe` does not use the `.cmd` file.
+call `.cmd` hooks directly. `git.exe` does not use the `.cmd` file.
 Husky/Lefthook/pre-commit managers still use their own runners. CI runs
 `pnpm test:windows` (core + CLI unit tests, excluding hook/proxy integration).
 
@@ -184,7 +222,7 @@ Use Vault Guard as the **local AI-edit firewall**, then compose with history sca
 | Git history / deep local scan | [Gitleaks](https://github.com/gitleaks/gitleaks) | Offline history + strong pre-commit rules |
 | Verified / live-key audit | [TruffleHog](https://github.com/trufflesecurity/trufflehog) | Confirm credentials still work |
 
-Vault Guard does **not** mine Git history — see [docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md). Pairing with Gitleaks/TruffleHog is the recommended production setup, not a competing choice.
+Vault Guard does **not** mine Git history: see [docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md). Pairing with Gitleaks/TruffleHog is the recommended production setup, not a competing choice.
 
 
 ---
@@ -297,7 +335,7 @@ Inline diagnostics for open files (uses `@vaultcompass/vault-guard-core`). Packa
 
 **Local tryout:** `pnpm --filter vault-guard-vscode build`, then **Run Extension** from VS Code.
 
-**Marketplace:** packaging is ready (`vsce package` / `vsce publish`) — see
+**Marketplace:** packaging is ready (`vsce package` / `vsce publish`). See
 [packages/vscode-extension/README.md](./packages/vscode-extension/README.md). Publishing
 requires the `vaultcompass` publisher token (maintainers only).
 
