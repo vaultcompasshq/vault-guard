@@ -335,7 +335,7 @@ not read, so their contents were never examined. When it is present and non-zero
 
 ## Maintainer dogfood
 
-Before tagging a release, run through **[docs/DOGFOOD.md](./docs/DOGFOOD.md)** — install on a ship machine, MCP + pre-commit smoke, optional telemetry, and `pnpm bench` / `node bench/run.cjs --assert`.
+Before tagging a release, install on a ship machine and smoke the real paths: the MCP server, the pre-commit hook, optional telemetry, and `pnpm bench` / `node bench/run.cjs --assert`.
 
 ## Development
 
