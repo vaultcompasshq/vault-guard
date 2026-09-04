@@ -41,3 +41,7 @@ docs/plans/
 .cursor/
 .claude/
 audit.md
+
+# The umbrella's local policy file and hook manifest, written on this machine while that tool is unpublished.
+.guardrails.yaml
+.guardrails/
