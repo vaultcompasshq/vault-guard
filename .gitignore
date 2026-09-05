@@ -42,6 +42,12 @@ docs/plans/
 .claude/
 audit.md
 
+# This is a pnpm workspace; pnpm-lock.yaml is the only lockfile. A stray
+# package-lock.json from an npm invocation is dead weight that dependabot
+# still scans, and one tracked since 1.0.0 produced six alerts for versions
+# the real lockfile had long since patched.
+package-lock.json
+
 # The umbrella's hook manifest, under .guardrails, records absolute paths on
 # whichever machine installed the hook, so it stays local. The policy file
 # beside it, .guardrails.yaml, is tracked: CI reads it.
