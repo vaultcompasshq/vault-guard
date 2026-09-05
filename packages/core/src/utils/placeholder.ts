@@ -222,6 +222,80 @@ function isLowVariety(value: string): boolean {
   return value.length >= 8 && new Set(value).size <= 2;
 }
 
+/**
+ * Fraction of a value that must sit inside sequential runs before it is called
+ * a placeholder.
+ *
+ * Chosen at 0.75 to sit clearly between the two cases that bound it. A value
+ * that is half run and half random scores 0.50 and must survive, because a real
+ * credential can contain an incidental run. A genuine alphabet-run placeholder
+ * under a real vendor prefix scores at worst about 0.80: `AKIA` + `ABCDEF…P` is
+ * 16 run characters in a 20-character value, because the fixed prefix is part
+ * of the matched value and is not itself a run. 0.75 clears the first with a
+ * 25-point margin and admits the second with a 5-point one.
+ */
+export const SEQUENTIAL_RUN_COVERAGE_THRESHOLD = 0.75;
+
+/** Shortest run of consecutive code points that counts as sequential. */
+const SEQUENTIAL_RUN_MIN_LENGTH = 3;
+
+/**
+ * Below this length, coverage is not evidence of anything: a four-character
+ * value is trivially "all run". Every pattern that reaches this check matches
+ * far longer values than this.
+ */
+const SEQUENTIAL_RUN_MIN_VALUE_LENGTH = 12;
+
+/**
+ * True when `value` is mostly made of runs of consecutive code points:
+ * `abcdefghijklmnopqrstuvwxyz0123456789`, `ABCDEFGHIJKLMNOP`, `zyxwvu…`, or the
+ * same short run repeated.
+ *
+ * WHY THIS EXISTS SEPARATELY FROM THE ENTROPY GATE
+ * ------------------------------------------------
+ * Shannon entropy counts how often each character occurs and throws the order
+ * away. A strict alphabet run uses every character exactly once, which is the
+ * flattest possible frequency distribution, so it scores at or near the maximum
+ * for its length, higher than most real credentials. The entropy gate is
+ * therefore structurally blind to the single most common way a developer types
+ * a fake key by hand, and no threshold tuning can fix that: order is the signal,
+ * and entropy does not look at order.
+ *
+ * Unlike the entropy gate this check runs for vendor-anchored rules too, which
+ * is where it matters most, since those rules have no entropy gate at all. It is
+ * safe there for the same reason it is useful: a real provider key is generated
+ * from a random source and cannot come out as the alphabet.
+ */
+export function isSequentialRunPlaceholder(value: string): boolean {
+  if (value.length < SEQUENTIAL_RUN_MIN_VALUE_LENGTH) return false;
+
+  const covered: boolean[] = new Array(value.length).fill(false);
+
+  let i = 0;
+  while (i < value.length - 1) {
+    const step = value.charCodeAt(i + 1) - value.charCodeAt(i);
+    if (step !== 1 && step !== -1) {
+      i++;
+      continue;
+    }
+
+    let end = i + 1;
+    while (end + 1 < value.length && value.charCodeAt(end + 1) - value.charCodeAt(end) === step) {
+      end++;
+    }
+
+    if (end - i + 1 >= SEQUENTIAL_RUN_MIN_LENGTH) {
+      for (let k = i; k <= end; k++) covered[k] = true;
+    }
+    i = end;
+  }
+
+  let inRuns = 0;
+  for (const c of covered) if (c) inRuns++;
+
+  return inRuns / value.length >= SEQUENTIAL_RUN_COVERAGE_THRESHOLD;
+}
+
 /** Hosts that are never a remotely-exploitable credential leak. */
 const LOCAL_HOSTS: ReadonlySet<string> = new Set([
   'localhost',

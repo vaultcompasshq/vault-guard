@@ -66,6 +66,10 @@ const TEST_FILE_PATTERNS = [
   /_test\.go$/,
   /^test_[^/]+\.py$/i,
   /^[^/]+_test\.py$/i,
+  // Rust. Cargo has no separate directory for unit tests, so a crate's tests
+  // live beside its source: `src/auth/auth_tests.rs` next to `src/auth/auth.rs`.
+  // Both the singular and plural suffix are in common use.
+  /_tests?\.rs$/,
 ];
 
 /** Env template basenames — never production secrets. */

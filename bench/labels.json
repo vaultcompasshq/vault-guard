@@ -38,5 +38,9 @@
   "fixtures/clean/identifier-reference-values.ts": { "shouldDetect": false, "note": "Unquoted variable references as assignment values (real-repo FP, 1.4.0 audit)" },
   "fixtures/clean/hyphenated-placeholders.md":     { "shouldDetect": false, "note": "Hyphenated your-* placeholders in docs (real-repo FP, 1.4.0 audit)" },
   "fixtures/clean/password-hashes.json":           { "shouldDetect": false, "note": "bcrypt/argon2/pbkdf2 digests in seed data — hashes are not plaintext credentials" },
-  "fixtures/clean/pem-header-labels.tsx":          { "shouldDetect": false, "note": "PEM headers as UI labels/placeholders with no key body" }
+  "fixtures/clean/pem-header-labels.tsx":          { "shouldDetect": false, "note": "PEM headers as UI labels/placeholders with no key body" },
+
+  "fixtures/clean/rust-alphabet-run-placeholders.rs": { "shouldDetect": false, "note": "Hand-typed alphabet runs under real vendor prefixes (real-repo FP, 1.4.7); entropy ignores order so only the sequential-run check drops these" },
+  "fixtures/secrets/rust/auth_tests.rs":              { "shouldDetect": true, "rule": "jwt-token", "note": "JWT in a Rust *_tests.rs file (real-repo FP, 1.4.7): downgraded to low, must still be detected" },
+  "fixtures/secrets/rust/inline_cfg_module.rs":       { "shouldDetect": true, "rule": "api-key-generic", "note": "Generic key inside an inline #[cfg(test)] module (real-repo FP, 1.4.7): downgraded to low, must still be detected" }
 }

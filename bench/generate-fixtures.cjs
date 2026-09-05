@@ -238,6 +238,59 @@ const fixtures = [
  * joined result is a valid PEM marker.
  */
 const nestedFixtures = [
+  // --- 1.4.7 Rust test-context pack ---
+  //
+  // These two are TP fixtures, not clean ones, and that is deliberate. Both
+  // classes they cover are severity DOWNGRADES, not suppressions, so the file
+  // still produces a finding and cannot be labelled clean. They also cannot
+  // prove the Rust-specific logic on their own: every path under bench/
+  // contains the segment `fixtures`, which the existing test-path rule already
+  // downgrades. What they do guard is the direction that can actually regress
+  // here, a future change that turns either downgrade into a suppression and
+  // silently loses recall on real Rust code. The Rust-specific behaviour is
+  // covered by the unit tests in packages/core.
+  {
+    relPath: 'rust/auth_tests.rs',
+    comment: 'True positive: JWT in a Rust *_tests.rs file (path downgrades severity to low)',
+    content: () =>
+      [
+        '// Rust keeps unit tests beside the source: src/auth/auth_tests.rs.\n',
+        '#[test]\n',
+        'fn parses_a_bearer_token() {\n',
+        `    let token = "${[
+          'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9',
+          '.',
+          'eyJzdWIiOiJ2Zy1iZW5jaCIsImlhdCI6MTcwMDAwMDAwMH0',
+          '.',
+          'Kq7mZr2xVb9nTd4wHs6yLc3pJf8gRu5eNa1v',
+        ].join('')}";\n`,
+        '    assert!(decode(token).is_ok());\n',
+        '}\n',
+      ].join(''),
+  },
+  {
+    relPath: 'rust/inline_cfg_module.rs',
+    comment: 'True positive: generic key inside an inline #[cfg(test)] module (downgraded to low)',
+    content: () =>
+      [
+        'use crate::auth::Client;\n',
+        '\n',
+        'pub fn build() -> Client {\n',
+        '    Client::new()\n',
+        '}\n',
+        '\n',
+        '#[cfg(test)]\n',
+        'mod tests {\n',
+        '    use super::*;\n',
+        '\n',
+        '    #[test]\n',
+        '    fn builds_with_a_throwaway_key() {\n',
+        `        let api_key = "${['Kq7mZr2xVb9n', 'Td4wHs6yLc3p'].join('')}";\n`,
+        '        assert!(Client::with_key(api_key).is_ok());\n',
+        '    }\n',
+        '}\n',
+      ].join(''),
+  },
   {
     relPath: 'caddytest/key.pem',
     comment: 'True positive: RSA private key in caddytest/ (path downgrades severity to low)',

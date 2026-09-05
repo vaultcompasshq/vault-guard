@@ -1,4 +1,9 @@
-import { isTestFilePath } from '../path-severity';
+import { isTestFilePath, applyPathAwareSeverity } from '../path-severity';
+import type { SecretMatch } from '../../types';
+
+function match(type: string, severity: SecretMatch['severity']): SecretMatch {
+  return { type, value: 'abcd…(20c)', line: 1, column: 0, offset: 0, matchLength: 20, severity };
+}
 
 describe('isTestFilePath', () => {
   it('recognizes common JS/TS test paths', () => {
@@ -14,6 +19,18 @@ describe('isTestFilePath', () => {
   it('recognizes Python test_*.py and *_test.py', () => {
     expect(isTestFilePath('t/unit/backends/test_mongodb.py')).toBe(true);
     expect(isTestFilePath('tests/integration/db_test.py')).toBe(true);
+  });
+
+  it('recognizes Rust *_tests.rs and *_test.rs files under src/', () => {
+    expect(isTestFilePath('codex-rs/login/src/auth/auth_tests.rs')).toBe(true);
+    expect(isTestFilePath('crates/core/src/client_test.rs')).toBe(true);
+    expect(isTestFilePath('src/protocol/item_builders_tests.rs')).toBe(true);
+  });
+
+  it('does not treat ordinary Rust source as a test file', () => {
+    expect(isTestFilePath('codex-rs/login/src/auth/auth.rs')).toBe(false);
+    expect(isTestFilePath('src/latest.rs')).toBe(false);
+    expect(isTestFilePath('src/contest.rs')).toBe(false);
   });
 
   it('recognizes Celery-style t/unit/ and t/integration/ trees', () => {
@@ -46,5 +63,22 @@ describe('isTestFilePath', () => {
   it('does not mark production source paths', () => {
     expect(isTestFilePath('src/database.ts')).toBe(false);
     expect(isTestFilePath('lib/ansible/modules/expect.py')).toBe(false);
+  });
+});
+
+describe('applyPathAwareSeverity on Rust test files', () => {
+  it('downgrades a generic pattern in src/foo_tests.rs', () => {
+    const [out] = applyPathAwareSeverity([match('api-key-generic', 'high')], 'src/foo_tests.rs');
+    expect(out.severity).toBe('low');
+  });
+
+  it('leaves the same match alone in src/foo.rs', () => {
+    const [out] = applyPathAwareSeverity([match('api-key-generic', 'high')], 'src/foo.rs');
+    expect(out.severity).toBe('high');
+  });
+
+  it('keeps a vendor-anchored rule at full severity in a Rust test file', () => {
+    const [out] = applyPathAwareSeverity([match('github-token', 'critical')], 'src/foo_tests.rs');
+    expect(out.severity).toBe('critical');
   });
 });

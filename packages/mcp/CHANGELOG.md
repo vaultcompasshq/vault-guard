@@ -1,5 +1,54 @@
 # @vaultcompass/vault-guard-mcp
 
+## 1.4.7
+
+### Patch Changes
+
+- **Three false-positive classes found by scanning a public Rust monorepo.**
+  A scan of that repository produced 30 findings, 20 of them blocking, and
+  every one was a test fixture, a hand-typed placeholder, or a Sentry DSN
+  that is public by design. All three classes are fixed here; the same scan
+  now reports 23 findings, all at `low`, and exits 0.
+
+  **Rust test files are recognised.** `TEST_FILE_PATTERNS` covered JS/TS, Go
+  and Python but not Rust. Cargo has no separate directory for unit tests, so
+  a crate keeps them beside its source as `src/auth/auth_tests.rs`, and every
+  throwaway token in one kept its full severity even though the rules
+  involved were already on the test-path downgrade list. `*_tests.rs` and
+  `*_test.rs` now downgrade the same way `*_test.go` does.
+
+  **Inline `#[cfg(test)]` modules are recognised.** Rust's dominant unit-test
+  convention puts the tests in the same file as the production code, which no
+  path heuristic can see. A new content-side signal locates in-file test
+  regions and grants a match inside one the same downgrade a test path
+  grants. It is a line-based heuristic, not a parser: a `cfg` attribute
+  mentioning `test` at column 0, introducing a `mod` or `fn`, opens a region
+  that runs to end of file, closing early at a later `#[cfg(not(test))]` or at
+  the next top-level item without the attribute. An indented attribute is
+  ignored, so a test item nested inside an `impl` keeps its full severity.
+  The finder is a per-language registry; Rust is the only implementation.
+
+  **Alphabet-run placeholders no longer defeat the entropy gate.** Shannon
+  entropy counts character frequencies and throws the order away, so a strict
+  run such as `abcdefghijklmnopqrstuvwxyz0123456789` scores at the top of the
+  range for its length and walks straight through. A new check ahead of the
+  entropy gate drops any value where at least 75% of the characters sit
+  inside runs of three or more consecutive code points, ascending or
+  descending. A value that is half run and half random scores 50% and
+  survives. Unlike the entropy gate this one applies to vendor-anchored rules
+  too, which is where it matters: it is safe there because a real provider
+  key comes from a random source and cannot be the alphabet.
+
+  Both test-context changes are severity downgrades, never suppressions, and
+  neither touches vendor-anchored provider keys: a real provider key is a
+  real key even in a test file. If your repository carries a counting or
+  alphabet-run placeholder under a real vendor prefix, that finding will now
+  disappear rather than block.
+
+- Updated dependencies
+  - @vaultcompass/vault-guard-core@1.4.7
+  - @vaultcompass/vault-guard-telemetry@1.4.7
+
 ## 1.4.6
 
 ### Patch Changes

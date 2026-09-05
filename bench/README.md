@@ -89,4 +89,23 @@ comparison table.
 ## Notes
 
 - The harness measures **file-level** detection (did any finding occur in a file expected to contain a secret?), not individual-finding accuracy. This matches the primary user-facing guarantee: "no secrets slip through undetected."
+- **This harness cannot express "downgraded, not suppressed."** It counts a
+  file as detected when any finding occurs, **at any severity**. A false
+  positive fixed by a severity *downgrade* therefore still reads as a
+  detection, so it can never be a `clean/` fixture and the corpus has no way to
+  tell a `critical` from a `low`. Adding a `maxSeverity` label to
+  `labels.json`, asserted next to `rule`, is the way to close this; it is
+  deferred on cost, not on principle. One wrinkle to handle when it lands:
+  every path under `bench/` contains the segment `fixtures`, which the
+  path-aware downgrade already matches, so a `maxSeverity` assertion here would
+  pass on the path rule alone and would not isolate a content-based downgrade.
+  That part is a layout convention rather than anything structural, and staging
+  fixtures under a neutral directory before scanning would settle it. Until
+  then, downgrade fixes (the Rust `*_tests.rs` and inline `#[cfg(test)]`
+  classes added in 1.4.7, and `caddytest/key.pem` before them) are parked here
+  as TP fixtures that guard against the downgrade silently becoming a
+  suppression, and the behaviour itself is covered by unit tests in
+  `packages/core`. Suppression fixes (the 1.4.7 sequential-run class) are
+  guarded properly, as `clean/` fixtures, because suppression is
+  path-independent.
 - `fixtures/clean/test-passwords.ts` is a `.ts` file in a non-test path to stress the generic `password-in-code` pattern. The path-aware severity downgrade applies only to files inside `__tests__/`, `tests/`, `fixtures/`, etc.), not this benchmark's `clean/` directory. If this file triggers, that is a FP the scanner needs to address.
