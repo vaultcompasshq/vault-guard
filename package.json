@@ -42,7 +42,7 @@
     "@vaultcompass/intent-guard": "1.2.1",
     "@vaultcompass/vault-guard": "1.4.6",
     "eslint": "^10.4.1",
-    "jest": "^30.4.2",
+    "jest": "^30.5.1",
     "typescript": "^5.0.0"
   },
   "packageManager": "pnpm@9.15.9",
