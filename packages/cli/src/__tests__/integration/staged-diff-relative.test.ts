@@ -25,8 +25,15 @@ describe('scan --staged ignores diff.relative', () => {
   const packageRoot = path.join(__dirname, '..', '..', '..');
   const cliEntry = path.join(packageRoot, 'dist', 'cli-entry.js');
 
-  const SECRET =
-    'ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWX\n';
+  // Joined at runtime: a committed provider-key shape trips credential
+  // scanners regardless of the value being fake and the file being a test.
+  const SECRET = `ANTHROPIC_API_KEY=${[
+    'sk-ant-',
+    'api03-',
+    'Kq7mZr2xVb9nTd4wHs6yLc3p',
+    'Jf8gRu5eNa1vBt0iOy7kPd2s',
+    'Xw4hEj6uCi3q',
+  ].join('')}\n`;
 
   let repo: string;
 

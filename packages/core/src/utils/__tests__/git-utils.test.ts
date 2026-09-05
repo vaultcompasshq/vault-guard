@@ -5,6 +5,21 @@ import { execSync } from 'child_process';
 import { getGitStagedFilePaths, readGitIndexFile, STAGED_DIFF_ARGV } from '../git-utils';
 
 /**
+ * Synthetic Anthropic-shaped key, joined at runtime.
+ *
+ * A committed provider-key shape trips credential scanners regardless of the
+ * value being fake and the file being a test, so no fragment here matches a
+ * rule on its own. Same convention as `bench/generate-fixtures.cjs`.
+ */
+const ANTHROPIC_KEY = [
+  'sk-ant-',
+  'api03-',
+  'Kq7mZr2xVb9nTd4wHs6yLc3p',
+  'Jf8gRu5eNa1vBt0iOy7kPd2s',
+  'Xw4hEj6uCi3q',
+].join('');
+
+/**
  * The staged listing keeps `diff.relative` from mattering in more than one
  * way: the config is forced off in the argv AND the command runs at the
  * worktree root. That redundancy is deliberate for a pre-commit gate, but a
@@ -64,7 +79,7 @@ describe('git-utils staged index', () => {
     const leak = path.join(repo, 'leak.env');
     fs.writeFileSync(
       leak,
-      'ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWX\n',
+      `ANTHROPIC_API_KEY=${ANTHROPIC_KEY}\n`,
     );
     execSync('git add leak.env', { cwd: repo, stdio: 'ignore' });
     fs.unlinkSync(leak);
@@ -80,7 +95,7 @@ describe('git-utils staged index', () => {
     // Worktree now has a secret; index still has the clean blob.
     fs.writeFileSync(
       file,
-      'const k = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWX";\n',
+      `const k = "${ANTHROPIC_KEY}";\n`,
     );
 
     const fromIndex = readGitIndexFile(repo, 'partial.ts');
@@ -89,7 +104,7 @@ describe('git-utils staged index', () => {
   });
 
   it('reads staged blob after worktree delete', () => {
-    fs.writeFileSync(path.join(repo, 'gone.env'), 'SECRET=sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWX\n');
+    fs.writeFileSync(path.join(repo, 'gone.env'), `SECRET=${ANTHROPIC_KEY}\n`);
     execSync('git add gone.env', { cwd: repo, stdio: 'ignore' });
     fs.unlinkSync(path.join(repo, 'gone.env'));
 
@@ -99,7 +114,7 @@ describe('git-utils staged index', () => {
 
   describe('with diff.relative set on the repository', () => {
     const SECRET =
-      'ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWX\n';
+      `ANTHROPIC_API_KEY=${ANTHROPIC_KEY}\n`;
     let deep: string;
 
     beforeEach(() => {

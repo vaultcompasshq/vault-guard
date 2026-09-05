@@ -9,7 +9,7 @@ export { fingerprintForMatch } from './match-fingerprint';
 export * from './scan-output';
 export * from './diagnostics';
 export { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from './utils/entropy';
-export { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody } from './utils/placeholder';
+export { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, SEQUENTIAL_RUN_COVERAGE_THRESHOLD } from './utils/placeholder';
 export {
   getGitStagedFilePaths,
   readGitIndexFile,
@@ -28,6 +28,8 @@ export {
 
 export { scanTextFileAsync, scanTextFileSync } from './utils/scan-file';
 export { applyPathAwareSeverity, isTestFilePath, isLocalePath } from './utils/path-severity';
+export { findInlineTestRegions, isInsideInlineTestRegion } from './utils/inline-test-context';
+export type { InlineTestRegion, InlineTestRegionFinder } from './utils/inline-test-context';
 export {
   DEFAULT_FAIL_ON,
   FAIL_ON_VALUES,

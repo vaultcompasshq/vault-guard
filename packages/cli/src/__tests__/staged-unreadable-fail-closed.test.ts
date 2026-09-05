@@ -28,8 +28,15 @@ import { scanCommand } from '../commands/scan';
  * `pnpm test:windows` excludes.
  */
 describe('scan --staged fails closed on an unreadable staged file', () => {
-  const SECRET =
-    'ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWX\n';
+  // Joined at runtime: a committed provider-key shape trips credential
+  // scanners regardless of the value being fake and the file being a test.
+  const SECRET = `ANTHROPIC_API_KEY=${[
+    'sk-ant-',
+    'api03-',
+    'Kq7mZr2xVb9nTd4wHs6yLc3p',
+    'Jf8gRu5eNa1vBt0iOy7kPd2s',
+    'Xw4hEj6uCi3q',
+  ].join('')}\n`;
 
   let repo: string;
   let stdout: string[];
@@ -110,7 +117,13 @@ describe('scan --staged fails closed on an unreadable staged file', () => {
     // stageThenBreak just deleted.
     fs.writeFileSync(
       path.join(repo, 'readable.env'),
-      'OTHER_KEY=sk-ant-api03-zyxwvutsrqponmlkjihgfedcba9876543210ZYXWVUTSRQPONMLKJIHGFEDCBA\n',
+      `OTHER_KEY=${[
+        'sk-ant-',
+        'api03-',
+        'Pv3sHm8bQx2wJd6nRt9kZc4u',
+        'Yf1gLe7aTi5oNq0hWr2jXb8m',
+        'Up4dSe9cVn3f',
+      ].join('')}\n`,
     );
     execSync('git add readable.env', { cwd: repo, stdio: 'ignore' });
 

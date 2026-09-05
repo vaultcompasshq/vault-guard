@@ -2,8 +2,10 @@ import fs from 'fs';
 import { SecretMatch } from '../types';
 import { VaultGuardConfig } from '../config';
 import { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from '../utils/entropy';
-import { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody } from '../utils/placeholder';
+import { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder } from '../utils/placeholder';
 import { applyPathAwareSeverity } from '../utils/path-severity';
+import { LOW_PRECISION_PATH_DOWNGRADE_IDS } from '../utils/path-downgrade-ids';
+import { findInlineTestRegions, isInsideInlineTestRegion } from '../utils/inline-test-context';
 import { shouldSuppressDocContextMatch, isInsidePythonTripleQuoted } from '../utils/doc-context';
 import {
   validateRegexLength,
@@ -197,6 +199,55 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
 const GENERIC_ASSIGNMENT_IDS = new Set(['secret-generic', 'api-key-generic', 'password-in-code']);
 
 /**
+ * Rules exempt from {@link isSequentialRunPlaceholder}.
+ *
+ * That check suppresses outright, and the only thing that makes suppression
+ * safe is the argument "a real credential is generated from a random source,
+ * so it cannot be a run". The argument is sound for machine-issued tokens and
+ * false for anything a person types: a weak password IS a keyboard run, and
+ * being a run is the reason to report it, not evidence that it is fake.
+ *
+ * Reviewed against the whole rule table. These are the rules whose secret is
+ * human-chosen:
+ *
+ *   - `password-in-code`: the value is a plaintext password somebody picked.
+ *     The clearest case and the most costly, because its minimum capture is 12
+ *     characters, which is also the run check's minimum value length, so short
+ *     weak passwords were suppressed with nothing left at any severity to
+ *     triage.
+ *   - `postgresql-url`, `mysql-url`, `mongodb-url`, `redis-url`: the secret in
+ *     a DSN is its password component, equally human-chosen. The rest of the
+ *     URL dilutes run coverage but not reliably below the threshold, e.g.
+ *     `redis://a:<52-character run>@b.io:1` lands at 75.4%.
+ *
+ * Deliberately NOT exempt, and why:
+ *
+ *   - Every vendor-anchored rule (`github-token`, `aws-access`, `stripe`,
+ *     `anthropic`, …): provider-issued and random. This is where the check
+ *     earns its keep, and where five of the eight criticals in the public-repo
+ *     scan came from.
+ *   - `api-key-generic`, `secret-generic`, `bearer-token`: the value is
+ *     normally an issued token, and these are where the hand-typed run
+ *     fixtures actually appeared in real code. They already carry an entropy
+ *     gate and the aggressive placeholder filter, so they are treated as
+ *     low-precision throughout. Residual risk accepted: a human-typed signing
+ *     secret that is a pure run under `secret =` is suppressed.
+ *   - `aws-secret-context`, `mistral`, `together-ai`, `deepseek`,
+ *     `cloudflare-token`: context-anchored, but the value they capture is
+ *     still a provider-issued key rather than a chosen one.
+ *   - `jwt-token`: base64url of structured JSON, machine-generated.
+ *   - `ssh-private-key`: the match is the PEM header, which holds no runs at
+ *     all, so the check can never fire on it.
+ */
+const HUMAN_CHOSEN_VALUE_IDS = new Set([
+  'password-in-code',
+  'postgresql-url',
+  'mysql-url',
+  'mongodb-url',
+  'redis-url',
+]);
+
+/**
  * Read-only metadata for built-in patterns (docs / codegen). Exposes
  * `RegExp#source` and flags only — not live `RegExp` instances.
  */
@@ -379,6 +430,20 @@ export class SecretScanner {
         const rawValue = match[1] ?? match[0];
         const fullMatch = match[0];
 
+        // Ahead of the entropy gate on purpose. Shannon entropy ignores
+        // character order, so a hand-typed alphabet run scores near the maximum
+        // for its length and sails through. This runs for vendor-anchored rules
+        // too. They have no entropy gate at all, and that is exactly where the
+        // alphabet-run fixtures produced criticals. Safe there because a real
+        // provider key is generated randomly and cannot be the alphabet.
+        //
+        // That safety argument does not hold for rules whose value a person
+        // types, where a run is a weak password rather than a fake one, so
+        // those rules are exempt. See HUMAN_CHOSEN_VALUE_IDS.
+        if (!HUMAN_CHOSEN_VALUE_IDS.has(type) && isSequentialRunPlaceholder(rawValue)) {
+          continue;
+        }
+
         const threshold = minEntropy ?? (minEntropy === 0 ? 0 : undefined);
         if (threshold !== undefined && shannonEntropy(rawValue) < threshold) {
           continue;
@@ -487,7 +552,43 @@ export class SecretScanner {
       }
     }
 
-    return this.deduplicateMatches(raw);
+    // Applied after dedupe so the severity ranking that resolves overlapping
+    // matches sees the rules' declared severities, exactly as it did before
+    // in-file test context existed.
+    return this.applyInlineTestSeverity(
+      this.deduplicateMatches(raw),
+      content,
+      opts?.filePath,
+    );
+  }
+
+  /**
+   * Downgrade downgrade-eligible matches that sit inside an in-file test block
+   * (today: Rust's `#[cfg(test)] mod tests { … }`) to `low`.
+   *
+   * This is the content-side twin of {@link applyPathAwareSeverity} and uses
+   * the same rule set, so vendor-anchored provider keys are untouched: a real
+   * provider key is a real key even in a test block.
+   */
+  private applyInlineTestSeverity(
+    matches: SecretMatch[],
+    content: string,
+    filePath: string | undefined,
+  ): SecretMatch[] {
+    if (matches.length === 0 || !filePath) return matches;
+    const regions = findInlineTestRegions(content, filePath);
+    if (regions.length === 0) return matches;
+
+    return matches.map(m => {
+      if (
+        m.severity !== 'low' &&
+        LOW_PRECISION_PATH_DOWNGRADE_IDS.has(m.type) &&
+        isInsideInlineTestRegion(regions, m.offset)
+      ) {
+        return { ...m, severity: 'low' as const };
+      }
+      return m;
+    });
   }
 
   /**

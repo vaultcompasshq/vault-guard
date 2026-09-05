@@ -14,6 +14,16 @@ Unanchored generic patterns (raw 32-char hex, MD5/SHA1 shapes, base64 blobs) are
 
 Patterns with a `Min entropy` value drop matches whose Shannon entropy falls below the threshold. This is what stops `password = "password123"` from being flagged as a `password-in-code` hit, and what keeps `api_key = "REPLACE_ME_BEFORE_PROD"` from setting off `api-key-generic`. Patterns without an entropy threshold are structured enough that the regex itself is the gate.
 
+## Sequential-run gate
+
+Shannon entropy counts how often each character occurs and throws the order away. A strict alphabet run uses every character exactly once, which is the flattest frequency distribution there is, so `api_key = "abcdefghijklmnopqrstuvwxyz0123456789"` scores at the top of the range and walks straight through the entropy gate. No threshold fixes that: order is the signal, and entropy does not look at order.
+
+A separate check runs ahead of the entropy gate and drops any value where at least 75% of the characters sit inside runs of three or more consecutive code points, ascending or descending. That covers `abcdef…`, `zyxwvu…`, and the same short run repeated. A value that is half run and half random scores 50% and survives, because a real credential can contain an incidental run. Values shorter than 12 characters are never checked: at that length coverage says nothing, since a four-character value is trivially "all run".
+
+Unlike the entropy gate this one applies to vendor-anchored patterns too, which have no entropy threshold of their own, and that is where it earns its keep, since `ghp_abcdefghij…` and `AKIAABCDEFGH…` are how a fake key gets typed by hand. It is safe there for the same reason it is useful: a real provider key comes from a random source and cannot be the alphabet. The fixed vendor prefix counts toward the length but is not itself a run, which is why the threshold sits at 75% rather than higher: `AKIA` plus a 16-character run is only 80% covered.
+
+That safety argument holds only for machine-issued credentials. For anything a person types, a run is a WEAK secret rather than a fake one, and suppressing it destroys the finding instead of demoting it. Rules whose value is human-chosen are therefore exempt from this check and are gated by entropy alone: `password-in-code`, and the four connection-string rules (`postgresql-url`, `mysql-url`, `mongodb-url`, `redis-url`), whose secret is the password component of the DSN. `password-in-code` matters most here, because its minimum capture is 12 characters, the same as this check's minimum value length, so an ordinary weak password sat exactly on the boundary.
+
 ## Patterns
 
 | ID | Severity | Min entropy | Regex flags | Regex source |

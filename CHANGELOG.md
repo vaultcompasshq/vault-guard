@@ -7,6 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.7] - 2026-09-05
+
+Three false-positive classes found by scanning a public Rust monorepo.
+That scan produced 30 findings, 20 of them blocking, and every one was a
+test fixture, a hand-typed placeholder, or a Sentry DSN that is public by
+design. The same scan now reports 23 findings, all at `low`, and exits 0.
+
+### Fixed
+
+- **Rust test files were not recognised as test files.**
+  `TEST_FILE_PATTERNS` covered JS/TS, Go and Python but not Rust. Cargo
+  has no separate directory for unit tests, so a crate keeps them beside
+  its source as `src/auth/auth_tests.rs`, and every throwaway token in
+  one kept its full severity even though the rules involved
+  (`api-key-generic`, `jwt-token`, `bearer-token`, `ssh-private-key`)
+  were already on the test-path downgrade list. `*_tests.rs` and
+  `*_test.rs` now downgrade the same way `*_test.go` does.
+- **Inline `#[cfg(test)]` modules were invisible.** Rust's dominant
+  unit-test convention puts the tests in the same file as the production
+  code, which no path heuristic can see. A new content-side signal
+  locates in-file test regions and grants a match inside one the same
+  downgrade a test path grants, for the same rule set. It is a
+  line-based heuristic, not a parser. A column-0 `cfg` attribute opens a
+  region when its predicate is true under `cargo test` and it introduces
+  a `mod` or `fn`; the region runs to end of file, closing early at a
+  negated-test attribute, at the next top-level item without such an
+  attribute, or at a column-0 macro invocation such as
+  `lazy_static! { … }`. The predicate is read structurally, not by
+  substring: `test` counts only outside any `not(`, so
+  `#[cfg(all(not(test), feature = "prod"))]` is a closer and never an
+  opener, and string literals are skipped, so a feature named `test`,
+  `test-utils` or `testing` is not the `test` predicate. The finder is a
+  per-language registry; Rust is the only implementation.
+
+  Three blind spots remain, and only the first is safe. An **indented**
+  attribute is ignored, so a test item nested inside an `impl` keeps its
+  full severity. A column-0 `#[cfg(test)]` written inside a raw string or
+  a block comment opens a region that does not exist, and production code
+  resuming in a shape not on the closer list leaves a region open over
+  it. **Both of those demote real code**, and the fix for both is the
+  same one this design does not attempt: parse Rust rather than scan
+  lines.
+- **Alphabet-run placeholders defeated the entropy gate.** Shannon
+  entropy counts character frequencies and throws the order away, so a
+  strict run such as `abcdefghijklmnopqrstuvwxyz0123456789` scores at
+  the top of the range for its length and walked straight through. No
+  threshold fixes that: order is the signal, and entropy does not look
+  at order. A new check ahead of the entropy gate drops any value where
+  at least 75% of its characters sit inside runs of three or more
+  consecutive code points, ascending or descending. A value that is half
+  run and half random scores 50% and survives, because a real credential
+  can carry an incidental run. Values under 12 characters are never
+  checked, since coverage says nothing at that length.
+
+  **Rules whose value is human-chosen are exempt**, because for those a
+  run is a *weak* secret and not a fake one, and suppressing it destroys
+  the finding rather than demoting it. The exempt list is
+  `password-in-code` plus the four connection-string rules
+  (`postgresql-url`, `mysql-url`, `mongodb-url`, `redis-url`), whose
+  secret is the password component of the DSN. `password-in-code`
+  matters most: its minimum capture is 12 characters, the same as this
+  check's minimum value length, so ordinary weak passwords sat exactly on
+  the boundary.
+
+### Changed
+
+- The sequential-run check applies to vendor-anchored patterns as well,
+  unlike the entropy gate, which those patterns never consult. That is
+  where it earns its keep: `ghp_abcdefghij…` and `AKIAABCDEFGH…`
+  are how a fake key gets typed by hand, and five of the eight criticals
+  in that public-repo scan were exactly this. It is safe there for the
+  same reason it is useful: a real provider key comes from a random
+  source and cannot be the alphabet. **If your repository carries a
+  counting or alphabet-run placeholder under a real vendor prefix, that
+  finding now disappears rather than blocking.**
+- Both test-context changes are severity downgrades, never suppressions,
+  and neither touches vendor-anchored provider keys. A real provider key
+  is a real key even in a test file.
+
+### Notes
+
+- `bench/README.md` records a limitation the corpus has always had: the
+  harness counts a file as detected at any severity, so a false positive
+  fixed by a *downgrade* cannot be guarded as a clean fixture there. A
+  `maxSeverity` label is the way to close that and is deferred on cost.
+  The two Rust classes are parked as TP fixtures that guard against the
+  downgrade silently becoming a suppression, and the behaviour itself is
+  covered by unit tests.
+
 ## [1.4.6] - 2026-09-03
 
 ### Fixed
