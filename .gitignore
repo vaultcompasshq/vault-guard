@@ -42,6 +42,7 @@ docs/plans/
 .claude/
 audit.md
 
-# The umbrella's local policy file and hook manifest, written on this machine while that tool is unpublished.
-.guardrails.yaml
+# The umbrella's hook manifest, under .guardrails, records absolute paths on
+# whichever machine installed the hook, so it stays local. The policy file
+# beside it, .guardrails.yaml, is tracked: CI reads it.
 .guardrails/
