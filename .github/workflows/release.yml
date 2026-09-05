@@ -47,6 +47,19 @@ jobs:
     - name: Check for private portfolio references
       run: pnpm check:private-names
 
+    - name: Assert CHANGELOG.md documents this version
+      run: |
+        set -euo pipefail
+        if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+          version="${GITHUB_REF_NAME#v}"
+          if ! grep -qF "## [${version}]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md is missing the ## [${version}] entry for this release."
+            exit 1
+          fi
+        else
+          echo "Not a tag push; skipping the CHANGELOG entry check."
+        fi
+
     - name: Verify publish hygiene (no source maps or test artifacts in tarballs)
       run: pnpm check:pack
 
