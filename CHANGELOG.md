@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.6] - 2026-09-03
+
+### Fixed
+
+- **Staged scan depended on repository config and working directory.**
+  With git's `diff.relative` set, git prints staged paths relative to
+  the process working directory and omits every staged path outside it.
+  The gate assumed repository-root-relative paths and resolved them
+  against the working directory instead. From a subdirectory that meant
+  files staged above it were silently absent from the scan, with no
+  error and no diagnostic. The staged diff now always runs at the
+  worktree root with `diff.relative` and `core.quotePath` forced off.
+- **An unreadable staged file no longer passes as a clean run.** A file
+  the scanner could not read used to produce a warning while the run
+  still reported success. It is now fatal: exit 2, every unreadable
+  file named, and findings from the files that did read still shown.
+  `run.unscannable_files` carries the list in JSON and SARIF. Directory
+  scans are unchanged and keep diagnosing without failing, since a
+  directory walk is open-ended discovery rather than a closed list git
+  itself declared.
+- **A staged submodule pointer no longer blocks a commit.** A submodule
+  bump has no blob for the gate to read; it is now ignored at the diff
+  instead of being treated as an unreadable file.
+- **Paths in text, JSON and SARIF output are anchored at the repository
+  root**, regardless of the directory a staged scan is run from.
+- **The installed pre-commit and pre-push hooks now say the scan could
+  not complete on exit 2**, and offer no bypass hint, rather than
+  describing the failure as secrets detected.
+
+### Changed
+
+- A staged scan that finds a secret and also hits an unreadable file
+  now exits 2 rather than 1. Gate on any non-zero exit code, not on 1
+  alone.
+
+Left for a follow-up: a scan run directly against an explicit,
+unreadable file target still exits 0.
+
+## [1.4.5] - 2026-09-03
+
+### Fixed
+
+- **SARIF output leaked local filesystem layout.** `artifactLocation.uri`
+  was relativized against the working directory, so scanning a target
+  outside it emitted absolute paths; it is now relativized against the
+  scan root instead. Diagnostic notifications carried the same absolute
+  paths into `tool.driver.notifications` and are sanitized the same way.
+  In-checkout scans are unchanged.
+
 ## [1.4.4] - 2026-09-03
 
 ### Fixed
