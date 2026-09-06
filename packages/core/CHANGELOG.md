@@ -1,5 +1,19 @@
 # @vaultcompass/vault-guard-core
 
+## 1.7.0
+
+### Minor Changes
+
+- Pull-request mode: on a pull-request run every control input comes from the base ref and the head tree is the thing scanned.
+
+  - `trust-base.ts` reads `.vault-guard.json`, `.vault-guard.local.json` and `.vault-guard.baseline.json` from a ref with `git ls-tree` and `git show`, on the same search walk `loadConfig` uses. Reads only: no checkout switch, no worktree, nothing written into the repository. A ref that will not resolve, one that resolves to HEAD's commit, and one that carries HEAD's tree are all refused, because each puts every control input back inside the tree under judgment.
+  - Both sides of the base-versus-head comparison are read through git, so a config the head replaced with a symlink is compared as the link target string it is. Shape changes (symlink, not a regular file, removed, mode) are reported separately from content changes.
+  - `getPullRequestFilesToScan` builds the file set from the HEAD tree (`listHeadTreeFiles`, which reads `git ls-tree -r HEAD`, whose records carry the mode, so symlinks and gitlinks never enter the list) rather than from a gitignore-filtered walk. Neither a `.gitignore` the pull request added nor a `git rm --cached` can take a committed file out of the scan, and a staged but uncommitted file is not scanned, because the head tree is the thing under judgment. It anchors the vendored-directory names to the scan root so a committed `src/vendor/` is scanned.
+  - `PullRequestSkips` carries what the run declined to look at: the directories skipped by name at the scan root, and the count of files dropped by the extension, lockfile-name and generated-artifact filters. Those filters are unchanged; a key committed as `src/leak.min.js` is still skipped, but the run no longer says nothing about it.
+  - Config schema validation now runs on every load, not only in `config validate`. A config that parsed as JSON but failed the schema used to load with the bad parts silently dropped.
+  - `IgnoreDirectiveHits` carries a separate count for a directive that hid a critical vendor-anchored finding.
+  - JSON output gains a `trustBase` block and `run.type_filtered_files`; SARIF gains one `toolExecutionNotification` per proposal.
+
 ## 1.6.0
 
 ### Minor Changes

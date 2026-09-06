@@ -13,9 +13,17 @@ import {
   resolveFailOn,
   countBlockingMatches,
   FAIL_ON_VALUES,
+  loadTrustedControls,
+  TrustBaseError,
   type FailOnThreshold,
+  type PullRequestSkips,
+  type TrustBaseReport,
+  type TrustedControls,
+  type VaultGuardConfig,
 } from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
+import fs from 'fs';
+import { isAbsolute, relative, resolve as pathResolve } from 'path';
 import {
   scanFilesAsync,
   scanFileListAsync,
@@ -35,11 +43,40 @@ interface ExtraPatternDiagnosticCtx {
 
 export type OutputFormat = 'text' | 'json' | 'sarif';
 
+/**
+ * Exit 2 is "vault-guard cannot vouch for this result". The staged path already
+ * uses it for a file it could not read and for a git failure; pull-request mode
+ * uses it for a base ref it could not read control inputs from. In every case
+ * nothing about the tree was established, so exit 1 ("scanned fine, found
+ * something") would be a claim the run did not earn.
+ */
+const COULD_NOT_RUN_EXIT = 2;
+
+/**
+ * Symlinks resolved, falling back to the input when they cannot be. The
+ * worktree root git reports is physical (`/private/var/...` on macOS, where
+ * `/var` is a link), so a target compared against it unresolved reads as
+ * outside a repository it is plainly inside.
+ */
+function canonicalPath(p: string): string {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return p;
+  }
+}
+
 export async function scanCommand(
   targetPath: string | string[],
   format: OutputFormat = 'text',
   staged = false,
   failOnFlag?: string,
+  /**
+   * Pull-request mode. Control inputs come from this ref and the head tree is
+   * the thing scanned. Never set by a pre-commit hook: a hook runs inside the
+   * trust boundary, where the working tree is the developer's own.
+   */
+  trustBaseRef?: string,
 ): Promise<number> {
   const cwd = process.cwd();
   const targetPaths = Array.isArray(targetPath) ? targetPath : [targetPath];
@@ -78,9 +115,71 @@ export async function scanCommand(
     }
   }
 
-  let config;
+  // Pull-request mode is resolved FIRST, before anything is printed and before
+  // a single file is opened. A base ref that cannot be read is could-not-run,
+  // and a run that had already announced "🔍 Scanning ." before discovering
+  // that would be describing work it never did.
+  let controls: TrustedControls | undefined;
+  if (trustBaseRef !== undefined) {
+    try {
+      controls = loadTrustedControls(outputBase, trustBaseRef);
+    } catch (e) {
+      if (e instanceof TrustBaseError || e instanceof ConfigError) {
+        console.error(chalk.red('❌ Cannot establish the trust base:'), chalk.white(e.message));
+        return COULD_NOT_RUN_EXIT;
+      }
+      throw e;
+    }
+  }
+
+  // The trust base is resolved from the run's anchor, which for a directory
+  // scan is the process cwd -- the same place the config is loaded from. A
+  // target somewhere else entirely therefore has NO tracked files in common
+  // with the repository the base ref lives in, and the intersection that makes
+  // pull-request mode safe becomes an intersection with nothing: the run
+  // scanned zero files and printed "no secrets found". Found by running the
+  // built CLI against another checkout by absolute path, which is exactly how
+  // someone would try this by hand.
+  //
+  // Refused rather than repaired by re-anchoring, because re-anchoring would
+  // move the config search, the output paths and the baseline fingerprints
+  // along with it, and quietly changing which config a scan obeys is the class
+  // of behaviour this whole flag exists to remove.
+  if (controls && !staged) {
+    for (const target of targetPaths) {
+      const abs = canonicalPath(pathResolve(cwd, target));
+      const rel = relative(controls.repoRoot, abs);
+      if (rel.startsWith('..') || isAbsolute(rel)) {
+        console.error(
+          chalk.red('❌ Cannot establish the trust base:'),
+          chalk.white(
+            `the scan target ${target} is outside the repository that "${trustBaseRef}" ` +
+              `lives in (${controls.repoRoot}), so pull-request mode would have no ` +
+              'tracked files to scan and would report a clean result over nothing. ' +
+              'Run vault-guard from inside the repository you are judging. ' +
+              'Nothing was scanned.',
+          ),
+        );
+        return COULD_NOT_RUN_EXIT;
+      }
+    }
+  }
+
+  const trustBase: TrustBaseReport | undefined =
+    controls === undefined
+      ? undefined
+      : {
+          ref: controls.ref,
+          proposals: controls.proposals,
+          configChanged: controls.configChanged,
+          baselineChanged: controls.baselineChanged,
+          configShapeChange: controls.configShapeChange,
+          baselineShapeChange: controls.baselineShapeChange,
+        };
+
+  let config: VaultGuardConfig;
   try {
-    config = loadConfig(outputBase);
+    config = controls ? controls.config : loadConfig(outputBase);
   } catch (e) {
     if (e instanceof ConfigError) {
       console.error(chalk.red('❌ Config error:'), chalk.white(e.message));
@@ -162,7 +261,13 @@ export async function scanCommand(
   // Total findings hidden by inline `vault-guard: ignore-line` /
   // `ignore-next-line` directives across every file. Reported even at zero so
   // the run always states whether the scanner was silenced inline.
-  const inlineSuppressed = { count: 0 };
+  const inlineSuppressed = { count: 0, criticalVendorAnchored: 0 };
+  // What the file set declined to look at. Only filled on a pull-request
+  // DIRECTORY scan, which is the only path that builds a file set this way:
+  // `--staged` takes its list from the index and consults neither the vendored
+  // names nor the type filters, so both counts are structurally zero there and
+  // printing them would invent a reassurance.
+  const prSkips: PullRequestSkips = { dirCount: 0, dirNames: [], typeFilteredFiles: 0 };
   // Files the scanner reached but could not read. On the staged path this is
   // fatal (see below); on a directory scan it is reported but not fatal.
   const unreadable: UnreadableFile[] = [];
@@ -227,13 +332,26 @@ export async function scanCommand(
         unreadable,
         configIgnorePatterns,
         inlineSuppressed,
+        ...(controls
+          ? { pullRequest: { headTreeFiles: controls.headTreeFiles, skipped: prSkips } }
+          : {}),
       });
     }
 
     // Merge bus diagnostics
     diagnostics.push(...bus.drain());
 
-    const baselineLoad = loadBaseline(outputBase);
+    // In pull-request mode the baseline is the base ref's, already read and
+    // parsed with the config. A baseline the head rewrote is a proposal, not a
+    // suppression list: pre-computing the fingerprint of the finding you are
+    // adding is the cheapest of all the ways to mute this scanner.
+    const baselineLoad = controls
+      ? {
+          sourcePath: controls.baselinePath ?? undefined,
+          fingerprints: controls.baseline,
+          parseError: controls.baselineParseError ?? undefined,
+        }
+      : loadBaseline(outputBase);
     if (baselineLoad.parseError) {
       diagnostics.push({
         code: 'baseline.invalid',
@@ -270,6 +388,13 @@ export async function scanCommand(
       ...(baselineSuppressed > 0 ? { baseline_suppressed: baselineSuppressed } : {}),
       // Always present (even at zero): a muted scanner must say so.
       inline_suppressed: inlineSuppressed.count,
+      inline_suppressed_critical_vendor: inlineSuppressed.criticalVendorAnchored,
+      ...(controls && !staged
+        ? {
+            vendored_dirs_skipped: prSkips.dirCount,
+            type_filtered_files: prSkips.typeFilteredFiles,
+          }
+        : {}),
       ...(unreadable.length > 0 ? { unscannable_files: unreadable.length } : {}),
     };
 
@@ -314,7 +439,9 @@ export async function scanCommand(
       // The document is still emitted: CI wants the artifact even when the
       // run failed, and `run.unscannable_files` plus the error-severity
       // `file.read_error` diagnostics inside it say why.
-      process.stdout.write(formatJson(results, { diagnostics, run, cwd: outputBase }) + '\n');
+      process.stdout.write(
+        formatJson(results, { diagnostics, run, cwd: outputBase, trustBase }) + '\n',
+      );
       if (stagedScanIncomplete) return INCOMPLETE_SCAN_EXIT;
       return blocking === 0 ? 0 : 1;
     }
@@ -325,7 +452,7 @@ export async function scanCommand(
       // subdirectory would otherwise make the base for files above it.
       const scanRoot = staged ? outputBase : resolveScanRoot(targetPaths, cwd);
       process.stdout.write(
-        formatSarif(results, { diagnostics, run, scanRoot, cwd: outputBase }) + '\n',
+        formatSarif(results, { diagnostics, run, scanRoot, cwd: outputBase, trustBase }) + '\n',
       );
       if (stagedScanIncomplete) return INCOMPLETE_SCAN_EXIT;
       return blocking === 0 ? 0 : 1;
@@ -338,15 +465,55 @@ export async function scanCommand(
       );
     }
 
+    // Pull-request mode states what it read and what it refused to apply,
+    // every run, including the run where the answer is "nothing". A reviewer
+    // reading a green tick needs to know that the tick was produced against
+    // the base ref's rules rather than against whatever the pull request said
+    // the rules were.
+    if (trustBase) {
+      console.log(
+        chalk.gray(`Control inputs: base ref "${trustBase.ref}" (pull-request mode)`),
+      );
+      if (trustBase.proposals.length === 0) {
+        console.log(chalk.gray('Proposed, not applied: none'));
+      } else {
+        for (const proposal of trustBase.proposals) {
+          console.log(chalk.yellow(`Proposed, not applied: ${proposal}`));
+        }
+      }
+      // Not on the staged path: its file list comes from the index and never
+      // consults either filter, so both numbers are structurally zero there
+      // and printing "0 skipped" would be a reassurance the run did not earn.
+      if (!staged) {
+        const names = prSkips.dirNames.length > 0 ? ` (${prSkips.dirNames.join(', ')})` : '';
+        const vendoredLine = `Vendored directories skipped: ${prSkips.dirCount}${names}`;
+        // Yellow when non-zero: a root-level vendored name still mutes by
+        // design, so a non-zero count is a thing a reviewer has to weigh, in
+        // the same colour as a proposal rather than the grey of a tally.
+        console.log(prSkips.dirCount > 0 ? chalk.yellow(vendoredLine) : chalk.gray(vendoredLine));
+        console.log(
+          chalk.gray(`Files skipped by type or name: ${prSkips.typeFilteredFiles}`),
+        );
+      }
+    }
+
     // Suppression visibility: state both suppression counts every run, even at
     // zero. A suppression is the user's decision and must be visible -- a
     // scanner that can be silenced without saying so manufactures false
     // confidence.
     const inlineWord = inlineSuppressed.count === 1 ? 'directive' : 'directives';
+    // The critical vendor-anchored subset is appended only when it is non-zero.
+    // Stating "0 of them" on every clean run would add a clause to a line
+    // people read at a glance without adding information; the JSON carries it
+    // unconditionally for anything that parses rather than reads.
+    const criticalClause =
+      inlineSuppressed.criticalVendorAnchored > 0
+        ? `, ${inlineSuppressed.criticalVendorAnchored} of them on a critical vendor-anchored finding`
+        : '';
     console.log(
       chalk.gray(
         `Suppressed: ${baselineSuppressed} by baseline, ` +
-          `${inlineSuppressed.count} by inline ignore ${inlineWord}`,
+          `${inlineSuppressed.count} by inline ignore ${inlineWord}${criticalClause}`,
       ),
     );
 

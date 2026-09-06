@@ -28,6 +28,28 @@ export interface JsonRunMetadata {
    * decision and must be visible.
    */
   inline_suppressed?: number;
+  /**
+   * The subset of {@link inline_suppressed} that hid a critical finding from a
+   * vendor- or context-anchored rule. Emitted even at zero, for the same reason
+   * the total is: a directive over a generic fixture assignment and a directive
+   * on the same line as a provider-issued key are not the same event, and one
+   * total lets the second hide inside the first.
+   */
+  inline_suppressed_critical_vendor?: number;
+  /**
+   * Directories skipped by name at the scan root on a pull-request run. Only
+   * a direct child of the scan root can be skipped in that mode, so this
+   * number is small and worth stating; a committed `src/vendor/` is scanned.
+   */
+  vendored_dirs_skipped?: number;
+  /**
+   * Files in the head tree dropped by the extension, lockfile-name and
+   * generated-artifact filters on a pull-request run. Those filters skip on a
+   * name alone, so a key committed as `src/leak.min.js` or `src/leak.lock`
+   * never reached the scanner and the run said nothing about it. What they
+   * skip is unchanged; this is the number that makes the silence visible.
+   */
+  type_filtered_files?: number;
   /** Effective gate threshold for this run (`--fail-on` / `fail_on` / default). */
   fail_on?: string;
   /**
@@ -52,12 +74,36 @@ export interface JsonRunMetadata {
   unscannable_files?: number;
 }
 
+/**
+ * What a pull-request run took from the base ref, and what the head proposed
+ * to change about it.
+ *
+ * Present only on a run given `--trust-base`, so its absence means the run was
+ * inside the trust boundary already (a local scan, a pre-commit hook) rather
+ * than that it found nothing. `proposals` is the field an umbrella sums across
+ * gates to say, in one sentence, that a pull request tried to loosen them.
+ */
+export interface TrustBaseReport {
+  /** The ref every control input was read from. */
+  ref: string;
+  /** One line per control input the head proposes to change. Never applied. */
+  proposals: string[];
+  configChanged: boolean;
+  baselineChanged: boolean;
+  /** How the head changed the config file's type or mode, or null. */
+  configShapeChange: 'symlink' | 'not-a-file' | 'removed' | 'mode' | null;
+  /** The same for the baseline file. */
+  baselineShapeChange: 'symlink' | 'not-a-file' | 'removed' | 'mode' | null;
+}
+
 export interface JsonOutput {
   version: string;
   scannedAt: string;
   summary: { files: number; secrets: number };
   /** Present when the caller passes {@link FormatOptions.run}. */
   run?: JsonRunMetadata;
+  /** Present only on a pull-request run. See {@link TrustBaseReport}. */
+  trustBase?: TrustBaseReport;
   results: Array<{
     file: string;
     matches: Array<{
@@ -108,6 +154,13 @@ export interface FormatOptions {
   diagnostics?: Diagnostic[];
   /** Scan timing / coverage stats for JSON and SARIF `runs[].properties`. */
   run?: JsonRunMetadata;
+  /**
+   * Pull-request mode's report. Emitted as a `trustBase` block in JSON and as
+   * one SARIF `toolExecutionNotification` per proposal: a proposal is a
+   * statement about the run's configuration, not a finding in a file, so it
+   * has no artifact location and does not belong in `results`.
+   */
+  trustBase?: TrustBaseReport;
 }
 
 /**
@@ -255,6 +308,7 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
       secrets: results.reduce((n, r) => n + r.matches.length, 0),
     },
     ...(opts.run ? { run: opts.run } : {}),
+    ...(opts.trustBase ? { trustBase: opts.trustBase } : {}),
     results: results.map(({ file, matches }) => ({
       file: normalizeFilePath(file, opts.cwd),
       matches: matches.map(m => ({
@@ -355,11 +409,43 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
             ...(opts.run.inline_suppressed !== undefined
               ? { inline_suppressed: opts.run.inline_suppressed }
               : {}),
+            ...(opts.run.inline_suppressed_critical_vendor !== undefined
+              ? {
+                  inline_suppressed_critical_vendor:
+                    opts.run.inline_suppressed_critical_vendor,
+                }
+              : {}),
+            ...(opts.run.vendored_dirs_skipped !== undefined
+              ? { vendored_dirs_skipped: opts.run.vendored_dirs_skipped }
+              : {}),
+            ...(opts.run.type_filtered_files !== undefined
+              ? { type_filtered_files: opts.run.type_filtered_files }
+              : {}),
             ...(opts.run.unscannable_files !== undefined
               ? { unscannable_files: opts.run.unscannable_files }
               : {}),
           },
         }
+      : undefined;
+
+  // A proposal is a statement about the run's CONFIGURATION -- "this pull
+  // request also tried to turn the gate down" -- not a finding at a location in
+  // a file. SARIF has a place for exactly that, and it is not `results`:
+  // `invocations[].toolExecutionNotifications`. Putting it in `results` would
+  // make it a code-scanning alert with no file to point at, and a triager would
+  // have to dismiss it.
+  const invocations =
+    opts.trustBase !== undefined
+      ? [
+          {
+            executionSuccessful: true,
+            toolExecutionNotifications: opts.trustBase.proposals.map(text => ({
+              descriptor: { id: 'vault-guard/trust-base/proposal' },
+              level: 'warning',
+              message: { text },
+            })),
+          },
+        ]
       : undefined;
 
   const sarif = {
@@ -368,6 +454,7 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
     runs: [
       {
         ...(runProps ? { properties: runProps } : {}),
+        ...(invocations ? { invocations } : {}),
         tool: {
           driver: {
             name: 'vault-guard',

@@ -1,5 +1,24 @@
 # @vaultcompass/vault-guard
 
+## 1.7.0
+
+### Minor Changes
+
+- `--trust-base <ref>` on `scan` and `check`: pull-request mode.
+
+  - The config, any `.vault-guard.local.json` and the baseline are read from `<ref>`; the head tree is what gets scanned; the file set is the HEAD tree rather than a gitignore-filtered walk; the vendored-directory names are anchored to the scan root. A control input the head changed is printed as a proposal and is not applied.
+  - The ref is resolved before anything is printed and before a file is opened, so a failure exits 2 having genuinely scanned nothing. A ref that will not resolve, one that is HEAD's commit, and one carrying HEAD's tree are all refused. On exit 2 no JSON or SARIF document is written, so an `upload-sarif` step should be guarded on the file being non-empty.
+  - A pull-request run states what it declined to look at: the number of directories skipped by name at the scan root (in yellow when it is not zero) and the number of files skipped by extension or name. Neither prints on a `--staged` run, where neither can be filled.
+  - JSON gains a `trustBase` block, `run.inline_suppressed_critical_vendor` and `run.type_filtered_files`; SARIF gains one `toolExecutionNotification` per proposal.
+  - The composite Action passes the flag on pull-request events by default, through the step's `env` block rather than a `${{ }}` expression in a `run` body. `init`'s generated workflow now sets `fetch-depth: 0`, which pull-request mode requires; init template version 3.
+  - Outside pull-request mode behaviour is unchanged, pinned by tests that reproduce each muting change in its old shape. A config that parses as JSON but fails the schema now exits 1 with the validation message instead of loading with the bad parts dropped.
+
+### Patch Changes
+
+- Updated dependencies
+  - @vaultcompass/vault-guard-core@1.7.0
+  - @vaultcompass/vault-guard-telemetry@1.7.0
+
 ## 1.6.0
 
 ### Minor Changes
