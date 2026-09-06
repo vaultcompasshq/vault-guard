@@ -97,6 +97,18 @@ export function resolveScanRoot(targetPaths: string[], cwd = process.cwd()): str
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
+/**
+ * Per-file wall-clock budget (ms). Defense-in-depth backstop: the built-in
+ * regex bounds are the specific fix for a known catastrophic pattern, but a
+ * future built-in edit or a user `extra_pattern` could reintroduce runaway
+ * backtracking. A file whose scan exceeds this budget is treated as
+ * unscannable, so the staged path fails closed instead of publishing a false
+ * "clean" verdict on a file it never finished examining. Generous on purpose:
+ * a normal file scans in single-digit milliseconds, so this only fires on a
+ * genuine runaway.
+ */
+const DEFAULT_SCAN_BUDGET_MS = 5000;
+
 const BINARY_EXTENSIONS = [
   '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip',
   '.tar', '.gz', '.exe', '.dll', '.so', '.dylib', '.bin'
@@ -126,6 +138,29 @@ function recordInlineSuppression(
       lines: [...new Set(hits.lines)].sort((a, b) => a - b),
       count: hits.count,
     },
+  });
+}
+
+/**
+ * Record a file whose scan blew the per-file wall-clock budget. It is folded
+ * into the same `unreadable` list an unreadable file uses, so `scanCommand`'s
+ * existing fail-closed logic (staged -> exit 2) needs no change, and a distinct
+ * `file.scan_timeout` diagnostic states why the file was abandoned.
+ */
+function recordBudgetExceeded(
+  displayFile: string,
+  elapsedMs: number,
+  budgetMs: number,
+  options: ScanOptions,
+): void {
+  options.unreadable?.push({
+    file: displayFile,
+    reason: `scan exceeded ${budgetMs}ms budget (took ${Math.round(elapsedMs)}ms)`,
+  });
+  options.bus?.add({
+    code: 'file.scan_timeout',
+    severity: 'error',
+    ctx: { file: displayFile, elapsed_ms: Math.round(elapsedMs), budget_ms: budgetMs },
   });
 }
 
@@ -163,6 +198,14 @@ export interface ScanOptions {
    * directory scan.
    */
   unreadable?: UnreadableFile[];
+  /**
+   * Per-file wall-clock budget in milliseconds. A file whose scan exceeds it is
+   * recorded in {@link ScanOptions.unreadable} (so the staged path fails closed)
+   * and reported via a `file.scan_timeout` error diagnostic; a directory scan
+   * keeps going. Defaults to {@link DEFAULT_SCAN_BUDGET_MS}. This is the
+   * defense-in-depth backstop behind the built-in regex bounds.
+   */
+  scanBudgetMs?: number;
   /**
    * Combined gitignore-style patterns from `config.ignore.paths` and
    * `config.ignore.patterns`. Applied to every file before scanning so that
@@ -208,6 +251,7 @@ export async function scanFileListAsync(
     configIgnorePatterns = [],
     fromGitIndex = false,
     cwd = process.cwd(),
+    scanBudgetMs = DEFAULT_SCAN_BUDGET_MS,
   } = options;
 
   // Apply config ignore patterns to the explicit file list (e.g. staged files).
@@ -251,14 +295,17 @@ export async function scanFileListAsync(
         }
 
         const hits: IgnoreDirectiveHits = { count: 0, lines: [] };
+        const tScan = Date.now();
         const matches = applyPathAwareSeverity(
           scanner.scanContent(content, { filePath: file, ignoreHits: hits }),
           file,
         );
+        const elapsed = Date.now() - tScan;
         recordInlineSuppression(hits, rel, options);
         if (matches.length > 0) {
           results.push({ file, matches });
         }
+        if (elapsed > scanBudgetMs) recordBudgetExceeded(rel, elapsed, scanBudgetMs, options);
         return;
       }
 
@@ -281,12 +328,17 @@ export async function scanFileListAsync(
         options.stats.bytesScanned += st.size;
       }
 
+      const tScan = Date.now();
       const matches =
         st.size > maxSize
           ? await scanTextFileAsync(scanner, file, { maxFileBytes: maxSize, bus: options.bus })
           : scanner.scan(file);
+      const elapsed = Date.now() - tScan;
       if (matches.length > 0) {
         results.push({ file, matches });
+      }
+      if (elapsed > scanBudgetMs) {
+        recordBudgetExceeded(path.relative(cwd, file), elapsed, scanBudgetMs, options);
       }
     } catch (error) {
       options.unreadable?.push({
@@ -346,7 +398,8 @@ export async function scanFilesAsync(
     maxSize = MAX_FILE_SIZE,
     skipBinary = true,
     progress = false,
-    concurrency = 10 // Scan 10 files at a time by default
+    concurrency = 10, // Scan 10 files at a time by default
+    scanBudgetMs = DEFAULT_SCAN_BUDGET_MS,
   } = options;
 
   const results: ScanResult[] = [];
@@ -404,6 +457,7 @@ export async function scanFilesAsync(
         }
 
         let matches;
+        const tScan = Date.now();
         if (fileStat.size > maxSize) {
           // Streaming path (large file): ignore directives that span lines are
           // unreliable here anyway, so the suppression tally skips it.
@@ -413,8 +467,12 @@ export async function scanFilesAsync(
           matches = scanner.scan(file, { ignoreHits: hits });
           recordInlineSuppression(hits, path.relative(process.cwd(), file), options);
         }
+        const elapsed = Date.now() - tScan;
         if (matches.length > 0) {
           results.push({ file, matches });
+        }
+        if (elapsed > scanBudgetMs) {
+          recordBudgetExceeded(path.relative(process.cwd(), file), elapsed, scanBudgetMs, options);
         }
       } catch (error) {
         options.unreadable?.push({

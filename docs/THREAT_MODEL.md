@@ -49,7 +49,12 @@ Vault Guard does not, and will not, claim to defend against:
   and alternation-quantifier shape detection). It catches the academic
   pathological shapes; it does not catch every pattern an attacker can
   construct. Real execution-time bounds require a regex engine like `re2`
-  (planned).
+  (planned). The **built-in** patterns are a separate matter: they are audited
+  and bounded so no built-in shape backtracks super-linearly on adversarial
+  input, and a per-file wall-clock budget (see the CLI trust-boundary table)
+  is the runtime backstop behind that static work. A file whose scan exceeds
+  the budget is treated as unscannable, so on the staged path the run fails
+  closed rather than reporting a file it never finished examining.
 - **Generic regex false positives.** Report as a normal issue. Improving
   signal/noise is product work, not security work.
 - **Third-party dependency vulnerabilities.** Report to the upstream
@@ -63,6 +68,7 @@ Vault Guard does not, and will not, claim to defend against:
 |-------------------------|-----------------------------------------------------|------------------------------------------------------------------------------|
 | Files on disk           | Pathological filenames, symlink loops               | `realpathSync` for symlink resolution; `seen` set; binary-file skip.          |
 | `.vault-guard.json`     | ReDoS via `extra_patterns`                          | `validateRegexSafety` (length cap 256, quantifier-density cap, shape check). |
+| File contents (built-in)| ReDoS via a catastrophic built-in pattern shape     | Built-in patterns are bounded (no super-linear backtracking on adversarial input); a per-file wall-clock budget abandons any runaway scan, failing closed on the staged path. |
 | `.vault-guard.json`     | Cross-trust load from a parent directory            | `loadConfig` walks only between `startDir` and the nearest `.git` root.       |
 | `.vault-guard.json`     | Silent default fallback on parse error              | `loadConfig` throws `ConfigError`; CLI exits non-zero with the parser message. |
 | Repository git config   | `diff.relative` shrinks the staged file list        | Config forced off per invocation (`git -c diff.relative=false ...`); staged paths resolved against the worktree root, never the caller's cwd. |
