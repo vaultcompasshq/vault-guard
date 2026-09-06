@@ -131,6 +131,79 @@ describe('createMcpServer', () => {
     }
   });
 
+  it('report_token_usage does not follow a symlinked directory out of the workspace', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-root-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-outside-'));
+    try {
+      // Distinctive extension so we can tell whether the escape happened.
+      fs.writeFileSync(path.join(outside, 'leak.outsidemarker'), 'token material outside the workspace', 'utf8');
+      fs.writeFileSync(path.join(root, 'inside.ts'), 'const a = 1;', 'utf8');
+      try {
+        fs.symlinkSync(outside, path.join(root, 'link'), 'dir');
+      } catch {
+        return; // symlink creation not permitted (e.g. Windows CI) — nothing to test
+      }
+      const client = await connect(createMcpServer({ telemetryFactory: fakeStore, workspaceRoot: root }));
+      const res = await client.callTool({ name: 'report_token_usage', arguments: { paths: ['.'] } });
+      const payload = parse(res);
+      const breakdown = payload.breakdown as Record<string, number>;
+      // The symlinked directory points OUTSIDE the workspace; its file must never
+      // be walked into and counted.
+      expect(breakdown['.outsidemarker']).toBeUndefined();
+      expect(breakdown['.ts']).toBeGreaterThan(0);
+      await client.close();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('report_token_usage terminates on a symlink cycle', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-root-'));
+    try {
+      const sub = path.join(root, 'sub');
+      fs.mkdirSync(sub);
+      fs.writeFileSync(path.join(sub, 'a.ts'), 'const a = 1;', 'utf8');
+      try {
+        fs.symlinkSync(sub, path.join(sub, 'loop'), 'dir'); // self-referential cycle
+      } catch {
+        return;
+      }
+      const client = await connect(createMcpServer({ telemetryFactory: fakeStore, workspaceRoot: root }));
+      const res = await client.callTool({ name: 'report_token_usage', arguments: { paths: ['.'] } });
+      const payload = parse(res);
+      // The point is that this returns at all rather than recursing without bound.
+      expect(typeof payload.total_tokens_estimated).toBe('number');
+      await client.close();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('scan_file refuses an input above the size cap', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-root-'));
+    try {
+      const big = path.join(root, 'big.txt');
+      fs.writeFileSync(big, 'a'.repeat(10 * 1024 * 1024 + 1), 'utf8');
+      const client = await connect(createMcpServer({ telemetryFactory: fakeStore, workspaceRoot: root }));
+      const res = await client.callTool({ name: 'scan_file', arguments: { file_path: 'big.txt' } });
+      expect(parse(res)).toMatchObject({ error: 'file_too_large' });
+      await client.close();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('scan_text refuses an input above the size cap', async () => {
+    const client = await connect(createMcpServer({ telemetryFactory: fakeStore }));
+    const res = await client.callTool({
+      name: 'scan_text',
+      arguments: { text: 'a'.repeat(10 * 1024 * 1024 + 1) },
+    });
+    expect(parse(res)).toMatchObject({ error: 'text_too_large' });
+    await client.close();
+  });
+
   it('scan_workspace applies .vault-guard.json ignore paths', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-root-'));
     try {
