@@ -26,7 +26,10 @@ describe('getPullRequestFilesToScan', () => {
   let root: string;
 
   beforeEach(() => {
-    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vg-pr-fileset-')));
+    // `.native`: every expectation below is an absolute path built from this
+    // root, and on Windows `os.tmpdir()` comes back in 8.3 short form, which
+    // plain realpathSync keeps and git does not use.
+    root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vg-pr-fileset-')));
     git(root, ['init', '-q', '-b', 'main']);
     git(root, ['config', 'user.email', 'test@example.invalid']);
     git(root, ['config', 'user.name', 'test']);

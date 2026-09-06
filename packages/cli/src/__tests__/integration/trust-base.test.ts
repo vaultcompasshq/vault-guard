@@ -112,7 +112,10 @@ describe('pull-request mode (--trust-base)', () => {
   }
 
   beforeEach(() => {
-    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vg-trust-base-cli-')));
+    // `.native`: the scan is anchored here and compared against the worktree
+    // root git reports, and on Windows `os.tmpdir()` is the 8.3 short form that
+    // plain realpathSync keeps while git uses the long one.
+    dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vg-trust-base-cli-')));
     git(dir, ['init', '-q', '-b', 'main']);
     git(dir, ['config', 'user.email', 'test@example.invalid']);
     git(dir, ['config', 'user.name', 'test']);
@@ -363,7 +366,9 @@ describe('pull-request mode (--trust-base)', () => {
       // cwd, so before this guard the tracked-file set came from THIS
       // repository, intersected with a target none of it was under, and the
       // run reported "no secrets found" over zero files scanned.
-      const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vg-outside-')));
+      const outside = fs.realpathSync.native(
+        fs.mkdtempSync(path.join(os.tmpdir(), 'vg-outside-')),
+      );
       fs.writeFileSync(path.join(outside, 'leak.ts'), `export const key = "${FAKE_KEY}";\n`);
       try {
         const r = await capture(() =>

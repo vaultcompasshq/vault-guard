@@ -24,8 +24,20 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
+/**
+ * A scratch repository, its path canonicalised with `realpathSync.native`.
+ *
+ * `.native` rather than plain `realpathSync`, because the two differ on
+ * Windows: `os.tmpdir()` comes back in 8.3 short form there
+ * (`C:\Users\RUNNER~1\...`) and plain `realpathSync` keeps it, while git
+ * reports the long form (`C:\Users\runneradmin\...`). An absolute expectation
+ * built from the short root then never matches a listing built from git's
+ * root, and the failure reads as a wrong file set rather than as two spellings
+ * of one path. macOS has the same shape for a different reason (`/var` is a
+ * link to `/private/var`), which is why the helper was already here.
+ */
 function makeRepo(): string {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vg-trust-base-')));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vg-trust-base-')));
   git(dir, ['init', '-q', '-b', 'main']);
   git(dir, ['config', 'user.email', 'test@example.invalid']);
   git(dir, ['config', 'user.name', 'test']);
