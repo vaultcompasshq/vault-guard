@@ -113,7 +113,7 @@ runs:
         if [[ "${VG_TRUST_BASE}" != "auto" ]]; then
           if [[ ! "${VG_TRUST_BASE}" =~ ^[A-Za-z0-9._/@^~-]+$ ]] || (( ${#VG_TRUST_BASE} > 200 )); then
             printf '::error::vault-guard: invalid `trust-base` input: %q\n' "${VG_TRUST_BASE}"
-            printf '::error::Allowed: auto | off | 1..200 chars of [A-Za-z0-9._/@^~-]\n'
+            printf '::error::Allowed: auto | a git ref, 1..200 chars of [A-Za-z0-9._/@^~-]\n'
             exit 1
           fi
         fi

@@ -135,6 +135,14 @@ if ! grep -n 'trust-base: off` was removed' "${ACTION_YML}" >/dev/null; then
   exit 1
 fi
 
+# Guard: and no other message may offer `off` back. The charset refusal went on
+# printing "Allowed: auto | off | ..." after the value was removed, so a typo
+# was told to use the one value refused by name two checks earlier.
+if grep -nE 'auto \| off' "${ACTION_YML}" >/dev/null; then
+  printf 'action.yml still offers `off` as an allowed trust-base value in an error message\n' >&2
+  exit 1
+fi
+
 # Guard: and the argv builder must not carry a branch for it either, which is
 # where the switch actually lived.
 if grep -nE '"\$\{VG_TRUST_BASE\}" != "off"' "${ACTION_YML}" >/dev/null; then
