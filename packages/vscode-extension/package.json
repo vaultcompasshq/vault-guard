@@ -23,6 +23,7 @@
         "vaultGuard.executable": {
           "type": "string",
           "default": "vault-guard",
+          "scope": "machine",
           "description": "vault-guard CLI on PATH (used for statusline JSON integration)"
         }
       }
