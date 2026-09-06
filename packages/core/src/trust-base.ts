@@ -179,6 +179,21 @@ function repoRootOf(startDir: string, ref: string): string {
  * that does that is judged normally rather than swallowed by this rule.
  */
 export function assertTrustBaseResolvable(repoRoot: string, ref: string): void {
+  // A ref beginning with a dash would be handed to git as an OPTION rather
+  // than as a revision, and `git ls-tree --upload-pack=...` is not a thing this
+  // tool should be able to be talked into. Every such string also fails to
+  // resolve, so this is not the only thing standing in the way; it is here so
+  // the failure says what is actually wrong instead of "it does not resolve to
+  // a commit", which would send someone off to fetch a branch that was never
+  // the problem.
+  if (ref.startsWith('-')) {
+    throw new TrustBaseError(
+      `vault-guard: refusing "${ref}" as the trust base: a ref may not begin ` +
+        'with a dash, because git would read it as an option rather than as a ' +
+        'revision. Nothing was scanned.',
+    );
+  }
+
   const base = resolve(repoRoot, ref, 'commit');
   if (base === null) {
     throw new TrustBaseError(

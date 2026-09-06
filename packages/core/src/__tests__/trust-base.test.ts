@@ -82,6 +82,14 @@ describe('loadTrustedControls', () => {
       expect((err as Error).message).toContain('Nothing was scanned.');
     });
 
+    it('refuses a ref that begins with a dash, which git would read as an option', () => {
+      seed(root);
+      write(root, 'src/other.ts', 'export const y = 2;\n');
+      commit(root, 'feature');
+      expect(() => loadTrustedControls(root, '--upload-pack=x')).toThrow(TrustBaseError);
+      expect(() => loadTrustedControls(root, '--upload-pack=x')).toThrow(/may not begin with a dash/);
+    });
+
     it('refuses a ref that resolves to the same commit as HEAD', () => {
       seed(root);
       write(root, 'src/other.ts', 'export const y = 2;\n');
