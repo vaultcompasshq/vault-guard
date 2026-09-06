@@ -312,6 +312,39 @@ export interface IgnoreDirectiveHits {
   count: number;
   /** 1-based line numbers of those suppressed findings, in encounter order. */
   lines: number[];
+  /**
+   * The subset of {@link count} that hid a CRITICAL finding from a vendor- or
+   * context-anchored rule, rather than from one of the low-precision generic
+   * ones.
+   *
+   * The two are not the same event and a single total lets the more serious one
+   * hide inside the less serious one. A directive over `api_key = "..."` in a
+   * fixture is routine housekeeping; a directive on the same line as a
+   * provider-issued `sk-ant-` or `AKIA` string is somebody deciding that a real
+   * key shape does not count, and on a pull request that is the line a reviewer
+   * most needs to see. Both are still honoured: an inline directive is content,
+   * not configuration, and content is what is under judgment.
+   *
+   * The severity is the rule's own, read before the path-aware downgrade, so a
+   * key silenced inside a docs path is counted the same as one silenced in
+   * source. Optional so callers that predate it keep compiling; it is set
+   * whenever a suppression is recorded.
+   */
+  criticalVendorAnchored?: number;
+}
+
+/**
+ * True for the vendor- and context-anchored rules: everything that is not one
+ * of the low-precision generic shapes.
+ *
+ * Derived from the existing downgrade list rather than kept as a second
+ * hand-maintained roster, so a rule added to one is not silently missing from
+ * the other. That list is exactly the set this codebase already treats as
+ * low-precision (generic assignments, DSNs, JWTs, PEM headers); everything
+ * else captures a provider-issued token.
+ */
+function isVendorAnchoredRule(id: string): boolean {
+  return !LOW_PRECISION_PATH_DOWNGRADE_IDS.has(id);
 }
 
 /**
@@ -652,6 +685,9 @@ export class SecretScanner {
       const hidden = this.deduplicateMatches(suppressedByDirective);
       opts.ignoreHits.count += hidden.length;
       for (const m of hidden) opts.ignoreHits.lines.push(m.line);
+      opts.ignoreHits.criticalVendorAnchored =
+        (opts.ignoreHits.criticalVendorAnchored ?? 0) +
+        hidden.filter(m => m.severity === 'critical' && isVendorAnchoredRule(m.type)).length;
     }
 
     // Applied after dedupe so the severity ranking that resolves overlapping

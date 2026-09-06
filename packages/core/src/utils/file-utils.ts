@@ -440,6 +440,110 @@ export function getFilesToScan(
   );
 }
 
+/**
+ * Directories the scan never enters, and how many of them it skipped.
+ *
+ * Reported rather than silent for the same reason every suppression in this
+ * tool is reported: a directory the scanner declined to look in is a decision
+ * the run made on the user's behalf, and a run that makes it invisibly
+ * manufactures confidence it has not earned.
+ */
+export interface SkippedDirectories {
+  count: number;
+  /** The directory names, for a one-line summary. */
+  names: string[];
+}
+
+/**
+ * The file set for a pull-request run: tracked files, filtered like the walk.
+ *
+ * Two things are deliberately different from {@link getFilesToScan}, and both
+ * of them close a way a pull request could mute the scanner in the same commit
+ * that carried a secret.
+ *
+ * FIRST, THE SET COMES FROM GIT, NOT FROM `.gitignore`. The ordinary walk asks
+ * the gitignore tester whether to skip each file, which means a `.gitignore`
+ * the pull request itself added decides what the pull request is scanned on. A
+ * `src/.gitignore` containing the name of the file the key sits in was enough,
+ * measured, to turn exit 1 into exit 0. Tracked files cannot be muted that way:
+ * `.gitignore` governs what git will ADD, and says nothing about a file already
+ * in the index. The tester stays in place for the untracked working-tree scans
+ * that have no flag, where it is doing an honest job.
+ *
+ * SECOND, THE VENDORED-DIRECTORY NAMES ARE ANCHORED TO THE SCAN ROOT. The walk
+ * skips any directory called `vendor`, `venv`, `dist` and so on at any depth,
+ * which a pull request can satisfy by committing its key to `src/vendor/`. Here
+ * only a direct child of the scan root can be skipped by name, so a committed
+ * `src/vendor/` is scanned. Anchoring is safe here precisely because the set is
+ * tracked files: a nested `node_modules` is not tracked, so nothing is gained
+ * by pretending to skip it and no cost is paid for walking it, since there is
+ * no walk.
+ *
+ * Everything else is the walk's own filtering, applied to the same paths:
+ * binaries and lockfiles by extension and name, generated artifacts, the
+ * config's own `ignore` patterns (from the BASE ref, in this mode), and
+ * anything that is not a regular file on disk. Symlinks are dropped here as
+ * they are in the walk, and an index entry with no file behind it is dropped
+ * rather than reported as unreadable.
+ */
+export function getPullRequestFilesToScan(
+  targetPath: string,
+  trackedFiles: Iterable<string>,
+  configIgnorePatterns: string[] = [],
+  skipped: SkippedDirectories = { count: 0, names: [] },
+): string[] {
+  const target = path.resolve(targetPath);
+  const targetIsDirectory = (() => {
+    try {
+      return fs.statSync(target).isDirectory();
+    } catch {
+      return true;
+    }
+  })();
+
+  const configIgnoreTester = buildConfigIgnoreFilter(configIgnorePatterns, target);
+  const skippedNames = new Set<string>();
+  const out: string[] = [];
+
+  for (const file of trackedFiles) {
+    const abs = path.resolve(file);
+
+    if (!targetIsDirectory) {
+      if (abs !== target) continue;
+    } else {
+      const rel = path.relative(target, abs);
+      if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) continue;
+      const segments = rel.split(path.sep);
+      // Anchored: only a direct child of the scan root is skipped by name.
+      if (segments.length > 1 && shouldIgnoreDirectory(segments[0])) {
+        skippedNames.add(segments[0]);
+        continue;
+      }
+    }
+
+    // No gitignore tester: see the note above. The rest of the walk's file
+    // filtering still applies.
+    if (shouldIgnoreFile(abs)) continue;
+    if (configIgnoreTester(abs)) continue;
+
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(abs);
+    } catch {
+      // Tracked in the index but not on disk. There is nothing to read, and
+      // the walk would never have produced it either.
+      continue;
+    }
+    if (!stat.isFile()) continue;
+
+    out.push(abs);
+  }
+
+  skipped.names = [...skippedNames].sort();
+  skipped.count = skipped.names.length;
+  return out;
+}
+
 function shouldIgnoreDirectory(name: string): boolean {
   const ignoreDirs = [
     'node_modules',
