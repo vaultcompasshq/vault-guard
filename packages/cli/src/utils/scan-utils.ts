@@ -11,8 +11,11 @@ import {
   applyPathAwareSeverity,
   formatJson as formatJsonResults,
   formatSarif as formatSarifResults,
+  getPullRequestFilesToScan,
   type JsonOutput,
   type JsonRunMetadata,
+  type TrustBaseReport,
+  type SkippedDirectories,
   type FileScanResult,
   type Diagnostic,
   type DiagnosticBus,
@@ -43,6 +46,8 @@ export interface ScanFormatOptions {
    * with whatever directory the caller happened to be standing in.
    */
   cwd?: string;
+  /** Pull-request mode's report, when the run was given `--trust-base`. */
+  trustBase?: TrustBaseReport;
 }
 
 export function formatJson(results: ScanResult[], opts: ScanFormatOptions = {}): string {
@@ -50,6 +55,7 @@ export function formatJson(results: ScanResult[], opts: ScanFormatOptions = {}):
     cwd: opts.cwd ?? process.cwd(),
     diagnostics: opts.diagnostics,
     run: opts.run,
+    trustBase: opts.trustBase,
   });
 }
 export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {}): string {
@@ -58,6 +64,7 @@ export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {})
     scanRoot: opts.scanRoot,
     diagnostics: opts.diagnostics,
     run: opts.run,
+    trustBase: opts.trustBase,
   });
 }
 
@@ -138,7 +145,10 @@ function recordInlineSuppression(
   options: ScanOptions,
 ): void {
   if (hits.count === 0) return;
-  if (options.inlineSuppressed) options.inlineSuppressed.count += hits.count;
+  if (options.inlineSuppressed) {
+    options.inlineSuppressed.count += hits.count;
+    options.inlineSuppressed.criticalVendorAnchored += hits.criticalVendorAnchored ?? 0;
+  }
   options.bus?.add({
     code: 'suppression.inline',
     severity: 'warning',
@@ -254,7 +264,24 @@ export interface ScanOptions {
    * untouched when absent, so callers that do not report suppressions pay
    * nothing.
    */
-  inlineSuppressed?: { count: number };
+  inlineSuppressed?: { count: number; criticalVendorAnchored: number };
+  /**
+   * Pull-request mode's file set. When present, a directory target's file list
+   * is the tracked files intersected with the walk's own filtering, rather than
+   * a filesystem walk filtered by the gitignore tester -- so a `.gitignore` the
+   * pull request added cannot remove a tracked file from the scan, and the
+   * vendored-directory names are anchored to the scan root.
+   *
+   * A file target named explicitly on the command line is unaffected: the user
+   * asked for that file by name, and there is nothing for a head-side ignore
+   * rule to hide behind.
+   */
+  pullRequest?: {
+    /** Absolute paths of tracked files, from `git ls-files`. */
+    trackedFiles: string[];
+    /** Filled with the directories skipped by name at the scan root. */
+    skipped: SkippedDirectories;
+  };
 }
 
 /**
@@ -446,12 +473,19 @@ export async function scanFilesAsync(
     if (stat.isFile()) {
       filesToScan = [targetPath];
     } else if (stat.isDirectory()) {
-      filesToScan = await getFilesToScanAsync(
-        targetPath,
-        verbose,
-        options.bus,
-        options.configIgnorePatterns ?? [],
-      );
+      filesToScan = options.pullRequest
+        ? getPullRequestFilesToScan(
+            targetPath,
+            options.pullRequest.trackedFiles,
+            options.configIgnorePatterns ?? [],
+            options.pullRequest.skipped,
+          )
+        : await getFilesToScanAsync(
+            targetPath,
+            verbose,
+            options.bus,
+            options.configIgnorePatterns ?? [],
+          );
     } else {
       if (verbose) {
         console.error(chalk.red('❌ Error:'), chalk.white(`Invalid path: ${targetPath}`));

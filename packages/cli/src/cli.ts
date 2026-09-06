@@ -47,11 +47,26 @@ export function buildCli(): Command {
       '--fail-on <severity>',
       'Minimum severity that fails the scan: critical | high | medium | low | none (default: medium, or fail_on in .vault-guard.json)',
     )
-    .action(async (path: string, options: { format: string; staged?: boolean; failOn?: string }) => {
-      const format = (options.format as OutputFormat) ?? 'text';
-      const exitCode = await scanCommand(path, format, Boolean(options.staged), options.failOn);
-      setExitCode(exitCode);
-    });
+    .option(
+      '--trust-base <ref>',
+      'Pull-request mode: read .vault-guard.json, .vault-guard.local.json and the baseline from <ref> and scan the head tree. Exits 2 if <ref> cannot be read. Do not pass this from a pre-commit hook.',
+    )
+    .action(
+      async (
+        path: string,
+        options: { format: string; staged?: boolean; failOn?: string; trustBase?: string },
+      ) => {
+        const format = (options.format as OutputFormat) ?? 'text';
+        const exitCode = await scanCommand(
+          path,
+          format,
+          Boolean(options.staged),
+          options.failOn,
+          options.trustBase,
+        );
+        setExitCode(exitCode);
+      },
+    );
 
   program
     .command('init')
@@ -149,8 +164,12 @@ export function buildCli(): Command {
       '--fail-on <severity>',
       'Minimum severity that fails the check: critical | high | medium | low | none (default: medium, or fail_on in .vault-guard.json)',
     )
-    .action(async (files: string[], options: { failOn?: string }) => {
-      const exitCode = await checkCommand(files, options.failOn);
+    .option(
+      '--trust-base <ref>',
+      'Pull-request mode: read config and baseline from <ref> and check the head tree. Exits 2 if <ref> cannot be read.',
+    )
+    .action(async (files: string[], options: { failOn?: string; trustBase?: string }) => {
+      const exitCode = await checkCommand(files, options.failOn, options.trustBase);
       setExitCode(exitCode);
     });
 
