@@ -1,5 +1,22 @@
 # @vaultcompass/vault-guard
 
+## 1.6.0
+
+### Minor Changes
+
+- Bound two built-in regexes against ReDoS, added a per-file scan budget, and stopped ignoring test trees in the init default.
+
+  - `gcp-oauth`: the greedy `[0-9]+` before a literal dash backtracked quadratically on a long unbroken digit run (measured 16.6s at 200k digits on the unbounded form). The numeric prefix is now bounded to `{1,64}`, which is linear, with detection of a real client id unchanged.
+  - `ssh-private-key`: the space that must follow the key-type words was also a member of the repeated class. It is now lifted out of the class. This shape measured linear already, so the change is hardening rather than a fix.
+  - A per-file wall-clock budget (default 5s) treats any file whose scan runs away as unscannable, so the staged path fails closed instead of reporting a false clean, and a directory scan keeps going with a `file.scan_timeout` diagnostic. This is the runtime backstop behind the static regex bounds.
+  - The `init` default no longer writes `**/__tests__/**` into `ignore.patterns`. Ignoring test trees is what let a real vendor-anchored key in a test file slip past the hook entirely; now test trees are scanned, fixture-shaped credentials are downgraded to low, and a real provider key in a test file still blocks. `fixtures/**` and `bench/fixtures/**` stay ignored because those trees hold deliberately-planted credential fixtures. Existing users keep their committed config.
+
+### Patch Changes
+
+- Updated dependencies
+  - @vaultcompass/vault-guard-core@1.6.0
+  - @vaultcompass/vault-guard-telemetry@1.6.0
+
 ## 1.5.0
 
 ### Minor Changes

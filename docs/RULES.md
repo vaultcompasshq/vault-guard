@@ -51,7 +51,7 @@ That safety argument holds only for machine-issued credentials. For anything a p
 | `aws-secret-context` | critical | - | `gi` | `(?:aws_secret_access_key\|AWS_SECRET_ACCESS_KEY)\\s*[=:]\\s*["']?([a-zA-Z0-9/+]{40})` |
 | `gcp-service-account` | critical | - | `g` | `"type":\\s*"service_account"` |
 | `gcp-api-key` | critical | - | `g` | `AIza[a-zA-Z0-9_-]{35}` |
-| `gcp-oauth` | low | - | `g` | `[0-9]+-[a-zA-Z0-9_]{32}\\.apps\\.googleusercontent\\.com` |
+| `gcp-oauth` | low | - | `g` | `[0-9]{1,64}-[a-zA-Z0-9_]{32}\\.apps\\.googleusercontent\\.com` |
 | `azure-storage` | critical | - | `g` | `DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{20,}` |
 | `postgresql-url` | critical | - | `g` | `postgres(?:ql)?:\\/\\/[^:@\\s]+:[^@\\s]+@[^:\\s/]+(?::\\d+)?\\/\\S+` |
 | `mysql-url` | critical | - | `g` | `mysql:\\/\\/[^:@\\s]+:[^@\\s]+@[^:\\s/]+(?::\\d+)?\\/\\S+` |
@@ -81,7 +81,7 @@ That safety argument holds only for machine-issued credentials. For anything a p
 | `newrelic-api` | critical | - | `g` | `NRAK-[a-zA-Z0-9]{26}` |
 | `sentry-dsn` | low | - | `g` | `https:\\/\\/[a-f0-9]{32}@o\\d+\\.ingest\\.(?:[a-z]{2}\\.)?sentry\\.io\\/\\d+` |
 | `shopify-admin` | critical | - | `g` | `shp(?:ss\|at\|ca)_[a-zA-Z0-9]{32}` |
-| `ssh-private-key` | critical | - | `g` | `-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----` |
+| `ssh-private-key` | critical | - | `g` | `-----BEGIN (?:[A-Z0-9]+(?: [A-Z0-9]+)? )?PRIVATE KEY-----` |
 | `jwt-token` | high | - | `g` | `eyJ[a-zA-Z0-9_-]+\\.[a-zA-Z0-9_-]+\\.[a-zA-Z0-9_-]+` |
 | `bearer-token` | high | 3.5 | `g` | `Bearer [a-zA-Z0-9_-]{20,}` |
 | `api-key-generic` | high | 3.5 | `gi` | `api[_-]?key["']?\\s*[:=]\\s*["']?([a-zA-Z0-9_-]{20,})` |

@@ -61,6 +61,20 @@ describe('vault-guard init', () => {
     expect(plan.actions.some(a => a.path === '.vault-guard.json')).toBe(true);
   });
 
+  it('default config scans test trees but keeps fixtures/bench ignored', () => {
+    // Behaviour change: the init default no longer ignores `**/__tests__/**`,
+    // so a real vendor-anchored key in a test file is scanned (and blocks)
+    // rather than being skipped wholesale. `fixtures/**` and `bench/fixtures/**`
+    // stay ignored because those trees hold deliberately-planted contiguous
+    // credential fixtures that vendor rules never downgrade.
+    const parsed = JSON.parse(defaultVaultGuardConfigJson()) as {
+      ignore: { patterns: string[] };
+    };
+    expect(parsed.ignore.patterns).not.toContain('**/__tests__/**');
+    expect(parsed.ignore.patterns).toContain('fixtures/**');
+    expect(parsed.ignore.patterns).toContain('bench/fixtures/**');
+  });
+
   it('creates managed files and manifest on first run', async () => {
     const code = await initCommand({ cwd: testDir });
     expect(code).toBe(0);

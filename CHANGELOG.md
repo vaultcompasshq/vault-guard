@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-05
+
+A security release. Two built-in patterns were audited for ReDoS (measured, not
+just read off source), a runtime scan budget was added as the backstop, and the
+init default was changed so test trees are scanned rather than ignored.
+
+### Security
+
+- **`gcp-oauth` backtracked quadratically on a long digit run.** The greedy
+  `[0-9]+` before the literal `-` made a file containing a long unbroken run of
+  digits cost O(n squared). Measured on the unbounded pattern: 50k digits 1.0s,
+  100k 4.1s, 200k 16.6s, 400k 71.6s, i.e. doubling the input quadrupled the
+  time, a real catastrophic ReDoS reachable inside an ordinary file. The numeric
+  client-id prefix is now bounded to `{1,64}` (a real Google project number is
+  short), which is linear: 200k digits now scan in about 38ms. Detection of a
+  real OAuth client id is unchanged.
+- **`ssh-private-key` had an ambiguous repeat.** The space that must follow the
+  key-type words was also a member of the repeated class `[A-Z0-9 ]+`. This
+  shape measured linear already, so this is hardening rather than a fix: the
+  space is now lifted out of the class while the same headers still match
+  (PKCS#8, RSA, EC, DSA, OPENSSH, ENCRYPTED, PGP).
+- **Per-file scan budget (defense in depth).** A file whose scan exceeds a
+  generous wall-clock budget (default 5s) is treated as unscannable. On the
+  staged path this fails closed (exit 2, no success line) via the same
+  incomplete-scan path an unreadable file uses; on a directory scan it is
+  reported with a `file.scan_timeout` diagnostic and scanning continues. This is
+  the runtime backstop behind the static regex bounds, covering any future
+  built-in or user `extra_pattern` that reintroduces runaway backtracking.
+
+### Changed
+
+- **`init` no longer ignores test trees.** The generated `.vault-guard.json`
+  used to write `**/__tests__/**` into `ignore.patterns`, which is what let a
+  real, vendor-anchored key committed to a test file slip past the hook
+  entirely: an ignore is total, so the scanner never looked. Test trees are now
+  scanned. The sequential-run and test-context downgrades keep fixture-shaped
+  credentials at `low` (visible, not blocking), while a real provider key in a
+  test file still blocks, which is the behaviour that catches the incident.
+  `fixtures/**` and `bench/fixtures/**` stay ignored because those directories
+  hold deliberately-planted, contiguous credential fixtures that vendor rules
+  never downgrade. This changes the default for new adopters only; existing
+  users keep their committed config.
+
 ## [1.5.0] - 2026-09-05
 
 A security and reporting release: three fail-closed hardening fixes and a new

@@ -235,7 +235,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: vaultcompasshq/vault-guard@v1.5.0
+      - uses: vaultcompasshq/vault-guard@v1.6.0
         with:
           version: latest
           path: .
@@ -259,7 +259,7 @@ Create `.vault-guard.json` at your repo root:
 {
   "fail_on": "medium",
   "ignore": {
-    "paths": ["**/__tests__/**", "fixtures/**"]
+    "paths": ["fixtures/**"]
   },
   "severity_overrides": {
     "jwt-token": "low"
@@ -269,6 +269,14 @@ Create `.vault-guard.json` at your repo root:
   ]
 }
 ```
+
+`init` no longer ignores test trees by default. Ignoring `**/__tests__/**`
+means the scanner never looks there, which is how a real, vendor-anchored key
+committed to a test file can slip past the hook entirely. Instead, test trees
+are scanned: fixture-shaped credentials are downgraded to `low` (visible, not
+blocking), while a real provider key in a test file still blocks. Keep a
+`fixtures/**`-style ignore only for directories that hold deliberately-planted
+credential fixtures (a scanner's own true-positive corpus).
 
 JSON Schema for editor autocomplete: **[schemas/vault-guard-config.json](./schemas/vault-guard-config.json)**.
 
