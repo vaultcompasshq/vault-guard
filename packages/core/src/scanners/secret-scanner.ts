@@ -248,6 +248,29 @@ const HUMAN_CHOSEN_VALUE_IDS = new Set([
 ]);
 
 /**
+ * Sink for inline ignore-directive suppressions observed during a single
+ * {@link SecretScanner.scanContent} call (or the {@link SecretScanner.scan}
+ * that wraps it).
+ *
+ * A suppression is the user's own decision and must be visible: a scanner that
+ * can be silenced without saying so manufactures false confidence. When a
+ * caller passes one of these, scanContent records every finding it dropped
+ * solely because a `vault-guard: ignore-line` / `ignore-next-line` directive
+ * covered its line -- counted AFTER the same overlap dedupe applied to reported
+ * findings, so the count is "findings hidden", not "raw pattern hits".
+ *
+ * The object is mutated in place and accumulates across calls, so a caller
+ * scanning many files can reuse one, or pass a fresh one per file to attribute
+ * line numbers to that file.
+ */
+export interface IgnoreDirectiveHits {
+  /** Findings suppressed by an inline ignore directive (post-dedupe). */
+  count: number;
+  /** 1-based line numbers of those suppressed findings, in encounter order. */
+  lines: number[];
+}
+
+/**
  * Read-only metadata for built-in patterns (docs / codegen). Exposes
  * `RegExp#source` and flags only — not live `RegExp` instances.
  */
@@ -385,13 +408,16 @@ export class SecretScanner {
   /**
    * Scan a file and return deduplicated, ignore-directive-filtered matches.
    */
-  scan(filePath: string): SecretMatch[] {
+  scan(filePath: string, opts?: { ignoreHits?: IgnoreDirectiveHits }): SecretMatch[] {
     if (!fs.existsSync(filePath)) return [];
     const content = fs.readFileSync(filePath, 'utf-8');
     // Path-aware severity is applied here (not in scanContent) because it needs
     // the file path. scanContent callers that know the path (scanTextFile*)
     // apply it themselves, so this does not double-apply.
-    return applyPathAwareSeverity(this.scanContent(content, { filePath }), filePath);
+    return applyPathAwareSeverity(
+      this.scanContent(content, { filePath, ignoreHits: opts?.ignoreHits }),
+      filePath,
+    );
   }
 
   /**
@@ -405,11 +431,19 @@ export class SecretScanner {
    * (e.g. after an `await` in a concurrent worker pool) cannot corrupt
    * `lastIndex` on shared patterns.
    */
-  scanContent(content: string, opts?: { filePath?: string }): SecretMatch[] {
+  scanContent(
+    content: string,
+    opts?: { filePath?: string; ignoreHits?: IgnoreDirectiveHits },
+  ): SecretMatch[] {
     const lineIndex = this.buildLineIndex(content);
     const ignoredLines = this.parseIgnoreDirectives(content, lineIndex);
 
     const raw: SecretMatch[] = [];
+    // Findings dropped solely because an ignore directive covered their line.
+    // Only collected when a caller asked for the tally, so the ordinary hot
+    // path allocates nothing extra. Deduped alongside `raw` below so the count
+    // is "findings hidden", matching how reported findings are counted.
+    const suppressedByDirective: SecretMatch[] | null = opts?.ignoreHits ? [] : null;
 
     // Fresh `RegExp` per invocation so concurrent or interleaved `scanContent`
     // calls (e.g. across `await` in a worker pool) never share `lastIndex`.
@@ -538,7 +572,22 @@ export class SecretScanner {
           continue;
         }
 
-        if (ignoredLines.has(line)) continue;
+        if (ignoredLines.has(line)) {
+          // A genuine finding (it passed every filter above) hidden only by an
+          // ignore directive. Record it for the caller's tally before dropping.
+          if (suppressedByDirective) {
+            suppressedByDirective.push({
+              type,
+              value: this.maskValue(fullMatch),
+              line,
+              column: match.index - (lineIndex[line - 1] ?? 0),
+              offset: match.index,
+              matchLength: fullMatch.length,
+              severity,
+            });
+          }
+          continue;
+        }
 
         raw.push({
           type,
@@ -550,6 +599,15 @@ export class SecretScanner {
           severity,
         });
       }
+    }
+
+    if (opts?.ignoreHits && suppressedByDirective) {
+      // Dedupe with the same overlap rules used for reported findings so two
+      // patterns matching one secret on an ignored line count as one hidden
+      // finding, not two.
+      const hidden = this.deduplicateMatches(suppressedByDirective);
+      opts.ignoreHits.count += hidden.length;
+      for (const m of hidden) opts.ignoreHits.lines.push(m.line);
     }
 
     // Applied after dedupe so the severity ranking that resolves overlapping

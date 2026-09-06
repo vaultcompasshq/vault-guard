@@ -16,6 +16,7 @@ import {
   type FileScanResult,
   type Diagnostic,
   type DiagnosticBus,
+  type IgnoreDirectiveHits,
 } from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
 
@@ -103,6 +104,31 @@ const BINARY_EXTENSIONS = [
 
 export type ScanResult = FileScanResult;
 
+/**
+ * Fold one file's inline ignore-directive suppressions into the run total and,
+ * when any occurred, emit a `suppression.inline` diagnostic naming the
+ * suppressed line numbers. A suppression is the user's own decision, and a
+ * scanner that can be silenced without saying so manufactures false
+ * confidence, so this is emitted rather than discarded.
+ */
+function recordInlineSuppression(
+  hits: IgnoreDirectiveHits,
+  displayFile: string,
+  options: ScanOptions,
+): void {
+  if (hits.count === 0) return;
+  if (options.inlineSuppressed) options.inlineSuppressed.count += hits.count;
+  options.bus?.add({
+    code: 'suppression.inline',
+    severity: 'warning',
+    ctx: {
+      file: displayFile,
+      lines: [...new Set(hits.lines)].sort((a, b) => a - b),
+      count: hits.count,
+    },
+  });
+}
+
 /** Filled by scan runners when provided (files opened for secret scanning, bytes read). */
 export interface ScanTelemetryStats {
   filesScanned: number;
@@ -152,6 +178,15 @@ export interface ScanOptions {
   fromGitIndex?: boolean;
   /** Repo root for `fromGitIndex` (defaults to `process.cwd()`). */
   cwd?: string;
+  /**
+   * Accumulates the total number of findings suppressed by inline
+   * `vault-guard: ignore-line` / `ignore-next-line` directives across every
+   * file scanned. Each such file also emits a `suppression.inline` diagnostic
+   * (via {@link ScanOptions.bus}) naming its suppressed line numbers. Left
+   * untouched when absent, so callers that do not report suppressions pay
+   * nothing.
+   */
+  inlineSuppressed?: { count: number };
 }
 
 /**
@@ -215,10 +250,12 @@ export async function scanFileListAsync(
           options.stats.bytesScanned += byteLen;
         }
 
+        const hits: IgnoreDirectiveHits = { count: 0, lines: [] };
         const matches = applyPathAwareSeverity(
-          scanner.scanContent(content, { filePath: file }),
+          scanner.scanContent(content, { filePath: file, ignoreHits: hits }),
           file,
         );
+        recordInlineSuppression(hits, rel, options);
         if (matches.length > 0) {
           results.push({ file, matches });
         }
@@ -366,10 +403,16 @@ export async function scanFilesAsync(
           options.stats.bytesScanned += fileStat.size;
         }
 
-        const matches =
-          fileStat.size > maxSize
-            ? await scanTextFileAsync(scanner, file, { maxFileBytes: maxSize, bus: options.bus })
-            : scanner.scan(file);
+        let matches;
+        if (fileStat.size > maxSize) {
+          // Streaming path (large file): ignore directives that span lines are
+          // unreliable here anyway, so the suppression tally skips it.
+          matches = await scanTextFileAsync(scanner, file, { maxFileBytes: maxSize, bus: options.bus });
+        } else {
+          const hits: IgnoreDirectiveHits = { count: 0, lines: [] };
+          matches = scanner.scan(file, { ignoreHits: hits });
+          recordInlineSuppression(hits, path.relative(process.cwd(), file), options);
+        }
         if (matches.length > 0) {
           results.push({ file, matches });
         }

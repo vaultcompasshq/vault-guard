@@ -159,6 +159,10 @@ export async function scanCommand(
   }
 
   const stats = { filesScanned: 0, bytesScanned: 0 };
+  // Total findings hidden by inline `vault-guard: ignore-line` /
+  // `ignore-next-line` directives across every file. Reported even at zero so
+  // the run always states whether the scanner was silenced inline.
+  const inlineSuppressed = { count: 0 };
   // Files the scanner reached but could not read. On the staged path this is
   // fatal (see below); on a directory scan it is reported but not fatal.
   const unreadable: UnreadableFile[] = [];
@@ -211,6 +215,7 @@ export async function scanCommand(
         configIgnorePatterns,
         fromGitIndex: true,
         cwd: outputBase,
+        inlineSuppressed,
       });
     } else {
       results = await scanFilesAsync(targetPaths, scanner, {
@@ -221,6 +226,7 @@ export async function scanCommand(
         stats,
         unreadable,
         configIgnorePatterns,
+        inlineSuppressed,
       });
     }
 
@@ -262,6 +268,8 @@ export async function scanCommand(
       fail_on: failOn,
       blocking_matches: blocking,
       ...(baselineSuppressed > 0 ? { baseline_suppressed: baselineSuppressed } : {}),
+      // Always present (even at zero): a muted scanner must say so.
+      inline_suppressed: inlineSuppressed.count,
       ...(unreadable.length > 0 ? { unscannable_files: unreadable.length } : {}),
     };
 
@@ -329,6 +337,18 @@ export async function scanCommand(
         chalk.yellow(`⚠️  ${diagnostics.length} warning(s) — run with --json for details`),
       );
     }
+
+    // Suppression visibility: state both suppression counts every run, even at
+    // zero. A suppression is the user's decision and must be visible -- a
+    // scanner that can be silenced without saying so manufactures false
+    // confidence.
+    const inlineWord = inlineSuppressed.count === 1 ? 'directive' : 'directives';
+    console.log(
+      chalk.gray(
+        `Suppressed: ${baselineSuppressed} by baseline, ` +
+          `${inlineSuppressed.count} by inline ignore ${inlineWord}`,
+      ),
+    );
 
     if (stagedScanIncomplete) {
       console.error(

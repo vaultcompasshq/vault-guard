@@ -68,6 +68,15 @@ function makeScanner(config: VaultGuardConfig): SecretScanner {
   return new SecretScanner(config);
 }
 
+/**
+ * Largest input any single scan tool will read into memory. Matches the
+ * per-file cap `scanWorkspaceDirectory` already enforces (see
+ * `workspace-scan.ts`), so `scan_file` and `scan_text` cannot be pointed at an
+ * arbitrarily large blob to exhaust the host process that `scan_workspace`
+ * would have streamed within the same bound.
+ */
+const MAX_SCAN_BYTES = 10 * 1024 * 1024;
+
 function toolPayload(obj: unknown): { content: Array<{ type: 'text'; text: string }> } {
   return {
     content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }],
@@ -236,9 +245,12 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
       if (!fs.existsSync(fp) || !fs.statSync(fp).isFile()) {
         return toolPayload({ error: 'not_a_file', path: fp });
       }
+      const st = fs.statSync(fp);
+      if (st.size > MAX_SCAN_BYTES) {
+        return toolPayload({ error: 'file_too_large', path: fp, bytes: st.size, max_bytes: MAX_SCAN_BYTES });
+      }
       const t0 = Date.now();
       const matches = scanner.scan(fp);
-      const st = fs.statSync(fp);
       const run: JsonRunMetadata = {
         duration_ms: Date.now() - t0,
         files_scanned: 1,
@@ -269,12 +281,15 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
       },
     },
     async ({ text, virtual_path }) => {
+      const bytes = Buffer.byteLength(text, 'utf8');
+      if (bytes > MAX_SCAN_BYTES) {
+        return toolPayload({ error: 'text_too_large', bytes, max_bytes: MAX_SCAN_BYTES });
+      }
       const scanner = makeScanner(loadMcpConfig(workspaceRoot));
       const t0 = Date.now();
       const matches = scanner.scanContent(text);
       const label = virtual_path ?? 'inline://snippet';
       const results: FileScanResult[] = matches.length ? [{ file: label, matches }] : [];
-      const bytes = Buffer.byteLength(text, 'utf8');
       const run: JsonRunMetadata = {
         duration_ms: Date.now() - t0,
         files_scanned: 1,
@@ -304,16 +319,29 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
       const targets = paths && paths.length > 0 ? paths : ['.'];
       let total = 0;
       const breakdown: Record<string, number> = {};
+      // Real (symlink-resolved) directories already descended into. Shared
+      // across all targets so an overlap between two targets is counted once,
+      // and so a directory reachable by more than one path cannot recurse
+      // without bound.
+      const visited = new Set<string>();
+      // Mirrors core's getAllFilesAsync: lstat every entry, never follow a
+      // symlink, and gate directory descent on a realpath visited-set. Without
+      // this the previous fs.statSync walk followed a symlinked directory out
+      // of the workspace (the resolveWorkspacePath check only guards the
+      // top-level target) and a symlink cycle could recurse without bound.
       const walkFile = (file: string): void => {
         try {
-          if (!fs.existsSync(file)) return;
-          const st = fs.statSync(file);
-          if (st.isFile()) {
+          const lst = fs.lstatSync(file);
+          if (lst.isSymbolicLink()) return;
+          if (lst.isFile()) {
             const n = tokenCounter.countTokensInFile(file);
             total += n;
             const ext = path.extname(file) || '(no-ext)';
             breakdown[ext] = (breakdown[ext] ?? 0) + n;
-          } else if (st.isDirectory()) {
+          } else if (lst.isDirectory()) {
+            const real = fs.realpathSync(file);
+            if (visited.has(real)) return;
+            visited.add(real);
             const entries = fs.readdirSync(file, { withFileTypes: true });
             for (const e of entries) {
               if (e.name === 'node_modules' || e.name === '.git') continue;
@@ -329,7 +357,18 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
         if (!resolved.ok) {
           return toolPayload({ error: resolved.error, path: resolved.path });
         }
-        walkFile(resolved.path);
+        // Resolve the validated top-level target through its own realpath so a
+        // target that is itself a symlink (already confirmed by
+        // resolveWorkspacePath to resolve INSIDE the workspace) is still
+        // walked; the lstat guard above only rejects symlinks discovered
+        // during the walk, which is what keeps the walk from escaping.
+        let start = resolved.path;
+        try {
+          start = fs.realpathSync(resolved.path);
+        } catch {
+          /* missing path: walkFile's lstat will no-op */
+        }
+        walkFile(start);
       }
       const estCostAnthropic = tokenCounter.calculateCost('anthropic', total, 0);
       return toolPayload({

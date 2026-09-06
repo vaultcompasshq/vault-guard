@@ -1,5 +1,42 @@
 # @vaultcompass/vault-guard-mcp
 
+## 1.5.0
+
+### Minor Changes
+
+- Security fixes and suppression visibility.
+
+  **`git show :<path>` could be steered onto a different blob (core).** git's
+  `:<path>` revision syntax also accepts `:<stage>:<path>`, so a staged file whose
+  repo-relative path began `0:`, `1:`, `2:` or `3:` was read as a stage reference
+  to a different, shorter path. Staged beside a clean file of that shorter name,
+  the scanner read the clean neighbour while recording the finding against the
+  crafted name, letting a real staged secret through under a clean result.
+  `readGitIndexFile` now resolves the blob by object id (`git ls-files -s`, then
+  `git cat-file blob`) so no attacker-controlled path text reaches git's revision
+  grammar.
+
+  **The MCP token walk followed symlinks out of the workspace (mcp).**
+  `report_token_usage` walked with `fs.statSync`, followed symlinks, and kept no
+  visited set, so a symlinked directory inside the workspace pointing outside was
+  followed out of it and a cycle could recurse without bound. It now mirrors the
+  core walker: `lstat` every entry, never follow a symlink, and gate descent on a
+  realpath visited-set. `scan_file` and `scan_text` now refuse inputs above the
+  same 10 MB cap `scan_workspace` already enforces.
+
+  **A muted scanner now says so (core, cli).** Baseline and inline
+  `vault-guard: ignore-line` / `ignore-next-line` suppressions were silent. The
+  text summary now prints a suppression line every run, and JSON and SARIF carry
+  `run.baseline_suppressed` and a new `run.inline_suppressed` field (emitted even
+  at zero), with a `suppression.inline` diagnostic naming the suppressed line
+  numbers. What is or is not suppressed is unchanged; only its visibility.
+
+### Patch Changes
+
+- Updated dependencies
+  - @vaultcompass/vault-guard-core@1.5.0
+  - @vaultcompass/vault-guard-telemetry@1.5.0
+
 ## 1.4.7
 
 ### Patch Changes

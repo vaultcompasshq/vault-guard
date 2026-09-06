@@ -214,6 +214,23 @@ describe('scan-output formatters', () => {
       expect(sarif.runs[0].properties.vault_guard_run.bytes_scanned).toBe(99);
     });
 
+    it('formatSarif emits inline_suppressed in vault_guard_run, even at zero', () => {
+      const results: FileScanResult[] = [{ file: '/tmp/x.ts', matches: [makeMatch()] }];
+      const sarif = JSON.parse(
+        formatSarif(results, {
+          cwd: null,
+          run: {
+            duration_ms: 12,
+            files_scanned: 3,
+            bytes_scanned: 99,
+            patterns_active: 40,
+            inline_suppressed: 0,
+          },
+        }),
+      );
+      expect(sarif.runs[0].properties.vault_guard_run.inline_suppressed).toBe(0);
+    });
+
     it('formatSarif uses line-relative columns for regions', () => {
       const results: FileScanResult[] = [{ file: '/tmp/x.ts', matches: [makeMatch({ column: 12, offset: 212 })] }];
       const sarif = JSON.parse(formatSarif(results, { cwd: null }));

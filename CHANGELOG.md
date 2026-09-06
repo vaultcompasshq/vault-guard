@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-05
+
+A security and reporting release: three fail-closed hardening fixes and a new
+suppression-visibility field. No detection severity changes.
+
+### Security
+
+- **`git show :<path>` could be steered onto a different blob.** git's
+  `:<path>` revision syntax also accepts the `:<stage>:<path>` form, so a
+  staged file whose repo-relative path began `0:`, `1:`, `2:` or `3:` was read
+  as a stage reference to a different, shorter path. Staged beside a clean file
+  of that shorter name, the scanner read the clean neighbour while recording
+  the finding against the crafted name, letting a real staged secret through
+  under a clean result. `readGitIndexFile` now resolves the staged blob by
+  object id (`git ls-files -s`, then `git cat-file blob`), keeping
+  attacker-controlled path text out of git's revision grammar entirely.
+- **The MCP `report_token_usage` walk followed symlinks out of the
+  workspace.** It walked with `fs.statSync`, which follows symlinks, skipped
+  only `node_modules` and `.git`, and kept no visited set, so a symlinked
+  directory inside the workspace pointing outside was followed out of it and a
+  cycle could recurse without bound. The walk now mirrors the core walker:
+  `lstat` every entry, never follow a symlink, and gate directory descent on a
+  realpath visited-set.
+- **MCP `scan_file` and `scan_text` had no input size cap.** Both now refuse an
+  input larger than the same 10 MB bound `scan_workspace` already enforces per
+  file, rather than reading an arbitrarily large blob into the host process.
+- **The VS Code extension let a repository choose the binary it executes.**
+  `vaultGuard.executable` is read from configuration and spawned, and the
+  contributed property declared no scope, so a workspace `.vscode/settings.json`
+  could set the executable path. The property is now `"scope": "machine"`, so a
+  workspace cannot set it.
+
+### Added
+
+- **Suppression visibility.** A suppression is the user's decision and must be
+  visible. The text summary now prints a `Suppressed:` line every run (even at
+  zero), and JSON and SARIF carry `run.baseline_suppressed` and a new
+  `run.inline_suppressed` field (emitted even at zero) counting findings hidden
+  by inline `vault-guard: ignore-line` / `ignore-next-line` directives, with a
+  `suppression.inline` diagnostic naming the suppressed line numbers. What is or
+  is not suppressed is unchanged; only its visibility.
+
 ## [1.4.7] - 2026-09-05
 
 Three false-positive classes found by scanning a public Rust monorepo.

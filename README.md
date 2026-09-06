@@ -235,7 +235,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: vaultcompasshq/vault-guard@v1.4.7
+      - uses: vaultcompasshq/vault-guard@v1.5.0
         with:
           version: latest
           path: .
@@ -287,6 +287,12 @@ const key = "sk-ant-..."; // vault-guard: ignore-line
 // vault-guard: ignore-next-line
 const alsoFine = "...";
 ```
+
+Suppressions never happen silently. Every run states how many findings the
+baseline and inline directives hid: the text summary prints a `Suppressed:`
+line (even at zero), and JSON and SARIF carry `run.baseline_suppressed` and
+`run.inline_suppressed`, with a `suppression.inline` diagnostic naming the
+suppressed line numbers.
 
 ---
 

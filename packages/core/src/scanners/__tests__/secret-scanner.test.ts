@@ -635,6 +635,25 @@ describe('SecretScanner', () => {
       expect(matches).toHaveLength(1);
       expect(matches[0].type).toBe('aws-access');
     });
+
+    it('reports how many findings an ignore directive suppressed, with line numbers', () => {
+      const content = `const k = "${AWS_ACCESS_KEY}"; // vault-guard: ignore-line\n`;
+      const hits = { count: 0, lines: [] as number[] };
+      const matches = scanner.scanContent(content, { ignoreHits: hits });
+      // The finding is still suppressed -- visibility must not change behaviour.
+      expect(matches).toHaveLength(0);
+      expect(hits.count).toBe(1);
+      expect(hits.lines).toEqual([1]);
+    });
+
+    it('leaves the hits sink at zero when no directive suppresses a finding', () => {
+      const content = `const k = "${AWS_ACCESS_KEY}";\n`;
+      const hits = { count: 0, lines: [] as number[] };
+      const matches = scanner.scanContent(content, { ignoreHits: hits });
+      expect(matches).toHaveLength(1);
+      expect(hits.count).toBe(0);
+      expect(hits.lines).toEqual([]);
+    });
   });
 
   // ---------------------------------------------------------------------------

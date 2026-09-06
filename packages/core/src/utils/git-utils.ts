@@ -178,28 +178,97 @@ export function getGitStagedFilePaths(cwd: string = process.cwd()): string[] {
 }
 
 /**
- * Read a staged blob from the index (`git show :path`), not the worktree.
+ * Parse a single stage-0 blob object id out of `git ls-files -s -z` output for
+ * an exact repo-relative path.
  *
- * `filePath` may be absolute or relative to `cwd`, and may use OS
- * separators. It is re-expressed relative to the worktree root before it
- * reaches git, because git's `:<path>` revision syntax is root-relative by
- * definition. Handing it a path relative to a subdirectory is what produced
- * "fatal: path 'pkg/deep/staged.ts' is in the index, but not 'staged.ts'"
- * and, one silent downgrade later, a clean bill of health over a real
- * staged credential.
+ * Each `-z` record is `<mode> SP <object> SP <stage> TAB <path>` with a NUL
+ * terminator. The path is matched EXACTLY (not by prefix) so a pathspec that
+ * happened to match more than the intended file cannot return a neighbour's
+ * blob, and only stage 0 (the ordinary staged entry) is accepted: stages 1-3
+ * exist only during an unresolved merge, which `git show :<path>` could not
+ * read either.
+ */
+function parseStagedBlobId(lsFilesOutput: string, rootRelative: string): string | undefined {
+  for (const record of lsFilesOutput.split('\0')) {
+    if (!record) continue;
+    const tab = record.indexOf('\t');
+    if (tab === -1) continue;
+    const meta = record.slice(0, tab);
+    const recordPath = record.slice(tab + 1);
+    if (recordPath !== rootRelative) continue;
+    const parts = meta.split(' ');
+    // <mode> <object> <stage>
+    if (parts.length !== 3) continue;
+    if (parts[2] !== '0') continue;
+    return parts[1];
+  }
+  return undefined;
+}
+
+/**
+ * Read a staged blob from the index, not the worktree.
  *
- * Unlike the staged listing, this command needs no worktree-root `cwd` of
- * its own: `:<path>` is defined as root-relative, so once the path has been
- * re-expressed the working directory git runs in cannot change the answer.
+ * `filePath` may be absolute or relative to `cwd`, and may use OS separators.
+ * It is re-expressed relative to the worktree root before it reaches git,
+ * because the index is keyed on root-relative paths. Handing it a path
+ * relative to a subdirectory is what produced "fatal: path
+ * 'pkg/deep/staged.ts' is in the index, but not 'staged.ts'" and, one silent
+ * downgrade later, a clean bill of health over a real staged credential.
+ *
+ * The blob is resolved in two steps -- `git ls-files -s -- <path>` for the
+ * object id, then `git cat-file blob <id>` for the content -- rather than the
+ * single `git show :<path>` this used to run. `git show`'s `:<path>` revision
+ * syntax also accepts the `:<stage>:<path>` form, so a staged file whose
+ * repo-relative path begins `0:`, `1:`, `2:` or `3:` is parsed as a STAGE
+ * reference to a different, shorter path. Staged beside a clean file of that
+ * shorter name, the crafted file's own content is never read: `git show`
+ * returns the clean neighbour while the finding is recorded against the
+ * crafted name, so a real staged secret sails through under a clean result.
+ *
+ * `git ls-files -- <path>` never routes the path through git's revision
+ * parser -- it is a pathspec after `--`, and the exact-path match in
+ * {@link parseStagedBlobId} discards anything the pathspec over-matched -- and
+ * `git cat-file blob <id>` then reads the immutable object id, so no
+ * attacker-controlled path text can steer which blob is read. This is chosen
+ * over merely prefixing the path with `./` (which also defeats the stage-ref
+ * parse) because it keeps the path out of the revision grammar entirely rather
+ * than relying on one more corner of that grammar behaving as expected.
  */
 export function readGitIndexFile(cwd: string, filePath: string): string {
   const root = getGitWorkTreeRoot(cwd);
   const abs = path.resolve(canonicalDir(cwd), filePath);
   const rootRelative = path.relative(root, abs).split(path.sep).join('/');
-  const args = [...FORCED_GIT_CONFIG, 'show', `:${rootRelative}`];
+
+  const lsArgs = [...FORCED_GIT_CONFIG, 'ls-files', '-s', '-z', '--', rootRelative];
+  let lsOut: string;
   try {
-    return execFileSync('git', args, {
-      cwd,
+    lsOut = execFileSync('git', lsArgs, {
+      cwd: root,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 32 * 1024 * 1024,
+    });
+  } catch (err) {
+    throw new GitError(
+      `Failed to resolve staged blob id for ${rootRelative}\nUnderlying error: ${String(err)}`,
+      `git ${lsArgs.join(' ')}`,
+      err,
+    );
+  }
+
+  const blobId = parseStagedBlobId(lsOut, rootRelative);
+  if (blobId === undefined) {
+    throw new GitError(
+      `No staged (stage 0) blob found for ${rootRelative}`,
+      `git ${lsArgs.join(' ')}`,
+      undefined,
+    );
+  }
+
+  const catArgs = [...FORCED_GIT_CONFIG, 'cat-file', 'blob', blobId];
+  try {
+    return execFileSync('git', catArgs, {
+      cwd: root,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
       maxBuffer: 32 * 1024 * 1024,
@@ -207,7 +276,7 @@ export function readGitIndexFile(cwd: string, filePath: string): string {
   } catch (err) {
     throw new GitError(
       `Failed to read staged blob for ${rootRelative}\nUnderlying error: ${String(err)}`,
-      `git ${args.join(' ')}`,
+      `git ${catArgs.join(' ')}`,
       err,
     );
   }
