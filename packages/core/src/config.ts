@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { SecretMatch } from './types';
 import { ConfigError } from './errors';
+import { validateVaultGuardConfig } from './config-validate';
 import type { FailOnThreshold } from './utils/fail-on';
 
 /**
@@ -122,6 +123,45 @@ export function findVaultGuardConfigPath(startDir: string = process.cwd()): stri
   return null;
 }
 
+/**
+ * Parse and validate one config document.
+ *
+ * The schema check used to live only in `vault-guard config validate`, an
+ * opt-in command, so every ordinary scan accepted a config the validator would
+ * have refused: an unknown top-level key was silently dropped, and a
+ * mistyped `severity_overrides` value was carried into the scanner as-is. A
+ * check the gate does not run is documentation, not a control, and pull-request
+ * mode makes that worse rather than better, because the config it reads comes
+ * from a ref nobody is looking at during the run. One parser, validated, for
+ * every load: the working tree, the MCP server, the editor extension, and the
+ * base ref alike.
+ *
+ * `sourceLabel` names the document for the error message. It is a file path
+ * for a working-tree load and `<ref>:<path>` for a base-ref load, so the
+ * message says which of the two a reader has to go and fix.
+ */
+export function parseConfigText(raw: string, sourceLabel: string): VaultGuardConfig {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    throw new ConfigError(
+      `Failed to parse Vault Guard config at ${sourceLabel}: ${detail}`,
+      sourceLabel,
+    );
+  }
+
+  const result = validateVaultGuardConfig(parsed);
+  if (!result.ok) {
+    throw new ConfigError(
+      `Invalid Vault Guard config at ${sourceLabel}: ${result.errors.join('; ')}`,
+      sourceLabel,
+    );
+  }
+  return result.config;
+}
+
 export function loadConfig(startDir: string = process.cwd()): VaultGuardConfig {
   const dirs = listConfigSearchDirs(startDir);
 
@@ -141,15 +181,7 @@ export function loadConfig(startDir: string = process.cwd()): VaultGuardConfig {
         );
       }
 
-      try {
-        return JSON.parse(raw) as VaultGuardConfig;
-      } catch (e) {
-        const detail = e instanceof Error ? e.message : String(e);
-        throw new ConfigError(
-          `Failed to parse Vault Guard config at ${filePath}: ${detail}`,
-          filePath,
-        );
-      }
+      return parseConfigText(raw, filePath);
     }
   }
 

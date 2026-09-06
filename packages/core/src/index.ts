@@ -5,6 +5,21 @@ export * from './utils/file-utils';
 export * from './config';
 export * from './config-validate';
 export * from './baseline';
+export {
+  TrustBaseError,
+  loadTrustedControls,
+  assertTrustBaseResolvable,
+  listTrackedFiles,
+  readFileAtRef,
+  isRegularFileMode,
+  CONFIG_PROPOSAL_LINE,
+  BASELINE_PROPOSAL_LINE,
+  CONFIG_ADDED_LINE,
+  BASELINE_ADDED_LINE,
+  type ControlFile,
+  type ControlShapeChange,
+  type TrustedControls,
+} from './trust-base';
 export { fingerprintForMatch } from './match-fingerprint';
 export * from './scan-output';
 export * from './diagnostics';

@@ -22,6 +22,46 @@ export interface LoadBaselineOutcome {
 }
 
 /**
+ * Parse one baseline document. Shared by the working-tree load below and by
+ * the base-ref load in pull-request mode, so the two sides of a base-versus-
+ * head comparison are read by the same code and cannot drift apart.
+ *
+ * Never throws: a malformed baseline yields an empty fingerprint set and a
+ * `parseError`, which is the fail-closed direction (nothing is suppressed) and
+ * is reported rather than swallowed.
+ */
+export function parseBaselineText(raw: string): {
+  fingerprints: Set<string>;
+  parseError?: string;
+} {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') {
+      return { fingerprints: new Set(), parseError: 'not an object' };
+    }
+    const v = (parsed as { version?: unknown }).version;
+    const fps = (parsed as { fingerprints?: unknown }).fingerprints;
+    if (v !== 1) {
+      return {
+        fingerprints: new Set(),
+        parseError: `unsupported version (expected 1, got ${String(v)})`,
+      };
+    }
+    if (!Array.isArray(fps)) {
+      return { fingerprints: new Set(), parseError: 'fingerprints must be an array' };
+    }
+    const out = new Set<string>();
+    for (const x of fps) {
+      if (typeof x === 'string' && x.length > 0) out.add(x);
+    }
+    return { fingerprints: out };
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    return { fingerprints: new Set(), parseError: `JSON: ${detail}` };
+  }
+}
+
+/**
  * Walk the same directories as {@link loadConfig} and load the nearest
  * `.vault-guard.baseline.json`.
  */
@@ -43,32 +83,7 @@ export function loadBaseline(startDir: string = process.cwd()): LoadBaselineOutc
       };
     }
 
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      if (!parsed || typeof parsed !== 'object') {
-        return { sourcePath: filePath, fingerprints: new Set(), parseError: 'not an object' };
-      }
-      const v = (parsed as { version?: unknown }).version;
-      const fps = (parsed as { fingerprints?: unknown }).fingerprints;
-      if (v !== 1) {
-        return {
-          sourcePath: filePath,
-          fingerprints: new Set(),
-          parseError: `unsupported version (expected 1, got ${String(v)})`,
-        };
-      }
-      if (!Array.isArray(fps)) {
-        return { sourcePath: filePath, fingerprints: new Set(), parseError: 'fingerprints must be an array' };
-      }
-      const out = new Set<string>();
-      for (const x of fps) {
-        if (typeof x === 'string' && x.length > 0) out.add(x);
-      }
-      return { sourcePath: filePath, fingerprints: out };
-    } catch (e) {
-      const detail = e instanceof Error ? e.message : String(e);
-      return { sourcePath: filePath, fingerprints: new Set(), parseError: `JSON: ${detail}` };
-    }
+    return { sourcePath: filePath, ...parseBaselineText(raw) };
   }
 
   return { fingerprints: new Set() };
