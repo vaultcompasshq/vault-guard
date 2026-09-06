@@ -42,6 +42,14 @@ export interface JsonRunMetadata {
    * number is small and worth stating; a committed `src/vendor/` is scanned.
    */
   vendored_dirs_skipped?: number;
+  /**
+   * Files in the head tree dropped by the extension, lockfile-name and
+   * generated-artifact filters on a pull-request run. Those filters skip on a
+   * name alone, so a key committed as `src/leak.min.js` or `src/leak.lock`
+   * never reached the scanner and the run said nothing about it. What they
+   * skip is unchanged; this is the number that makes the silence visible.
+   */
+  type_filtered_files?: number;
   /** Effective gate threshold for this run (`--fail-on` / `fail_on` / default). */
   fail_on?: string;
   /**
@@ -409,6 +417,9 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
               : {}),
             ...(opts.run.vendored_dirs_skipped !== undefined
               ? { vendored_dirs_skipped: opts.run.vendored_dirs_skipped }
+              : {}),
+            ...(opts.run.type_filtered_files !== undefined
+              ? { type_filtered_files: opts.run.type_filtered_files }
               : {}),
             ...(opts.run.unscannable_files !== undefined
               ? { unscannable_files: opts.run.unscannable_files }

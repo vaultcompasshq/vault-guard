@@ -242,15 +242,25 @@ describe('loadTrustedControls', () => {
     });
   });
 
-  describe('the tracked file set', () => {
-    it('lists tracked files as absolute paths and excludes untracked ones', () => {
+  describe('the head tree file set', () => {
+    it('lists the head tree as absolute paths and excludes untracked ones', () => {
       seed(root);
       write(root, 'src/tracked.ts', 'export const t = 1;\n');
       commit(root, 'feature');
       write(root, 'src/untracked.ts', 'export const u = 1;\n');
       const controls = loadTrustedControls(root, 'base-snapshot');
-      expect(controls.trackedFiles).toContain(path.join(root, 'src', 'tracked.ts'));
-      expect(controls.trackedFiles).not.toContain(path.join(root, 'src', 'untracked.ts'));
+      expect(controls.headTreeFiles).toContain(path.join(root, 'src', 'tracked.ts'));
+      expect(controls.headTreeFiles).not.toContain(path.join(root, 'src', 'untracked.ts'));
+    });
+
+    itPosix('drops a symlink from the listing itself, by its git mode', () => {
+      seed(root);
+      write(root, 'src/real.ts', 'export const t = 1;\n');
+      fs.symlinkSync('real.ts', path.join(root, 'src', 'link.ts'));
+      commit(root, 'feature');
+      const controls = loadTrustedControls(root, 'base-snapshot');
+      expect(controls.headTreeFiles).toContain(path.join(root, 'src', 'real.ts'));
+      expect(controls.headTreeFiles).not.toContain(path.join(root, 'src', 'link.ts'));
     });
   });
 });

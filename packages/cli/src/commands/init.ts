@@ -212,6 +212,20 @@ const TEST_TREE_DEFAULT_NOTE =
   'default, remove "**/__tests__/**" from ignore.patterns in .vault-guard.json ' +
   '(keep fixtures/** and bench/fixtures/**).';
 
+/**
+ * The two 1.7.0 changes that can turn a previously green setup red, phrased for
+ * someone whose repo was scaffolded by an earlier version. Neither is a finding;
+ * both are things their existing files no longer say.
+ */
+const TRUST_BASE_UPGRADE_NOTE =
+  'Two 1.7.0 changes affect a repo initialised earlier. First, a pull_request ' +
+  'workflow now needs fetch-depth: 0 on actions/checkout, because pull-request ' +
+  'mode reads the config and the baseline from the base branch and a shallow ' +
+  'clone does not have it; without it the scan exits 2 instead of trusting the ' +
+  'pull request. Second, an unknown top-level key in .vault-guard.json now ' +
+  'fails the run rather than being dropped in silence, so run ' +
+  '"vault-guard config validate" once and remove whatever it names.';
+
 function conflictGuidance(c: InitConflict): string {
   switch (c.reason) {
     case 'exists':
@@ -222,7 +236,7 @@ function conflictGuidance(c: InitConflict): string {
     case 'foreign_manifest':
       return 'Existing .vault-guard/init-manifest.json is invalid or foreign — fix or remove it, then re-run.';
     case 'manifest_mismatch':
-      return `This repo was initialised by an earlier vault-guard, so the manifest does not match the current templates. Nothing was overwritten. ${TEST_TREE_DEFAULT_NOTE}`;
+      return `This repo was initialised by an earlier vault-guard, so the manifest does not match the current templates. Nothing was overwritten. ${TEST_TREE_DEFAULT_NOTE} ${TRUST_BASE_UPGRADE_NOTE}`;
     case 'not_a_git_repository':
       return 'Run `git init` first, or pass `--skip-hook` to scaffold config/workflow without a hook.';
     case 'foreign_hook':

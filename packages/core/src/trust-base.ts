@@ -554,28 +554,49 @@ export interface TrustedControls {
   /** One line per control input the head proposes to change. */
   proposals: string[];
   /**
-   * Every tracked file, absolute. The file set a pull-request run scans is
-   * this intersected with the walk, so a `.gitignore` the head added cannot
-   * remove a tracked file from it.
+   * Every regular file in the HEAD tree, absolute. The file set a pull-request
+   * run scans is this filtered the way the walk filters, so a `.gitignore` the
+   * head added cannot remove a committed file from it.
    */
-  trackedFiles: string[];
+  headTreeFiles: string[];
 }
 
 /**
- * Every tracked path in the worktree, absolute.
+ * Every regular file in the HEAD tree, absolute.
+ *
+ * `ls-tree -r HEAD`, not `ls-files`. `ls-files` reports the INDEX, which is
+ * local state the ref being judged says nothing about, and it is the wrong
+ * side of the boundary in both directions:
+ *
+ *  - `git rm --cached src/leak.ts` drops a path from the index while leaving
+ *    the file on disk and in HEAD. Read from the index, the scan lost it.
+ *    That is a mute costing one command, with the file exactly where it was.
+ *  - A staged but uncommitted file is in the index and not in the head tree,
+ *    so reading the index scans something this pull request has not proposed.
+ *    `scan --staged` is the command that reads the index; it is a different
+ *    gate with a different job.
+ *
+ * The mode and type are read here rather than inferred later, so a symlink
+ * (120000) and a submodule gitlink (160000) never enter the list at all.
  *
  * `-z` gives NUL-separated, unquoted, verbatim paths, so entries are used
  * exactly as git produced them; trimming would corrupt the legal if unusual
  * filename with leading or trailing whitespace into a path that does not
- * exist.
+ * exist. Each record is `<mode> SP <type> SP <object> TAB <path>`.
  */
-export function listTrackedFiles(repoRoot: string): string[] {
-  const out = runGit(repoRoot, ['ls-files', '-z']);
+export function listHeadTreeFiles(repoRoot: string): string[] {
+  const out = runGit(repoRoot, ['ls-tree', '-r', '-z', 'HEAD']);
   if (out === null) return [];
-  return out
-    .split('\0')
-    .filter(Boolean)
-    .map(rel => path.resolve(repoRoot, rel));
+  const files: string[] = [];
+  for (const record of out.split('\0')) {
+    if (!record) continue;
+    const tab = record.indexOf('\t');
+    if (tab === -1) continue;
+    const [mode, type] = record.slice(0, tab).split(' ');
+    if (type !== 'blob' || !isRegularFileMode(mode)) continue;
+    files.push(path.resolve(repoRoot, record.slice(tab + 1)));
+  }
+  return files;
 }
 
 /**
@@ -659,7 +680,7 @@ export function loadTrustedControls(startDir: string, ref: string): TrustedContr
     configShapeChange,
     baselineShapeChange,
     proposals,
-    trackedFiles: listTrackedFiles(repoRoot),
+    headTreeFiles: listHeadTreeFiles(repoRoot),
   };
 }
 

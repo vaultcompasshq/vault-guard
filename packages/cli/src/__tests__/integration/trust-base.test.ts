@@ -216,6 +216,72 @@ describe('pull-request mode (--trust-base)', () => {
       expect(r.code).toBe(1);
       expect(r.log).toContain('Vendored directories skipped: 1 (vendor)');
     });
+
+    it('the key committed and then dropped from the index with git rm --cached', async () => {
+      seedBase();
+      addSecret();
+      commit('feature');
+      // The file stays on disk and stays in HEAD; only the index forgets it.
+      // A file set read from the index loses it, which is a mute costing one
+      // command with the key exactly where it was.
+      git(dir, ['rm', '--cached', '-q', 'src/leak.ts']);
+      const r = await capture(() => scanCommand('.', 'text', false, undefined, 'base-snapshot'));
+      expect(r.code).toBe(1);
+      expect(r.log).toContain('src/leak.ts');
+    });
+  });
+
+  describe('what the run declined to look at', () => {
+    it('counts a key hidden behind a generated-artifact name, without unhiding it', async () => {
+      seedBase();
+      addSecret('src/leak.min.js');
+      commit('feature');
+      const r = await capture(() => scanCommand('.', 'text', false, undefined, 'base-snapshot'));
+      // Still skipped, deliberately: this changes what the run SAYS, not what
+      // it scans. The count is what a reviewer needs to notice it happened.
+      expect(r.code).toBe(0);
+      expect(r.log).toContain('Files skipped by type or name: 1');
+    });
+
+    it('counts a key hidden behind a .lock extension', async () => {
+      seedBase();
+      addSecret('src/leak.lock');
+      commit('feature');
+      const r = await capture(() => scanCommand('.', 'text', false, undefined, 'base-snapshot'));
+      expect(r.code).toBe(0);
+      expect(r.log).toContain('Files skipped by type or name: 1');
+    });
+
+    it('carries both skip counts in JSON', async () => {
+      seedBase();
+      addSecret('src/leak.min.js');
+      write('vendor/thing.ts', 'export const v = 1;\n');
+      commit('feature');
+      const r = await capture(() => scanCommand('.', 'json', false, undefined, 'base-snapshot'));
+      const doc = JSON.parse(r.stdout) as {
+        run: { vendored_dirs_skipped: number; type_filtered_files: number };
+      };
+      expect(doc.run.vendored_dirs_skipped).toBe(1);
+      expect(doc.run.type_filtered_files).toBe(1);
+    });
+
+    it('says nothing about either count on a staged run, where neither can be filled', async () => {
+      seedBase();
+      // A commit first, so HEAD differs from the base and the ref is accepted;
+      // then the key staged but not committed, which is what `--staged` reads.
+      write('src/other.ts', 'export const y = 2;\n');
+      commit('feature');
+      addSecret();
+      git(dir, ['add', '-A', '-f']);
+      const r = await capture(() => scanCommand('.', 'text', true, undefined, 'base-snapshot'));
+      expect(r.log).not.toContain('Vendored directories skipped');
+      expect(r.log).not.toContain('Files skipped by type or name');
+
+      const json = await capture(() => scanCommand('.', 'json', true, undefined, 'base-snapshot'));
+      const run = (JSON.parse(json.stdout) as { run: Record<string, unknown> }).run;
+      expect(run).not.toHaveProperty('vendored_dirs_skipped');
+      expect(run).not.toHaveProperty('type_filtered_files');
+    });
   });
 
   describe('first adoption and honest changes', () => {
@@ -385,6 +451,57 @@ describe('pull-request mode (--trust-base)', () => {
   });
 
   describe('the before state, pinned', () => {
+    it('without the flag ignore: ["**"] still mutes the key', async () => {
+      seedBase();
+      addSecret();
+      write('.vault-guard.json', JSON.stringify({ fail_on: 'medium', ignore: { paths: ['**'] } }));
+      commit('feature');
+      const r = await capture(() => scanCommand('.', 'text'));
+      expect(r.code).toBe(0);
+      expect(r.log).toContain('No secrets found');
+    });
+
+    it('without the flag a severity_overrides off still mutes the key', async () => {
+      seedBase();
+      addSecret();
+      write(
+        '.vault-guard.json',
+        JSON.stringify({ fail_on: 'medium', severity_overrides: { anthropic: 'off' } }),
+      );
+      commit('feature');
+      const r = await capture(() => scanCommand('.', 'text'));
+      expect(r.code).toBe(0);
+      expect(r.log).toContain('No secrets found');
+    });
+
+    it('without the flag a head-added .vault-guard.local.json still mutes the key', async () => {
+      seedBase();
+      addSecret();
+      // The swap is what makes this bite. Beside a `.vault-guard.json` in the
+      // same directory the local file never wins, because the two filenames are
+      // tried in order and the first hit ends the search on both sides.
+      fs.rmSync(path.join(dir, '.vault-guard.json'));
+      write('.vault-guard.local.json', JSON.stringify({ fail_on: 'none' }));
+      commit('feature');
+      const r = await capture(() => scanCommand('.', 'text'));
+      expect(r.code).toBe(0);
+    });
+
+    it('without the flag a rewritten baseline still mutes the key', async () => {
+      seedBase();
+      addSecret();
+      commit('feature: add a key');
+      const first = await capture(() => scanCommand('.', 'json'));
+      const fp = (
+        JSON.parse(first.stdout) as { results: Array<{ matches: Array<{ fingerprint: string }> }> }
+      ).results[0].matches[0].fingerprint;
+      write('.vault-guard.baseline.json', JSON.stringify({ version: 1, fingerprints: [fp] }));
+      commit('feature: baseline it');
+      const r = await capture(() => scanCommand('.', 'text'));
+      expect(r.code).toBe(0);
+      expect(r.log).toContain('No secrets found');
+    });
+
     it('without the flag a head-added .gitignore still mutes a tracked file', async () => {
       seedBase();
       addSecret();

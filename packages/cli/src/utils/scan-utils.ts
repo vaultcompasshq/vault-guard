@@ -15,7 +15,7 @@ import {
   type JsonOutput,
   type JsonRunMetadata,
   type TrustBaseReport,
-  type SkippedDirectories,
+  type PullRequestSkips,
   type FileScanResult,
   type Diagnostic,
   type DiagnosticBus,
@@ -277,10 +277,10 @@ export interface ScanOptions {
    * rule to hide behind.
    */
   pullRequest?: {
-    /** Absolute paths of tracked files, from `git ls-files`. */
-    trackedFiles: string[];
-    /** Filled with the directories skipped by name at the scan root. */
-    skipped: SkippedDirectories;
+    /** Absolute paths of the head tree's regular files, from `git ls-tree`. */
+    headTreeFiles: string[];
+    /** Filled with what the run declined to look at, and why. */
+    skipped: PullRequestSkips;
   };
 }
 
@@ -476,7 +476,7 @@ export async function scanFilesAsync(
       filesToScan = options.pullRequest
         ? getPullRequestFilesToScan(
             targetPath,
-            options.pullRequest.trackedFiles,
+            options.pullRequest.headTreeFiles,
             options.configIgnorePatterns ?? [],
             options.pullRequest.skipped,
           )

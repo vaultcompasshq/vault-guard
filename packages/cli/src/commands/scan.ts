@@ -16,7 +16,7 @@ import {
   loadTrustedControls,
   TrustBaseError,
   type FailOnThreshold,
-  type SkippedDirectories,
+  type PullRequestSkips,
   type TrustBaseReport,
   type TrustedControls,
   type VaultGuardConfig,
@@ -262,9 +262,12 @@ export async function scanCommand(
   // `ignore-next-line` directives across every file. Reported even at zero so
   // the run always states whether the scanner was silenced inline.
   const inlineSuppressed = { count: 0, criticalVendorAnchored: 0 };
-  // Directories skipped by name at the scan root. Only filled in pull-request
-  // mode, where the vendored-name list is anchored there.
-  const skippedVendored: SkippedDirectories = { count: 0, names: [] };
+  // What the file set declined to look at. Only filled on a pull-request
+  // DIRECTORY scan, which is the only path that builds a file set this way:
+  // `--staged` takes its list from the index and consults neither the vendored
+  // names nor the type filters, so both counts are structurally zero there and
+  // printing them would invent a reassurance.
+  const prSkips: PullRequestSkips = { dirCount: 0, dirNames: [], typeFilteredFiles: 0 };
   // Files the scanner reached but could not read. On the staged path this is
   // fatal (see below); on a directory scan it is reported but not fatal.
   const unreadable: UnreadableFile[] = [];
@@ -330,7 +333,7 @@ export async function scanCommand(
         configIgnorePatterns,
         inlineSuppressed,
         ...(controls
-          ? { pullRequest: { trackedFiles: controls.trackedFiles, skipped: skippedVendored } }
+          ? { pullRequest: { headTreeFiles: controls.headTreeFiles, skipped: prSkips } }
           : {}),
       });
     }
@@ -386,7 +389,12 @@ export async function scanCommand(
       // Always present (even at zero): a muted scanner must say so.
       inline_suppressed: inlineSuppressed.count,
       inline_suppressed_critical_vendor: inlineSuppressed.criticalVendorAnchored,
-      ...(controls ? { vendored_dirs_skipped: skippedVendored.count } : {}),
+      ...(controls && !staged
+        ? {
+            vendored_dirs_skipped: prSkips.dirCount,
+            type_filtered_files: prSkips.typeFilteredFiles,
+          }
+        : {}),
       ...(unreadable.length > 0 ? { unscannable_files: unreadable.length } : {}),
     };
 
@@ -473,10 +481,20 @@ export async function scanCommand(
           console.log(chalk.yellow(`Proposed, not applied: ${proposal}`));
         }
       }
-      const names = skippedVendored.names.length > 0 ? ` (${skippedVendored.names.join(', ')})` : '';
-      console.log(
-        chalk.gray(`Vendored directories skipped: ${skippedVendored.count}${names}`),
-      );
+      // Not on the staged path: its file list comes from the index and never
+      // consults either filter, so both numbers are structurally zero there
+      // and printing "0 skipped" would be a reassurance the run did not earn.
+      if (!staged) {
+        const names = prSkips.dirNames.length > 0 ? ` (${prSkips.dirNames.join(', ')})` : '';
+        const vendoredLine = `Vendored directories skipped: ${prSkips.dirCount}${names}`;
+        // Yellow when non-zero: a root-level vendored name still mutes by
+        // design, so a non-zero count is a thing a reviewer has to weigh, in
+        // the same colour as a proposal rather than the grey of a tally.
+        console.log(prSkips.dirCount > 0 ? chalk.yellow(vendoredLine) : chalk.gray(vendoredLine));
+        console.log(
+          chalk.gray(`Files skipped by type or name: ${prSkips.typeFilteredFiles}`),
+        );
+      }
     }
 
     // Suppression visibility: state both suppression counts every run, even at

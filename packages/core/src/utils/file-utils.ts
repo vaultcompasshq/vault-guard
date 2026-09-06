@@ -441,21 +441,33 @@ export function getFilesToScan(
 }
 
 /**
- * Directories the scan never enters, and how many of them it skipped.
+ * What a pull-request run declined to look at, and how much of it there was.
  *
  * Reported rather than silent for the same reason every suppression in this
- * tool is reported: a directory the scanner declined to look in is a decision
- * the run made on the user's behalf, and a run that makes it invisibly
- * manufactures confidence it has not earned.
+ * tool is reported: something the scanner declined to look at is a decision the
+ * run made on the user's behalf, and a run that makes it invisibly manufactures
+ * confidence it has not earned.
  */
-export interface SkippedDirectories {
-  count: number;
-  /** The directory names, for a one-line summary. */
-  names: string[];
+export interface PullRequestSkips {
+  /** Directories skipped by name at the scan root. */
+  dirCount: number;
+  /** Those directory names, for a one-line summary. */
+  dirNames: string[];
+  /**
+   * Files in the head tree dropped by the extension, lockfile-name and
+   * generated-artifact filters.
+   *
+   * Counted because those filters are silent mutes of the same shape as the
+   * ones this mode exists to close: a key committed as `src/leak.min.js` or
+   * `src/leak.lock` is skipped on its name alone, and the run used to say
+   * nothing at all about it. What gets skipped is unchanged; that something
+   * was is now visible.
+   */
+  typeFilteredFiles: number;
 }
 
 /**
- * The file set for a pull-request run: tracked files, filtered like the walk.
+ * The file set for a pull-request run: the head tree, filtered like the walk.
  *
  * Two things are deliberately different from {@link getFilesToScan}, and both
  * of them close a way a pull request could mute the scanner in the same commit
@@ -465,32 +477,33 @@ export interface SkippedDirectories {
  * the gitignore tester whether to skip each file, which means a `.gitignore`
  * the pull request itself added decides what the pull request is scanned on. A
  * `src/.gitignore` containing the name of the file the key sits in was enough,
- * measured, to turn exit 1 into exit 0. Tracked files cannot be muted that way:
- * `.gitignore` governs what git will ADD, and says nothing about a file already
- * in the index. The tester stays in place for the untracked working-tree scans
- * that have no flag, where it is doing an honest job.
+ * measured, to turn exit 1 into exit 0. A file already in the head tree cannot
+ * be muted that way: `.gitignore` governs what git will ADD and says nothing
+ * about a file already committed. The tester stays in place for the untracked
+ * working-tree scans that have no flag, where it is doing an honest job.
  *
  * SECOND, THE VENDORED-DIRECTORY NAMES ARE ANCHORED TO THE SCAN ROOT. The walk
  * skips any directory called `vendor`, `venv`, `dist` and so on at any depth,
  * which a pull request can satisfy by committing its key to `src/vendor/`. Here
  * only a direct child of the scan root can be skipped by name, so a committed
  * `src/vendor/` is scanned. Anchoring is safe here precisely because the set is
- * tracked files: a nested `node_modules` is not tracked, so nothing is gained
+ * the head tree: a nested `node_modules` is not committed, so nothing is gained
  * by pretending to skip it and no cost is paid for walking it, since there is
  * no walk.
  *
  * Everything else is the walk's own filtering, applied to the same paths:
  * binaries and lockfiles by extension and name, generated artifacts, the
  * config's own `ignore` patterns (from the BASE ref, in this mode), and
- * anything that is not a regular file on disk. Symlinks are dropped here as
- * they are in the walk, and an index entry with no file behind it is dropped
- * rather than reported as unreadable.
+ * anything that is not a regular file on disk. Those name-and-extension drops
+ * are COUNTED into {@link PullRequestSkips.typeFilteredFiles}: what they skip
+ * is unchanged, but `src/leak.min.js` used to disappear without the run saying
+ * so, which is the same silence this mode exists to remove.
  */
 export function getPullRequestFilesToScan(
   targetPath: string,
-  trackedFiles: Iterable<string>,
+  headTreeFiles: Iterable<string>,
   configIgnorePatterns: string[] = [],
-  skipped: SkippedDirectories = { count: 0, names: [] },
+  skipped: PullRequestSkips = { dirCount: 0, dirNames: [], typeFilteredFiles: 0 },
 ): string[] {
   const target = path.resolve(targetPath);
   const targetIsDirectory = (() => {
@@ -503,9 +516,10 @@ export function getPullRequestFilesToScan(
 
   const configIgnoreTester = buildConfigIgnoreFilter(configIgnorePatterns, target);
   const skippedNames = new Set<string>();
+  let typeFiltered = 0;
   const out: string[] = [];
 
-  for (const file of trackedFiles) {
+  for (const file of headTreeFiles) {
     const abs = path.resolve(file);
 
     if (!targetIsDirectory) {
@@ -522,16 +536,23 @@ export function getPullRequestFilesToScan(
     }
 
     // No gitignore tester: see the note above. The rest of the walk's file
-    // filtering still applies.
-    if (shouldIgnoreFile(abs)) continue;
+    // filtering still applies, and is counted.
+    if (shouldIgnoreFile(abs)) {
+      typeFiltered++;
+      continue;
+    }
+    // A config `ignore` pattern is not counted here: it is the project's own
+    // written decision, it comes from the BASE ref in this mode, and a head
+    // that changed it is already reported as a proposal. The counts above are
+    // for the skips nobody wrote down.
     if (configIgnoreTester(abs)) continue;
 
     let stat: fs.Stats;
     try {
       stat = fs.lstatSync(abs);
     } catch {
-      // Tracked in the index but not on disk. There is nothing to read, and
-      // the walk would never have produced it either.
+      // In the head tree but not on disk. There is nothing to read, and the
+      // walk would never have produced it either.
       continue;
     }
     if (!stat.isFile()) continue;
@@ -539,8 +560,9 @@ export function getPullRequestFilesToScan(
     out.push(abs);
   }
 
-  skipped.names = [...skippedNames].sort();
-  skipped.count = skipped.names.length;
+  skipped.dirNames = [...skippedNames].sort();
+  skipped.dirCount = skipped.dirNames.length;
+  skipped.typeFilteredFiles = typeFiltered;
   return out;
 }
 

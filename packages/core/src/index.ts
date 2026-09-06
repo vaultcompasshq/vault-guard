@@ -9,7 +9,7 @@ export {
   TrustBaseError,
   loadTrustedControls,
   assertTrustBaseResolvable,
-  listTrackedFiles,
+  listHeadTreeFiles,
   readFileAtRef,
   isRegularFileMode,
   CONFIG_PROPOSAL_LINE,

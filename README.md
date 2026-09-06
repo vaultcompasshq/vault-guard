@@ -152,7 +152,10 @@ below it is still reported (text, JSON, SARIF) but does not break the gate.
 Exit code **2** means vault-guard could not complete the scan and is refusing to
 call the result clean: `git diff --cached` failed, `--staged` reached a staged
 file it could not read, or `--trust-base` named a ref whose control inputs it
-could not read. In that case there is no `✅ SUCCESS` line, and
+could not read. On exit 2 no JSON or SARIF document is written at all, because a
+document reporting zero findings would be a claim the run did not earn; if you
+pipe SARIF to `upload-sarif`, guard that step on the file being non-empty (see
+**[docs/GITHUB_ACTION.md](./docs/GITHUB_ACTION.md)**). In that case there is no `✅ SUCCESS` line, and
 `run.unscannable_files` says how many staged files went unexamined. Exit 2
 takes precedence over exit 1, so gate on **any** non-zero exit rather than on
 1 alone: a run that skipped files cannot report a complete finding set. See
@@ -269,10 +272,15 @@ carried the secret, and nothing in the output would say so. Measured on a
 scratch repository, each of these on its own turned exit 1 into exit 0:
 `ignore: {"paths": ["**"]}` added to `.vault-guard.json`, a `severity_overrides`
 entry setting the matching rule to `off`, `"fail_on": "none"`, a
-`.vault-guard.local.json` the base never had, a `.vault-guard.baseline.json`
-rewritten to carry the fingerprint of the finding being added, a `.gitignore`
-covering the file the key sits in, and the key committed under a directory
-named `vendor`.
+`.vault-guard.local.json` **swapped in for** the committed `.vault-guard.json`,
+a `.vault-guard.baseline.json` rewritten to carry the fingerprint of the finding
+being added, a `.gitignore` covering the file the key sits in, and the key
+committed under a directory named `vendor`.
+
+The local-config one needs the swap. The two filenames are tried in order within
+a directory, so a `.vault-guard.local.json` added beside an existing
+`.vault-guard.json` never wins; deleting the committed file in the same commit
+is what hands the run to the added one.
 
 The Action passes `--trust-base origin/$GITHUB_BASE_REF` on pull-request events
 by default, through the step's `env` block rather than by substituting an
@@ -290,11 +298,20 @@ What changes in that mode:
   `config changed in this pull request (2 patterns added to ignore, fail_on
   lowered)`. A control input that exists only in the head is a proposal too, and
   the run uses the defaults it would have used with no config at all.
-- The file set is the tracked files, so a `.gitignore` added by the pull request
-  cannot hide a file that is already committed.
+- The file set is the **HEAD tree** (`git ls-tree -r HEAD`), so a `.gitignore`
+  added by the pull request cannot hide a file that is already committed, and
+  `git rm --cached` cannot either. Untracked and merely-staged files are **not**
+  scanned in this mode: they are not part of the tree the pull request is
+  proposing, and the index is local state the base ref says nothing about. Use
+  `vault-guard scan --staged` for the pre-commit job of checking the index.
 - The vendored-directory names (`vendor`, `dist`, `node_modules`, …) are
   anchored to the scan root, so a committed `src/vendor/` is scanned. The run
-  prints how many directories it skipped.
+  prints how many directories it skipped, in yellow when that number is not
+  zero, because a root-level vendored name still mutes by design.
+- The run also prints how many files it skipped by extension or name (`.min.js`,
+  `.lock`, `.map`, lockfiles). Those filters are unchanged: a key committed as
+  `src/leak.min.js` is still skipped. What changed is that the run now says so
+  rather than reporting clean in silence.
 - Inline `vault-guard: ignore-line` directives are content, not configuration,
   so they are still honoured. A directive that hid a critical vendor-anchored
   finding gets its own count beside the total.
@@ -371,6 +388,19 @@ that hold deliberately-planted credential fixtures (a scanner's own
 true-positive corpus).
 
 JSON Schema for editor autocomplete: **[schemas/vault-guard-config.json](./schemas/vault-guard-config.json)**.
+
+> **Upgrading to 1.7.0.** The config schema is now checked on **every** load, not
+> only when you run `vault-guard config validate`. Through 1.6.0 an unrecognised
+> top-level key was silently dropped and the scan carried on; from 1.7.0 it fails
+> the run with the validation message. Realistic keys that were tolerated and are
+> now refused include `$schema`, `comment` and `version`. Run
+> `vault-guard config validate` once after upgrading, and delete or rename
+> anything it names. Only the keys documented above are accepted.
+
+> **Also upgrading to 1.7.0.** If your CI workflow runs on `pull_request`, add
+> `fetch-depth: 0` to `actions/checkout`. Pull-request mode reads the config and
+> the baseline from the base branch, and a shallow clone does not have it, so the
+> scan exits 2 rather than falling back to trusting the pull request.
 
 **Baseline**: fingerprint accepted findings so new issues still fail the gate:
 

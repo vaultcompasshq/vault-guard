@@ -14,6 +14,27 @@ control input comes from the base ref and the head tree is the thing scanned.**
 A new flag, new report lines and a new JSON field, so this is a minor rather
 than a patch.
 
+### Upgrading
+
+Two things can turn a green run red on upgrade, and neither is a secret the
+scanner found.
+
+1. **An unknown top-level key in `.vault-guard.json` now fails the run.** The
+   schema check used to run only in `vault-guard config validate`, an opt-in
+   command, so through 1.6.0 an unrecognised key was silently dropped and the
+   scan carried on. `$schema`, `comment` and `version` are realistic keys that
+   were tolerated and are now refused, with the validation message and exit 1
+   on a plain `scan`. Run `vault-guard config validate` once after upgrading
+   and delete or rename whatever it names. This is deliberate: a check the gate
+   does not run is documentation, not a control, and a config whose
+   `severity_overrides` were quietly dropped is a gate nobody knew was open.
+2. **A `pull_request` workflow needs `fetch-depth: 0` on `actions/checkout`.**
+   The Action now passes `--trust-base origin/$GITHUB_BASE_REF` on pull-request
+   events by default, and the base branch has to exist locally for that ref to
+   resolve. A shallow clone exits 2 with a message naming the ref, rather than
+   falling back to trusting the pull request. Set `trust-base: off` on the
+   action step to keep 1.6.0 behaviour while you arrange the checkout.
+
 ### Added
 
 - **`--trust-base <ref>` on `scan` and `check`.** Pull-request mode.
@@ -60,23 +81,42 @@ than a patch.
   saying anything had been muted:
   `ignore: {"paths": ["**"]}` in `.vault-guard.json`; a `severity_overrides`
   entry setting the matching rule to `off`; `"fail_on": "none"`; a
-  `.vault-guard.local.json` the base ref never had; a `.vault-guard.baseline.json`
-  rewritten to carry the fingerprint of the finding being added; a `.gitignore`
-  covering the file the key was committed in; and the key committed under a
-  directory named `vendor`. All seven now report the change and block, verified
-  before and after.
-- **Descendant `.gitignore` files cannot mute a tracked file in pull-request
-  mode.** The file set there is `git ls-files` intersected with the walk's own
-  filtering, not a filesystem walk filtered by the gitignore tester. The tester
-  is unchanged for untracked working-tree scans, which have no flag.
+  `.vault-guard.local.json` swapped in for the committed `.vault-guard.json`
+  (the swap is what makes it bite: the two filenames are tried in order within a
+  directory, so a local file added *beside* an existing `.vault-guard.json`
+  never wins); a `.vault-guard.baseline.json` rewritten to carry the fingerprint
+  of the finding being added; a `.gitignore` covering the file the key was
+  committed in; and the key committed under a directory named `vendor`. All
+  seven now report the change and block, verified before and after, and each
+  has its old behaviour pinned by a test so it cannot come back unnoticed.
+- **The pull-request file set is the HEAD tree, not the index.** It was
+  `git ls-files`, which reports the index, and the index is the wrong side of
+  the boundary in both directions: `git rm --cached src/leak.ts` dropped a
+  committed key out of the scan while leaving the file on disk and in HEAD, and
+  a staged but uncommitted file was scanned even though the pull request had not
+  proposed it. It is now `git ls-tree -r HEAD`, whose records also carry the
+  mode, so a symlink or a submodule gitlink never enters the list at all. In CI
+  the index and HEAD agree; locally the first of those was a mute costing one
+  command, with the file left exactly where it was.
+- **Descendant `.gitignore` files cannot mute a committed file in pull-request
+  mode.** The file set there is the HEAD tree filtered the way the walk filters,
+  not a filesystem walk filtered by the gitignore tester. The tester is
+  unchanged for untracked working-tree scans, which have no flag.
 - **The vendored-directory names are anchored to the scan root in pull-request
   mode**, so a committed `src/vendor/` is scanned while a root `node_modules` is
-  still skipped, and the run prints how many directories it skipped. Anchoring
-  is safe there precisely because the set is tracked files.
+  still skipped, and the run prints how many directories it skipped, in yellow
+  when that number is not zero. Anchoring is safe there precisely because the
+  set is the HEAD tree.
+- **A pull-request run now says how many files it skipped by extension or name.**
+  `.min.js`, `.bundle.js`, `.lock`, `.map`, `.log` and the lockfile names are
+  skipped on the name alone, so a key committed as `src/leak.min.js` exited 0
+  with no count and no line anywhere in the output. What is skipped is
+  deliberately unchanged; the silence is not. The count prints beside the
+  vendored-directory count and is carried in JSON as `run.type_filtered_files`.
 - **A scan target outside the repository the base ref lives in is refused**,
   exit 2. Pull-request mode resolves the base from the run's anchor, which for a
   directory scan is the process cwd, so a target in another checkout had no
-  tracked files in common with it: the intersection that makes the mode safe
+  files in common with it: the intersection that makes the mode safe
   became an intersection with nothing, and the run printed "no secrets found"
   over zero files scanned. Found by running the built CLI against another
   checkout by absolute path. Refused rather than re-anchored, because

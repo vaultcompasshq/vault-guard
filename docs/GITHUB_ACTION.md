@@ -98,3 +98,43 @@ extra wiring required.
 Use `format: sarif` and pipe output is already written to disk by the action
 step (`tee`). Chain `github/codeql-action/upload-sarif` as in the root
 `README.md` example.
+
+### Exit 2 leaves the SARIF file empty
+
+Exit 2 means the run could not establish something it needed and scanned
+nothing: a base ref it cannot read, a base config that fails validation, a
+staged file it cannot read. There is deliberately no SARIF document in that
+case, because a document reporting zero results would be a claim the run did
+not earn. The action still `tee`s stdout, so the file exists and is **empty**.
+
+An `upload-sarif` step with `if: always()` then fails on that empty file, and
+its error is the one people read first, sitting on top of the real message
+further up the log. Guard the upload on the file having content:
+
+```yaml
+      - uses: vaultcompasshq/vault-guard@v1.7.0
+        id: vg
+        with:
+          format: sarif
+      - name: Check for a SARIF document
+        id: sarif
+        if: always()
+        shell: bash
+        env:
+          SARIF_FILE: ${{ steps.vg.outputs.results-file }}
+        run: |
+          set -euo pipefail
+          if [[ -s "${SARIF_FILE}" ]]; then
+            echo "present=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "present=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::vault-guard wrote no SARIF document; see the scan step for why."
+          fi
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always() && steps.sarif.outputs.present == 'true'
+        with:
+          sarif_file: ${{ steps.vg.outputs.results-file }}
+```
+
+The step output reaches the shell through `env` rather than being substituted
+into the `run` body, for the same reason the base ref does.
