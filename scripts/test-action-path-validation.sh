@@ -80,7 +80,15 @@ fi
 
 validate_trust_base() {
   local value="$1"
-  if [[ "${value}" == "auto" || "${value}" == "off" ]]; then
+  # `off` is refused BY NAME rather than falling through to the ref charset,
+  # which it would otherwise pass and be used as a branch called "off". It was
+  # accepted before 1.7.0 shipped and was removed because a same-repo
+  # pull_request event runs the workflow file from the pull request head, so an
+  # off switch here sits on the untrusted side of the boundary it turns off.
+  if [[ "${value}" == "off" ]]; then
+    return 1
+  fi
+  if [[ "${value}" == "auto" ]]; then
     return 0
   fi
   if [[ ! "${value}" =~ ^[A-Za-z0-9._/@^~-]+$ ]] || (( ${#value} > 200 )); then
@@ -104,17 +112,35 @@ assert_trust_bad() {
 }
 
 assert_trust_ok "auto"
-assert_trust_ok "off"
 assert_trust_ok "origin/main"
 assert_trust_ok "HEAD~1"
 assert_trust_ok "v1.2.3^"
 
 assert_trust_bad ""
+assert_trust_bad "off"
 assert_trust_bad 'HEAD^{commit}'
 assert_trust_bad 'origin/$(id)'
 assert_trust_bad 'origin/main; rm -rf /'
 assert_trust_bad 'origin/`id`'
 assert_trust_bad "$(printf 'a%.0s' {1..201})"
+
+# Guard: `trust-base: off` must be refused by name, with an error that says it
+# was removed. Base-ref judging is the floor and not a knob: on a same-repo
+# pull_request event the workflow file runs from the pull request head, so any
+# off switch here is settable by the pull request it is meant to judge. Without
+# this guard `off` reads as an ordinary ref, passes the charset check, and the
+# scan fails later with a confusing "does not resolve to a commit".
+if ! grep -n 'trust-base: off` was removed' "${ACTION_YML}" >/dev/null; then
+  printf 'action.yml no longer refuses `trust-base: off` by name with a removal message\n' >&2
+  exit 1
+fi
+
+# Guard: and the argv builder must not carry a branch for it either, which is
+# where the switch actually lived.
+if grep -nE '"\$\{VG_TRUST_BASE\}" != "off"' "${ACTION_YML}" >/dev/null; then
+  printf 'action.yml still treats `off` as a trust-base keyword in the argv builder\n' >&2
+  exit 1
+fi
 
 # Guard: the ref must reach npx as a bash ARRAY element, so a branch name with
 # a space stays one argv entry. A string built with `TRUST_ARGS="--trust-base

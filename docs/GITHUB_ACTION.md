@@ -18,7 +18,7 @@ The composite action in the **repository root** runs the published
 | `path`         | `.`                         | Subdirectory to scan, relative to workspace root. |
 | `format`       | `sarif`                     | `sarif`, `json`, or `text`. |
 | `sarif-output` | `vault-guard-results.sarif` | Output file path **under** `GITHUB_WORKSPACE`. |
-| `trust-base`   | `auto`                      | Pull-request mode. `auto` passes `--trust-base origin/$GITHUB_BASE_REF` when that variable is set; `off` never passes it; any other value is used as the ref. |
+| `trust-base`   | `auto`                      | Pull-request mode. `auto` passes `--trust-base origin/$GITHUB_BASE_REF` when that variable is set; any other value is used as the ref. There is deliberately no value that turns it off. |
 
 ## Pull requests
 
@@ -34,6 +34,21 @@ set only there. The ref reaches the CLI through the step's `env` block and a
 bash array, never by substituting a `${{ }}` expression into a `run` body:
 expressions are textual substitution performed before the shell parses the
 script, which is how a crafted branch name would become a command.
+
+**There is no `trust-base` value that turns pull-request mode off**, and that is
+a decision rather than an omission. On a same-repo `pull_request` event GitHub
+runs the workflow file from the pull request head, so an off switch on this
+input would be settable by the pull request it exists to judge: the boundary
+would ship with its own off switch, sitting on the untrusted side. Base-ref
+judging is the floor. The only kind of change this input accepts is a tightening
+(an explicit ref), and the human-approval tightening lives in repository
+settings, where a pull request cannot write it. `trust-base: off` was accepted
+in a pre-release build and is now refused by name, with an error saying so.
+
+If you are not ready to add `fetch-depth: 0` to your checkout, stay pinned to
+`vaultcompasshq/vault-guard@v1.6.0` until you are. That is a deliberate choice a
+maintainer makes on a protected branch, which is exactly what an off switch in a
+PR-controlled file is not.
 
 Two requirements on the calling workflow, and neither can be met from inside
 this action:

@@ -32,8 +32,13 @@ scanner found.
    The Action now passes `--trust-base origin/$GITHUB_BASE_REF` on pull-request
    events by default, and the base branch has to exist locally for that ref to
    resolve. A shallow clone exits 2 with a message naming the ref, rather than
-   falling back to trusting the pull request. Set `trust-base: off` on the
-   action step to keep 1.6.0 behaviour while you arrange the checkout.
+   falling back to trusting the pull request. There is deliberately no input
+   that turns pull-request mode off: on a same-repo `pull_request` event GitHub
+   runs the workflow file from the pull request head, so an off switch would be
+   settable by the pull request it judges. If you are not ready to change the
+   checkout, stay pinned to `vaultcompasshq/vault-guard@v1.6.0` until you are.
+   That is a decision a maintainer makes on a protected branch, which is what a
+   switch in a PR-controlled file is not.
 
 ### Added
 
@@ -54,8 +59,13 @@ scanner found.
 - **A `trust-base` input on the composite Action**, defaulting to `auto`, which
   passes `--trust-base origin/$GITHUB_BASE_REF` on exactly the pull-request
   events. The ref reaches the CLI through the step's `env` block and a bash
-  array, never through a `${{ }}` expression substituted into a `run` body.
-  `off` disables it; any other value is used as the ref.
+  array, never through a `${{ }}` expression substituted into a `run` body. Any
+  other value is used as the ref. There is deliberately no value that turns
+  pull-request mode off, and `off` is refused by name: base-ref judging is the
+  floor rather than a knob, and on a same-repo `pull_request` event the workflow
+  file runs from the pull request head, so an off switch on this input would sit
+  on the untrusted side of the boundary it disables. The only change this input
+  accepts is a tightening.
 - **A `trustBase` block in the JSON output**, naming the ref, every proposed
   control-input change, and how the head changed each control file's type or
   mode. SARIF carries one `toolExecutionNotification` per proposal, because a

@@ -222,9 +222,14 @@ const TRUST_BASE_UPGRADE_NOTE =
   'workflow now needs fetch-depth: 0 on actions/checkout, because pull-request ' +
   'mode reads the config and the baseline from the base branch and a shallow ' +
   'clone does not have it; without it the scan exits 2 instead of trusting the ' +
-  'pull request. Second, an unknown top-level key in .vault-guard.json now ' +
-  'fails the run rather than being dropped in silence, so run ' +
-  '"vault-guard config validate" once and remove whatever it names.';
+  'pull request. There is no input that turns pull-request mode off, because a ' +
+  'same-repo pull_request event runs the workflow file from the pull request ' +
+  'head, so an off switch would be settable by the pull request it judges; if ' +
+  'you are not ready to change the checkout, stay pinned to ' +
+  'vaultcompasshq/vault-guard@v1.6.0 until you are. Second, an unknown ' +
+  'top-level key in .vault-guard.json now fails the run rather than being ' +
+  'dropped in silence, so run "vault-guard config validate" once and remove ' +
+  'whatever it names.';
 
 function conflictGuidance(c: InitConflict): string {
   switch (c.reason) {

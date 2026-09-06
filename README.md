@@ -325,6 +325,16 @@ Outside pull-request mode nothing changes. A pre-commit hook and a local
 `vault-guard scan .` are already inside the trust boundary and must never pass
 the flag.
 
+**There is no action input that turns pull-request mode off**, and that is a
+decision rather than an omission. On a same-repo `pull_request` event GitHub
+runs the workflow file from the pull request head, so an off switch on the
+action would be settable by the pull request it exists to judge: the boundary
+would ship with its own off switch on the untrusted side. Base-ref judging is
+the floor; the only kind of change the input accepts is a tightening. If you
+need 1.6.0 behaviour while you arrange `fetch-depth: 0`, stay pinned to
+`vaultcompasshq/vault-guard@v1.6.0` until you are ready, which is a choice a
+maintainer makes on a protected branch.
+
 **The workflow file itself has to be protected, deliberately.** On a same-repo
 `pull_request` event GitHub runs the workflow from the pull request head, so the
 job that runs this gate is as editable as any other file in the branch. No flag
@@ -400,7 +410,12 @@ JSON Schema for editor autocomplete: **[schemas/vault-guard-config.json](./schem
 > **Also upgrading to 1.7.0.** If your CI workflow runs on `pull_request`, add
 > `fetch-depth: 0` to `actions/checkout`. Pull-request mode reads the config and
 > the baseline from the base branch, and a shallow clone does not have it, so the
-> scan exits 2 rather than falling back to trusting the pull request.
+> scan exits 2 rather than falling back to trusting the pull request. There is no
+> input that turns pull-request mode off, on purpose: on a same-repo
+> `pull_request` event GitHub runs the workflow file from the pull request head,
+> so an off switch would be settable by the pull request it judges. If you are
+> not ready to change the checkout, stay pinned to
+> `vaultcompasshq/vault-guard@v1.6.0` until you are.
 
 **Baseline**: fingerprint accepted findings so new issues still fail the gate:
 
