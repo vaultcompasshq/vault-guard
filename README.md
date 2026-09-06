@@ -130,6 +130,11 @@ Emergency bypass (discouraged): `git commit --no-verify`.
 vault-guard scan .
 vault-guard scan --staged          # staged files only (fast, for CI / hooks)
 vault-guard check src/api.ts       # single file
+
+# Pull-request mode: config and baseline come from the base ref, the head tree
+# is what gets scanned. See "Pull requests" under CI below. Never in a hook.
+vault-guard scan . --trust-base origin/main
+vault-guard check --trust-base origin/main
 ```
 
 **Machine-readable output** (SARIF for GitHub Code Scanning, or JSON):
@@ -145,8 +150,9 @@ Findings at or above the **`--fail-on` threshold** produce exit code 1. Everythi
 below it is still reported (text, JSON, SARIF) but does not break the gate.
 
 Exit code **2** means vault-guard could not complete the scan and is refusing to
-call the result clean: `git diff --cached` failed, or `--staged` reached a staged
-file it could not read. In that case there is no `✅ SUCCESS` line, and
+call the result clean: `git diff --cached` failed, `--staged` reached a staged
+file it could not read, or `--trust-base` named a ref whose control inputs it
+could not read. In that case there is no `✅ SUCCESS` line, and
 `run.unscannable_files` says how many staged files went unexamined. Exit 2
 takes precedence over exit 1, so gate on **any** non-zero exit rather than on
 1 alone: a run that skipped files cannot report a complete finding set. See
@@ -235,7 +241,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: vaultcompasshq/vault-guard@v1.6.0
+        with:
+          # Required on pull requests: pull-request mode reads the config and
+          # the baseline from the base branch, which a shallow clone does not have.
+          fetch-depth: 0
+      - uses: vaultcompasshq/vault-guard@v1.7.0
         with:
           version: latest
           path: .
@@ -248,6 +258,81 @@ jobs:
 ```
 
 Details: **[docs/GITHUB_ACTION.md](./docs/GITHUB_ACTION.md)**. Branch protection setup: **[docs/GITHUB_BRANCH_PROTECTION.md](./docs/GITHUB_BRANCH_PROTECTION.md)**.
+
+### Pull requests: the rules come from the base branch
+
+**On a pull-request run, every control input comes from the base ref and the
+head tree is the thing scanned.**
+
+Without that, a pull request could turn the scanner off in the same commit that
+carried the secret, and nothing in the output would say so. Measured on a
+scratch repository, each of these on its own turned exit 1 into exit 0:
+`ignore: {"paths": ["**"]}` added to `.vault-guard.json`, a `severity_overrides`
+entry setting the matching rule to `off`, `"fail_on": "none"`, a
+`.vault-guard.local.json` the base never had, a `.vault-guard.baseline.json`
+rewritten to carry the fingerprint of the finding being added, a `.gitignore`
+covering the file the key sits in, and the key committed under a directory
+named `vendor`.
+
+The Action passes `--trust-base origin/$GITHUB_BASE_REF` on pull-request events
+by default, through the step's `env` block rather than by substituting an
+expression into a shell script. You can run the same judgment locally:
+
+```bash
+vault-guard scan . --trust-base origin/main
+```
+
+What changes in that mode:
+
+- `.vault-guard.json`, `.vault-guard.local.json` and the baseline are read from
+  the ref with `git show`. Nothing is checked out and nothing is written.
+- A control input the head changed is printed as a proposal and **not applied**:
+  `config changed in this pull request (2 patterns added to ignore, fail_on
+  lowered)`. A control input that exists only in the head is a proposal too, and
+  the run uses the defaults it would have used with no config at all.
+- The file set is the tracked files, so a `.gitignore` added by the pull request
+  cannot hide a file that is already committed.
+- The vendored-directory names (`vendor`, `dist`, `node_modules`, …) are
+  anchored to the scan root, so a committed `src/vendor/` is scanned. The run
+  prints how many directories it skipped.
+- Inline `vault-guard: ignore-line` directives are content, not configuration,
+  so they are still honoured. A directive that hid a critical vendor-anchored
+  finding gets its own count beside the total.
+- A ref that will not resolve is **exit 2** with one line on stderr and nothing
+  scanned. So is a ref that resolves to `HEAD`'s commit, or to a different
+  commit carrying `HEAD`'s tree, which is what a merge ref looks like when the
+  base has not moved. A missing base is never a reason to fall back to trusting
+  the pull request.
+
+Outside pull-request mode nothing changes. A pre-commit hook and a local
+`vault-guard scan .` are already inside the trust boundary and must never pass
+the flag.
+
+**The workflow file itself has to be protected, deliberately.** On a same-repo
+`pull_request` event GitHub runs the workflow from the pull request head, so the
+job that runs this gate is as editable as any other file in the branch. No flag
+can detect a job the pull request deleted. Make the check **required by name in
+branch protection**, or move the gate into a **reusable workflow on a protected
+ref** and call it. See
+**[docs/GITHUB_BRANCH_PROTECTION.md](./docs/GITHUB_BRANCH_PROTECTION.md)**.
+
+**Requiring a human to approve a config change is repository configuration, not
+a vault-guard setting**, and there is deliberately no flag for it. Add a
+`CODEOWNERS` entry for the control files and require code-owner review on the
+protected branch:
+
+```
+# .github/CODEOWNERS
+/.vault-guard.json           @your-org/security
+/.vault-guard.local.json     @your-org/security
+/.vault-guard.baseline.json  @your-org/security
+```
+
+It lives there because a setting that could relax the gate has to sit somewhere
+the pull request cannot write. An in-repo knob for this would be the
+vulnerability wearing a settings label: a pull request would simply flip it in
+the same commit. Base-ref judgment is the floor and is always on; a required
+human approval can only make the gate stricter.
 
 ---
 

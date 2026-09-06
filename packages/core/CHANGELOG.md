@@ -1,5 +1,18 @@
 # @vaultcompass/vault-guard-core
 
+## 1.7.0
+
+### Minor Changes
+
+- Pull-request mode: on a pull-request run every control input comes from the base ref and the head tree is the thing scanned.
+
+  - `trust-base.ts` reads `.vault-guard.json`, `.vault-guard.local.json` and `.vault-guard.baseline.json` from a ref with `git ls-tree` and `git show`, on the same search walk `loadConfig` uses. Reads only: no checkout switch, no worktree, nothing written into the repository. A ref that will not resolve, one that resolves to HEAD's commit, and one that carries HEAD's tree are all refused, because each puts every control input back inside the tree under judgment.
+  - Both sides of the base-versus-head comparison are read through git, so a config the head replaced with a symlink is compared as the link target string it is. Shape changes (symlink, not a regular file, removed, mode) are reported separately from content changes.
+  - `getPullRequestFilesToScan` builds the file set from tracked files rather than a gitignore-filtered walk, so a `.gitignore` the pull request added cannot mute a tracked file, and it anchors the vendored-directory names to the scan root so a committed `src/vendor/` is scanned.
+  - Config schema validation now runs on every load, not only in `config validate`. A config that parsed as JSON but failed the schema used to load with the bad parts silently dropped.
+  - `IgnoreDirectiveHits` carries a separate count for a directive that hid a critical vendor-anchored finding.
+  - JSON output gains a `trustBase` block; SARIF gains one `toolExecutionNotification` per proposal.
+
 ## 1.6.0
 
 ### Minor Changes

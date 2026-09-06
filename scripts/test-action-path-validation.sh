@@ -6,6 +6,12 @@
 # Keep charset + length checks portable across Linux and macOS bash.
 set -euo pipefail
 
+# Anchored to this script rather than to the caller's cwd. The grep guards
+# below check the real action.yml, and a run from anywhere else used to check
+# whatever action.yml happened to sit in the current directory, which is a
+# guard that passes without having looked at the file it names.
+ACTION_YML="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/action.yml"
+
 validate_path() {
   local value="$1"
   if [[ ! "${value}" =~ ^[A-Za-z0-9._/-]+$ ]] || (( ${#value} > 256 )); then
@@ -52,7 +58,7 @@ assert_bad "$(printf 'a%.0s' {1..257})"
 
 # Guard: the old pattern must not be reintroduced. On macOS it fails to
 # compile; on Linux it "works" and would hide the regression from ubuntu CI.
-if grep -nE '\[A-Za-z0-9\._/-\]\{1,256\}' action.yml >/dev/null; then
+if grep -nE '\[A-Za-z0-9\._/-\]\{1,256\}' "${ACTION_YML}" >/dev/null; then
   printf 'action.yml still contains {1,256} path regex (breaks macOS RE_DUP_MAX)\n' >&2
   exit 1
 fi
@@ -61,8 +67,83 @@ fi
 # Guard: npx must not pass a bare `--` before `scan`. That separator is
 # forwarded into vault-guard argv; Commander then ignores `--format` and the
 # action tees text banners into the SARIF file.
-if grep -nE 'npx[^\n]*--[[:space:]]+scan' action.yml >/dev/null; then
+if grep -nE 'npx[^\n]*--[[:space:]]+scan' "${ACTION_YML}" >/dev/null; then
   printf 'action.yml still uses `npx … -- scan` (breaks --format / SARIF upload)\n' >&2
+  exit 1
+fi
+
+# --- trust-base -------------------------------------------------------------
+#
+# Same checks as the path ones above, for the same reason: the value reaches a
+# command line, and this file is where a regression in it gets noticed on both
+# Linux and macOS bash.
+
+validate_trust_base() {
+  local value="$1"
+  if [[ "${value}" == "auto" || "${value}" == "off" ]]; then
+    return 0
+  fi
+  if [[ ! "${value}" =~ ^[A-Za-z0-9._/@^~-]+$ ]] || (( ${#value} > 200 )); then
+    return 1
+  fi
+  return 0
+}
+
+assert_trust_ok() {
+  if ! validate_trust_base "$1"; then
+    printf 'expected OK for trust-base %q\n' "$1" >&2
+    exit 1
+  fi
+}
+
+assert_trust_bad() {
+  if validate_trust_base "$1"; then
+    printf 'expected reject for trust-base %q\n' "$1" >&2
+    exit 1
+  fi
+}
+
+assert_trust_ok "auto"
+assert_trust_ok "off"
+assert_trust_ok "origin/main"
+assert_trust_ok "HEAD~1"
+assert_trust_ok "v1.2.3^"
+
+assert_trust_bad ""
+assert_trust_bad 'HEAD^{commit}'
+assert_trust_bad 'origin/$(id)'
+assert_trust_bad 'origin/main; rm -rf /'
+assert_trust_bad 'origin/`id`'
+assert_trust_bad "$(printf 'a%.0s' {1..201})"
+
+# Guard: the ref must reach npx as a bash ARRAY element, so a branch name with
+# a space stays one argv entry. A string built with `TRUST_ARGS="--trust-base
+# ${ref}"` would word-split at the first space.
+if ! grep -nE 'TRUST_ARGS=\(' "${ACTION_YML}" >/dev/null; then
+  printf 'action.yml no longer builds the trust-base args as an array\n' >&2
+  exit 1
+fi
+
+# Guard: `set -u` plus bash 3.2 (macOS runners) aborts on a bare empty-array
+# expansion, so the `+` form is required rather than stylistic. Checked on the
+# npx line itself, not anywhere in the file: an earlier version of this guard
+# grepped the whole document and was satisfied by the COMMENT explaining the
+# idiom, which is a guard that passes whatever the code says.
+npx_line="$(grep 'npx --yes' "${ACTION_YML}" || true)"
+if [[ -z "${npx_line}" ]]; then
+  printf 'action.yml no longer invokes npx --yes\n' >&2
+  exit 1
+fi
+if [[ "${npx_line}" != *'TRUST_ARGS[@]+'* ]]; then
+  printf 'the npx line expands TRUST_ARGS without the ${a[@]+...} guard (breaks bash 3.2 + set -u)\n' >&2
+  exit 1
+fi
+
+# Guard: the base ref must never be interpolated into a run body as a GitHub
+# expression. That substitution happens before the shell parses the script, so
+# no amount of quoting downstream helps.
+if grep -nE '\$\{\{[^}]*base_ref' "${ACTION_YML}" >/dev/null; then
+  printf 'action.yml interpolates base_ref into a run body (command injection)\n' >&2
   exit 1
 fi
 

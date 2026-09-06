@@ -7,6 +7,124 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-06
+
+Minor bump on all four packages. **The rule: on a pull-request run, every
+control input comes from the base ref and the head tree is the thing scanned.**
+A new flag, new report lines and a new JSON field, so this is a minor rather
+than a patch.
+
+### Added
+
+- **`--trust-base <ref>` on `scan` and `check`.** Pull-request mode.
+  `.vault-guard.json`, `.vault-guard.local.json` (at every level between the
+  scan directory and the repository root) and `.vault-guard.baseline.json` are
+  read from `<ref>` with `git ls-tree` and `git show`, and the head tree is what
+  gets scanned. A control input the head changed never takes effect for the run
+  and is reported on one line: `config changed in this pull request`, or
+  `baseline changed in this pull request`, with a short parenthetical when it is
+  cheap to compute (`2 patterns added to ignore, fail_on lowered`,
+  `1 baseline entry added`). A control input that exists only in the head is
+  `config added in this pull request`, and the run uses the defaults it would
+  have used with no config at all. Reads only: no checkout switch, no worktree,
+  and nothing written into the repository. Fails closed, exit 2, when the ref
+  will not resolve; a missing base is never a reason to fall back to trusting
+  the head. A pre-commit hook never passes it.
+- **A `trust-base` input on the composite Action**, defaulting to `auto`, which
+  passes `--trust-base origin/$GITHUB_BASE_REF` on exactly the pull-request
+  events. The ref reaches the CLI through the step's `env` block and a bash
+  array, never through a `${{ }}` expression substituted into a `run` body.
+  `off` disables it; any other value is used as the ref.
+- **A `trustBase` block in the JSON output**, naming the ref, every proposed
+  control-input change, and how the head changed each control file's type or
+  mode. SARIF carries one `toolExecutionNotification` per proposal, because a
+  proposal is a statement about the run's configuration rather than a finding
+  with a file to point at.
+- **A distinct count for an inline ignore directive that hid a critical
+  vendor-anchored finding**, beside the existing total, in text (when non-zero)
+  and in JSON as `run.inline_suppressed_critical_vendor` (always). Inline
+  directives are content rather than configuration, so they stay honoured; a
+  directive over a generic fixture assignment and a directive on the same line
+  as a provider-issued key are not the same event, and one total let the second
+  hide inside the first.
+- **`init`'s generated workflow now sets `fetch-depth: 0`** on `actions/checkout`,
+  which pull-request mode requires. Template version 3.
+
+### Security
+
+- **A pull request could turn the scanner off in the same commit that carried
+  what the scanner exists to catch.** Every control input was read from the tree
+  under judgment. Measured on a scratch repository with a committed config and
+  baseline on the base branch, each of the following, added in the same commit
+  as a provider-shaped key, turned exit 1 into exit 0 with no line of output
+  saying anything had been muted:
+  `ignore: {"paths": ["**"]}` in `.vault-guard.json`; a `severity_overrides`
+  entry setting the matching rule to `off`; `"fail_on": "none"`; a
+  `.vault-guard.local.json` the base ref never had; a `.vault-guard.baseline.json`
+  rewritten to carry the fingerprint of the finding being added; a `.gitignore`
+  covering the file the key was committed in; and the key committed under a
+  directory named `vendor`. All seven now report the change and block, verified
+  before and after.
+- **Descendant `.gitignore` files cannot mute a tracked file in pull-request
+  mode.** The file set there is `git ls-files` intersected with the walk's own
+  filtering, not a filesystem walk filtered by the gitignore tester. The tester
+  is unchanged for untracked working-tree scans, which have no flag.
+- **The vendored-directory names are anchored to the scan root in pull-request
+  mode**, so a committed `src/vendor/` is scanned while a root `node_modules` is
+  still skipped, and the run prints how many directories it skipped. Anchoring
+  is safe there precisely because the set is tracked files.
+- **A trust base that resolves to the commit being scanned is refused**, exit 2,
+  even though it names a real commit. `--trust-base HEAD` would put the boundary
+  back exactly where it started while the report said pull-request mode was on.
+  The realistic way in is `--trust-base ${{ github.sha }}`, because on a
+  `pull_request` event with the default `actions/checkout` that SHA is the merge
+  commit, which is HEAD. The comparison is on resolved commits, so an alias, a
+  tag or a raw SHA naming the head commit is refused alike.
+- **A trust base whose TREE equals the head's is refused too**, exit 2, even
+  when it is a different commit. What GitHub publishes as `refs/pull/N/merge` is
+  a merge commit whose tree, when the base has not moved since the fork, *is*
+  the head branch's tree. Merging the base into the branch changes the head's
+  tree, so a pull request that does that is judged normally.
+- **Both sides of the base-versus-head comparison are read through git**, so a
+  config the head replaced with a symlink is compared as the link target string
+  it is rather than as the file it points at. Without that, a link whose target
+  held the base config's exact bytes read as no change at all, which is the
+  first half of a two-step: land the link, then edit the link target in a later
+  pull request where the config path never appears in the diff. Shape changes
+  (symlink, not a regular file, removed, mode) are reported separately from
+  content changes, and a control input that is not a regular file AT THE BASE
+  is exit 2, because that is the state the run's decisions were supposed to rest
+  on.
+
+### Changed
+
+- **Config schema validation now runs on every load**, not only in
+  `vault-guard config validate`. An unknown top-level key was silently dropped
+  and a mistyped `severity_overrides` value was carried into the scanner as-is,
+  so a check the gate did not run was documentation rather than a control. This
+  is a hardening OUTSIDE pull-request mode as well: a config that parsed as JSON
+  but failed the schema used to scan and now exits 1 with the validation
+  message, on every path that loads a config (the CLI, the MCP server, the
+  editor extension). A base-ref config that fails validation is exit 2, because
+  in that case nothing was scanned at all.
+- **Exit 2 now also means an unreadable trust base**, in addition to a git
+  failure and an unreadable staged file. It has always meant could-not-run.
+
+### Documentation
+
+- **The workflow that passes `--trust-base` has to be put on the protected side
+  deliberately.** For a same-repo `pull_request` event GitHub runs the workflow
+  file from the pull request head, so the job is as editable as any other file
+  in the branch unless the check is required by name in branch protection or the
+  gate lives in a reusable workflow on a protected ref. No flag can detect a job
+  a pull request deleted. Both the README and the Action doc now say so.
+- **Requiring a human to approve a config or baseline change is described as
+  repository configuration, not as a feature**: a `CODEOWNERS` entry for those
+  paths plus required code-owner review. There is deliberately no in-repo knob,
+  because a knob that can relax the gate and lives in the file the pull request
+  controls is the vulnerability wearing a settings label. Base-ref judgment is
+  the floor; a human approval can only make the gate stricter.
+
 ## [1.6.0] - 2026-09-05
 
 A security release. Every built-in pattern was swept for ReDoS and timed at two

@@ -1,5 +1,14 @@
 # @vaultcompass/vault-guard-mcp
 
+## 1.7.0
+
+### Patch Changes
+
+- Config schema validation now runs on every load, so a `.vault-guard.json` that parses as JSON but fails the schema is reported through the existing config-error path instead of loading with the bad parts silently dropped.
+- Updated dependencies
+  - @vaultcompass/vault-guard-core@1.7.0
+  - @vaultcompass/vault-guard-telemetry@1.7.0
+
 ## 1.6.0
 
 ### Patch Changes

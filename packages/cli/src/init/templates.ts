@@ -1,7 +1,7 @@
 import { readCliVersion } from '../version';
 
 /** Stable init template version; bump when file contents change materially. */
-export const INIT_TEMPLATE_VERSION = '2';
+export const INIT_TEMPLATE_VERSION = '3';
 
 export const MANIFEST_RELATIVE_PATH = '.vault-guard/manifest.json';
 
@@ -63,6 +63,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # Pull-request mode reads the config and the baseline from the base
+          # branch, so the base branch has to exist locally. A shallow clone
+          # makes the scan exit 2 rather than fall back to trusting the pull
+          # request, so this line is required, not an optimisation.
+          fetch-depth: 0
       - uses: vaultcompasshq/vault-guard@v${readCliVersion()}
         with:
           version: latest

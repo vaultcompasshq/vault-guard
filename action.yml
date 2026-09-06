@@ -31,6 +31,24 @@ inputs:
       `path` (1..256 chars of `[A-Za-z0-9._/-]`, no `..`).
     required: false
     default: vault-guard-results.sarif
+  trust-base:
+    description: |
+      Pull-request mode. On a pull request the config, any
+      `.vault-guard.local.json` and the baseline are read from the BASE ref
+      instead of from the pull request's own tree, and the head tree is what
+      gets scanned, so a pull request cannot turn the scanner off in the same
+      commit that carries the secret.
+
+      `auto` (the default) passes `--trust-base origin/$GITHUB_BASE_REF` when
+      `GITHUB_BASE_REF` is set, which is exactly the pull-request events, and
+      passes nothing otherwise. `off` never passes it. Any other value is used
+      as the ref verbatim and must be 1..200 chars of `[A-Za-z0-9._/@^~-]`.
+
+      Your `actions/checkout` step needs `fetch-depth: 0` for the base branch
+      to exist locally. Without it the scan exits 2 and says so rather than
+      falling back to trusting the pull request.
+    required: false
+    default: auto
 
 outputs:
   results-file:
@@ -62,8 +80,33 @@ runs:
         VG_PATH: ${{ inputs.path }}
         VG_FORMAT: ${{ inputs.format }}
         VG_SARIF_OUTPUT: ${{ inputs.sarif-output }}
+        VG_TRUST_BASE: ${{ inputs.trust-base }}
       run: |
         set -euo pipefail
+
+        # trust-base: the two keywords, or a git ref. The ref charset excludes
+        # everything the shell would treat specially; it is also only ever used
+        # as a quoted array element below, so this is defence in depth rather
+        # than the only thing standing between a branch name and the shell.
+        if [[ "${VG_TRUST_BASE}" != "auto" && "${VG_TRUST_BASE}" != "off" ]]; then
+          if [[ ! "${VG_TRUST_BASE}" =~ ^[A-Za-z0-9._/@^~-]+$ ]] || (( ${#VG_TRUST_BASE} > 200 )); then
+            printf '::error::vault-guard: invalid `trust-base` input: %q\n' "${VG_TRUST_BASE}"
+            printf '::error::Allowed: auto | off | 1..200 chars of [A-Za-z0-9._/@^~-]\n'
+            exit 1
+          fi
+        fi
+
+        # GITHUB_BASE_REF is the pull request's TARGET branch, so it names a
+        # branch that already exists in this repository rather than anything a
+        # fork author chose. It is still checked, because `auto` turns it into
+        # part of a command line without anyone having typed it.
+        if [[ "${VG_TRUST_BASE}" == "auto" && -n "${GITHUB_BASE_REF:-}" ]]; then
+          if [[ ! "${GITHUB_BASE_REF}" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            printf '::error::vault-guard: refusing GITHUB_BASE_REF: %q\n' "${GITHUB_BASE_REF}"
+            printf '::error::Pass an explicit `trust-base` ref instead.\n'
+            exit 1
+          fi
+        fi
 
         # version: dist-tag or semver. Allow `latest`, `next`, `beta`, or any
         # 1..64 char string of [0-9A-Za-z.+-]. Rejects spaces, quotes, $, `,
@@ -122,6 +165,7 @@ runs:
         VG_PATH: ${{ inputs.path }}
         VG_FORMAT: ${{ inputs.format }}
         VG_SARIF_OUTPUT: ${{ inputs.sarif-output }}
+        VG_TRUST_BASE: ${{ inputs.trust-base }}
       run: |
         set -euo pipefail
 
@@ -140,8 +184,25 @@ runs:
         # writes text banners (🔍 Scanning…) into the SARIF file and
         # upload-sarif fails. `VG_VERSION` is validated above, and the
         # remaining tokens are ours, so npx cannot see attacker flags.
+        # Pull-request mode. Built as an ARRAY rather than a string so the ref
+        # stays one argv element: a branch name is not a place to discover that
+        # word splitting exists. `auto` fires exactly on the pull-request
+        # events, which are the ones where the tree being scanned belongs to
+        # the author rather than to the repository.
+        TRUST_ARGS=()
+        if [[ "${VG_TRUST_BASE}" == "auto" ]]; then
+          if [[ -n "${GITHUB_BASE_REF:-}" ]]; then
+            TRUST_ARGS=(--trust-base "origin/${GITHUB_BASE_REF}")
+          fi
+        elif [[ "${VG_TRUST_BASE}" != "off" ]]; then
+          TRUST_ARGS=(--trust-base "${VG_TRUST_BASE}")
+        fi
+
         set +e
-        npx --yes "@vaultcompass/vault-guard@${VG_VERSION}" scan . --format "${VG_FORMAT}" | tee "${OUT}"
+        # `${TRUST_ARGS[@]+...}` rather than a bare `"${TRUST_ARGS[@]}"`: with
+        # `set -u`, bash 3.2 (still what a macOS runner ships) treats an empty
+        # array expansion as an unbound variable and aborts the step.
+        npx --yes "@vaultcompass/vault-guard@${VG_VERSION}" scan . --format "${VG_FORMAT}" ${TRUST_ARGS[@]+"${TRUST_ARGS[@]}"} | tee "${OUT}"
         SCAN_STATUS="${PIPESTATUS[0]}"
         set -e
 
