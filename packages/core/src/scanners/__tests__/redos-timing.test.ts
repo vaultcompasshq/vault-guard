@@ -1,4 +1,4 @@
-import { SecretScanner } from '../secret-scanner';
+import { SecretScanner, getBuiltinPatternDocEntries } from '../secret-scanner';
 
 /**
  * ReDoS regression guards for the built-in pattern table.
@@ -20,8 +20,27 @@ import { SecretScanner } from '../secret-scanner';
  * created the start offsets, a token-boundary lookbehind removes them.
  *
  * The budget below is generous relative to the bounded cost (tens of ms) and
- * far below the unbounded cost (1.4s to 7.1s on these inputs), so CI variance
- * cannot flip it. Each assertion goes red if its bound is widened back.
+ * far below the unbounded cost on these inputs, so CI variance cannot flip it.
+ *
+ * WHAT THESE TIMING TESTS DO AND DO NOT PROVE. Each timing assertion is
+ * mutation-verified: reverting the change it guards makes that assertion fail
+ * by a wide margin. The one exception is `jwt-token`, which carries TWO
+ * defences that are not equally testable. This is recorded explicitly because
+ * an earlier version of this comment claimed every bound was timing-guarded,
+ * and for the `jwt-token` bound that was false:
+ *
+ *   - The token-boundary lookbehind is what makes `jwt-token` linear, and it IS
+ *     guarded by timing (the 2M-character packed case below).
+ *   - The `{1,4096}` segment bound is NOT provable by timing while the
+ *     lookbehind is present. The lookbehind admits one candidate start per
+ *     non-word separator, and each start's segment run reaches only as far as
+ *     the next separator, so the runs are disjoint and total work is O(n) with
+ *     or without the bound. Measured on separator-prefixed long runs the bound
+ *     is a constant factor only: at a 50 MB input, bounded 11.7ms vs unbounded
+ *     59.9ms. No practical input makes it cross a time budget, so the bound is
+ *     guarded STRUCTURALLY instead (see the last test in this file). It still
+ *     earns its keep as the second layer: with the lookbehind removed it cuts
+ *     the packed-input cost from 8,203ms to 650ms at 200k.
  */
 describe('ReDoS bounds on built-in patterns', () => {
   const scanner = new SecretScanner();
@@ -42,10 +61,16 @@ describe('ReDoS bounds on built-in patterns', () => {
     expect(timeScan('0'.repeat(200_000))).toBeLessThan(BUDGET_MS);
   }, 30_000);
 
-  it('jwt-token: 200k of repeated eyJ scans in linear time', () => {
-    // Unbounded segments: 50k=436ms, 100k=1,758ms, 200k=7,083ms (quadratic).
-    // Every `eyJ` is a viable start and each rescans to the end for a `.`.
-    expect(timeScan('eyJ'.repeat(66_666))).toBeLessThan(BUDGET_MS);
+  it('jwt-token: 2M of packed eyJ scans in linear time (guards the lookbehind)', () => {
+    // Packed `eyJ` with no separators: every third character is a candidate
+    // start, and each rescans forward hunting a `.` that never comes.
+    //
+    // Sized at 2M deliberately. At 200k, removing the lookbehind cost 650ms,
+    // which sits UNDER the 2s budget, so the mutation would not have gone red
+    // and this test would have guarded nothing. At 2M the same mutation costs
+    // 6,803ms, a 3.4x margin over budget, while the correct pattern scans the
+    // whole 2M in 23ms.
+    expect(timeScan('eyJ'.repeat(666_666))).toBeLessThan(BUDGET_MS);
   }, 30_000);
 
   it('ssh-private-key: a long BEGIN + caps/space run scans in linear time', () => {
@@ -141,6 +166,26 @@ describe('ReDoS bounds on built-in patterns', () => {
     for (const [rule, dsn] of cases) {
       expect(scanner.scanContent(`const url = "${dsn}";`).map(m => m.type)).toContain(rule);
     }
+  });
+
+  // --- Structural guard for the jwt-token bound ---------------------------
+  //
+  // Timing cannot guard this one (see the header comment): with the lookbehind
+  // in place the bound is a constant factor, not an asymptotic one. So assert
+  // the bound is literally present. This goes red the moment a segment repeat
+  // is widened back to `+`, which is exactly the mutation timing misses.
+  it('jwt-token keeps BOTH defences: bounded segments and the token boundary', () => {
+    const jwt = getBuiltinPatternDocEntries().find(e => e.id === 'jwt-token');
+    expect(jwt).toBeDefined();
+    const src = jwt!.regexSource;
+
+    // Second layer: every base64url segment repeat is bounded, so if the
+    // lookbehind is ever removed the damage stays capped.
+    expect(src).not.toMatch(/\[a-zA-Z0-9_-\]\+/);
+    expect(src.match(/\[a-zA-Z0-9_-\]\{1,\d+\}/g) ?? []).toHaveLength(3);
+
+    // First layer: the token boundary, which is what makes the rule linear.
+    expect(src).toContain('(?<![A-Za-z0-9_-])');
   });
 
   it('still detects PKCS#8, RSA and PGP private key headers', () => {

@@ -56,6 +56,20 @@ changed so test trees are scanned rather than ignored.
   runaway shape. Applied to the CLI directory and staged paths and to the MCP
   `scan_file` / `scan_workspace` tools.
 
+### Added
+
+- **A checked-in ReDoS timing sweep** (`pnpm redos:sweep`, see
+  [`docs/REDOS_SWEEP.md`](docs/REDOS_SWEEP.md)). It times every built-in rule
+  against adversarial input at two sizes, compares growth, and diffs a recorded
+  baseline. Its `--self-test` replays the six pre-1.6.0 quadratic forms and
+  requires the harness to flag all six, because a clean sweep is only meaningful
+  if the harness can detect a dirty one. That self-test earned its place
+  immediately: an early version of the sweep stopped parsing at the parenthesis
+  in `postgres(?:ql)?` and reported three of the four DSN rules clean while they
+  were quadratic. Deliberately **not** a CI gate, because timing on shared
+  runners is noisy and a flaky security gate gets disabled. A pass means
+  measured linear on the inputs the harness constructs, not a proof.
+
 ### Fixed
 
 - **OpenPGP private key headers were never detected.** A real header ends

@@ -56,7 +56,15 @@ Vault Guard does not, and will not, claim to defend against:
   rewritten, and every remaining rule measured linear. The claim is exactly
   that and no more: **measured linear on the adversarial inputs we
   constructed**, not a proof of linearity for all inputs. A future pattern edit
-  can reintroduce the shape, which is why each bound carries a timing test.
+  can reintroduce the shape, which is why each bound carries a timing test (with
+  one documented exception: the `jwt-token` segment bound is guarded
+  structurally, because with its token-boundary lookbehind in place the bound is
+  a constant factor rather than an asymptotic one and no practical input makes
+  it cross a time budget). The sweep is a maintained, checked-in harness with a
+  recorded baseline and a self-test that must detect the six
+  historically-quadratic forms. It is a manual pre-release check rather than a
+  CI gate, because timing on shared runners is noisy and a flaky security gate
+  gets disabled. See [`REDOS_SWEEP.md`](./REDOS_SWEEP.md).
 
   The per-file budget is **not** an execution-time bound, and must not be read
   as one. Node's regex engine is **synchronous** and cannot be interrupted, so

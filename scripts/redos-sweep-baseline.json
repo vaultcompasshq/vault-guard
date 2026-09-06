@@ -1,0 +1,247 @@
+{
+  "_comment": "Recorded output of scripts/redos-sweep.cjs. A pass means measured linear on the adversarial inputs this harness constructs, NOT a proof of linearity. Timing is machine-dependent: diff the `verdict` field, treat `ratio` as indicative only.",
+  "generatedAt": "2026-09-06T04:36:38.094Z",
+  "quadraticRatioThreshold": 3,
+  "sizes": {
+    "small": 100000,
+    "large": 200000
+  },
+  "rules": {
+    "anthropic": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "openai-project": {
+      "verdict": "linear",
+      "ratio": 2
+    },
+    "openai-svcacct": {
+      "verdict": "linear",
+      "ratio": 1.99
+    },
+    "openai-admin": {
+      "verdict": "linear",
+      "ratio": 1.99
+    },
+    "openai": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "huggingface": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "replicate": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "groq": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "openrouter": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "xai": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "perplexity": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "mistral": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "together-ai": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "fireworks-ai": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "langsmith": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "deepseek": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "stripe": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "stripe-test": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "paypal": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "aws-access": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "aws-secret-context": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "gcp-service-account": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "gcp-api-key": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "gcp-oauth": {
+      "verdict": "linear",
+      "ratio": 2
+    },
+    "azure-storage": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "postgresql-url": {
+      "verdict": "linear",
+      "ratio": 2
+    },
+    "mysql-url": {
+      "verdict": "linear",
+      "ratio": 2
+    },
+    "mongodb-url": {
+      "verdict": "linear",
+      "ratio": 2
+    },
+    "redis-url": {
+      "verdict": "linear",
+      "ratio": 1.98
+    },
+    "github-token": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "github-pat": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "gitlab-token": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "bitbucket-token": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "slack-webhook": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "slack-token": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "discord-webhook": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "sendgrid-api": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "resend-api": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "mailgun-api": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "npm-token": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "supabase-token": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "supabase-secret": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "vercel-blob": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "planetscale": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "doppler-token": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "databricks-token": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "cloudflare-token": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "notion-token": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "airtable-pat": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "figma-token": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "newrelic-api": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "sentry-dsn": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "shopify-admin": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "ssh-private-key": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "jwt-token": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "bearer-token": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "api-key-generic": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "secret-generic": {
+      "verdict": "linear",
+      "ratio": 0
+    },
+    "password-in-code": {
+      "verdict": "linear",
+      "ratio": 0
+    }
+  }
+}
