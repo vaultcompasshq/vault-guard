@@ -112,6 +112,22 @@ describe('git-utils staged index', () => {
     expect(blob).toContain('sk-ant-api03');
   });
 
+  it('reads the crafted path own blob, not a stage-ref-steered different one', () => {
+    // `git show :<path>` also accepts `:<stage>:<path>`, so a staged file whose
+    // repo-relative path begins `0:` would be parsed as stage 0 of the SHORTER
+    // name. Staged beside a clean file of that shorter name, the scanner would
+    // read the clean content while recording the finding against the crafted
+    // path -- a real staged secret committed under a clean bill of health.
+    fs.writeFileSync(path.join(repo, 'app.ts'), 'const clean = true;\n');
+    fs.writeFileSync(path.join(repo, '0:app.ts'), `const k = "${ANTHROPIC_KEY}";\n`);
+    execSync('git add -A', { cwd: repo, stdio: 'ignore' });
+
+    const blob = readGitIndexFile(repo, '0:app.ts');
+    // Its OWN content (the secret), never the clean file it could be steered onto.
+    expect(blob).toContain('sk-ant-api03');
+    expect(blob).not.toContain('const clean = true');
+  });
+
   describe('with diff.relative set on the repository', () => {
     const SECRET =
       `ANTHROPIC_API_KEY=${ANTHROPIC_KEY}\n`;
