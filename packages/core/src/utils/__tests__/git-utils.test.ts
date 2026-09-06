@@ -112,7 +112,13 @@ describe('git-utils staged index', () => {
     expect(blob).toContain('sk-ant-api03');
   });
 
-  it('reads the crafted path own blob, not a stage-ref-steered different one', () => {
+  // POSIX only. A filename containing a colon is invalid on Windows (NTFS
+  // reserves the colon for alternate data streams), so this file cannot be
+  // created or staged there and git rejects the pathspec as outside the
+  // repository. The stage-ref steering attack this test guards against
+  // therefore cannot occur on Windows, and the fixture cannot be built there.
+  const itPosix = process.platform === 'win32' ? it.skip : it;
+  itPosix('reads the crafted path own blob, not a stage-ref-steered different one', () => {
     // `git show :<path>` also accepts `:<stage>:<path>`, so a staged file whose
     // repo-relative path begins `0:` would be parsed as stage 0 of the SHORTER
     // name. Staged beside a clean file of that shorter name, the scanner would
