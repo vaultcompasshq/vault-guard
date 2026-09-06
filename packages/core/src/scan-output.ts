@@ -21,6 +21,13 @@ export interface JsonRunMetadata {
   diagnostics_count?: number;
   /** Matches removed because they appeared in `.vault-guard.baseline.json`. */
   baseline_suppressed?: number;
+  /**
+   * Findings suppressed by an inline `vault-guard: ignore-line` /
+   * `ignore-next-line` directive. Emitted even at zero so a run always states
+   * whether the scanner was silenced inline -- a suppression is the user's
+   * decision and must be visible.
+   */
+  inline_suppressed?: number;
   /** Effective gate threshold for this run (`--fail-on` / `fail_on` / default). */
   fail_on?: string;
   /**
@@ -344,6 +351,9 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
               : {}),
             ...(opts.run.baseline_suppressed !== undefined
               ? { baseline_suppressed: opts.run.baseline_suppressed }
+              : {}),
+            ...(opts.run.inline_suppressed !== undefined
+              ? { inline_suppressed: opts.run.inline_suppressed }
               : {}),
             ...(opts.run.unscannable_files !== undefined
               ? { unscannable_files: opts.run.unscannable_files }

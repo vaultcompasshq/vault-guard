@@ -288,6 +288,12 @@ const key = "sk-ant-..."; // vault-guard: ignore-line
 const alsoFine = "...";
 ```
 
+Suppressions never happen silently. Every run states how many findings the
+baseline and inline directives hid: the text summary prints a `Suppressed:`
+line (even at zero), and JSON and SARIF carry `run.baseline_suppressed` and
+`run.inline_suppressed`, with a `suppression.inline` diagnostic naming the
+suppressed line numbers.
+
 ---
 
 ## Opt-in token telemetry (Anthropic only)
