@@ -200,14 +200,29 @@ function detectOtherHookManagers(cwd: string, selected: HookManager): InitAdviso
   return advisories;
 }
 
+/**
+ * What changed in the 1.6.0 template, phrased for someone who initialised on an
+ * earlier version. Their config is kept exactly as it is; this says what to
+ * change by hand if they want the new default.
+ */
+const TEST_TREE_DEFAULT_NOTE =
+  'The 1.6.0 default changed: test trees are now scanned instead of ignored, ' +
+  'because an ignore is total and hid real keys committed to test files. Your ' +
+  'existing config is kept as is and nothing was overwritten. To adopt the new ' +
+  'default, remove "**/__tests__/**" from ignore.patterns in .vault-guard.json ' +
+  '(keep fixtures/** and bench/fixtures/**).';
+
 function conflictGuidance(c: InitConflict): string {
   switch (c.reason) {
     case 'exists':
+      if (c.path === '.vault-guard.json') {
+        return `Your .vault-guard.json is kept as is; nothing was overwritten. ${TEST_TREE_DEFAULT_NOTE}`;
+      }
       return 'File already exists with different content — edit manually or move it aside, then re-run init.';
     case 'foreign_manifest':
       return 'Existing .vault-guard/init-manifest.json is invalid or foreign — fix or remove it, then re-run.';
     case 'manifest_mismatch':
-      return 'Init manifest does not match current templates/options — run `vault-guard init --revert` then init again, or update files by hand.';
+      return `This repo was initialised by an earlier vault-guard, so the manifest does not match the current templates. Nothing was overwritten. ${TEST_TREE_DEFAULT_NOTE}`;
     case 'not_a_git_repository':
       return 'Run `git init` first, or pass `--skip-hook` to scaffold config/workflow without a hook.';
     case 'foreign_hook':
@@ -641,6 +656,24 @@ function printHuman(result: InitResult, options: InitOptions): void {
       console.log(chalk.gray(`      ${a.guidance}`));
     }
   }
+
+  // Say this on first run, before the adopter hits it as a surprise blocked
+  // commit. Vendor-anchored rules are NOT downgraded on a test path, so a
+  // vendor-shaped value in a test blocks whether or not it is live -- the
+  // scanner cannot tell a real key from a convincing fabricated one.
+  console.log(
+    chalk.yellow(
+      '\nNote: test trees are scanned (they are not ignored by default since 1.6.0).',
+    ),
+  );
+  console.log(
+    chalk.gray(
+      '      Fixture-shaped credentials are downgraded to "low", but a vendor-shaped\n' +
+        '      token (sk-ant-, ghp_, AKIA, ...) in a test still blocks, live or not.\n' +
+        '      Build fake tokens from fragments joined at runtime, or use placeholder\n' +
+        '      words like EXAMPLE/test. See docs/RULES.md for the downgrade rules.',
+    ),
+  );
 
   console.log(chalk.gray(`\n${result.mcpMergeHint}`));
   console.log(chalk.gray(`Manifest: ${result.manifestPath}`));

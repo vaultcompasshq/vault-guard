@@ -14,7 +14,7 @@ import {
   type VaultGuardConfig,
 } from '@vaultcompass/vault-guard-core';
 import { TelemetryStore, TelemetryUnavailableError } from '@vaultcompass/vault-guard-telemetry';
-import { scanWorkspaceDirectory } from './workspace-scan';
+import { scanWorkspaceDirectory, MCP_SCAN_BUDGET_MS } from './workspace-scan';
 
 // Injected by esbuild (`define`) at build time from package.json. Falls back
 // to a dev sentinel under ts-jest / unbundled execution where it is undefined.
@@ -201,7 +201,7 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
       }
       const dir = resolved.path;
       const t0 = Date.now();
-      const { results, filesScanned, bytesScanned } = await scanWorkspaceDirectory(
+      const { results, filesScanned, bytesScanned, overBudget } = await scanWorkspaceDirectory(
         dir,
         scanner,
         10,
@@ -217,7 +217,12 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
         summary: {
           files_with_secrets: results.length,
           total_matches: results.reduce((n, r) => n + r.matches.length, 0),
+          // Post-hoc: these files WERE scanned, but took long enough that the
+          // result is not trusted. Surfaced so an agent is not handed a silent
+          // "clean" for a file whose scan behaved pathologically.
+          ...(overBudget.length > 0 ? { files_over_scan_budget: overBudget.length } : {}),
         },
+        ...(overBudget.length > 0 ? { over_budget: overBudget } : {}),
         json: JSON.parse(formatJson(results, { cwd: dir, run })) as unknown,
         sarif: formatSarif(results, { cwd: dir, run }),
         results,
@@ -251,15 +256,27 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
       }
       const t0 = Date.now();
       const matches = scanner.scan(fp);
+      const elapsed = Date.now() - t0;
       const run: JsonRunMetadata = {
-        duration_ms: Date.now() - t0,
+        duration_ms: elapsed,
         files_scanned: 1,
         bytes_scanned: st.size,
         patterns_active: scanner.getActivePatternCount(),
       };
       const results: FileScanResult[] = matches.length ? [{ file: fp, matches }] : [];
+      // Post-hoc budget: the scan is synchronous and already finished, so this
+      // cannot preempt a runaway. It marks the result as untrusted rather than
+      // handing an agent a silent "clean".
+      const overBudget = elapsed > MCP_SCAN_BUDGET_MS;
       return toolPayload({
-        summary: { files_with_secrets: results.length, total_matches: matches.length },
+        summary: {
+          files_with_secrets: results.length,
+          total_matches: matches.length,
+          ...(overBudget ? { over_scan_budget: true } : {}),
+        },
+        ...(overBudget
+          ? { over_budget: [{ file: fp, elapsed_ms: elapsed, budget_ms: MCP_SCAN_BUDGET_MS }] }
+          : {}),
         json: JSON.parse(formatJson(results, { cwd: workspaceRoot, run })) as unknown,
         sarif: formatSarif(results, { cwd: workspaceRoot, run }),
       });

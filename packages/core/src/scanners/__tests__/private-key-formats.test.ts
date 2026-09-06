@@ -16,7 +16,12 @@ describe('private key PEM headers', () => {
     '-----BEGIN DSA PRIVATE KEY-----',
     '-----BEGIN OPENSSH PRIVATE KEY-----',
     '-----BEGIN ENCRYPTED PRIVATE KEY-----',
-    '-----BEGIN PGP PRIVATE KEY BLOCK-----'.replace(' BLOCK', ''),
+    // The REAL OpenPGP header, which ends `PRIVATE KEY BLOCK-----`. This was
+    // previously written as the same string with " BLOCK" deleted, which
+    // asserted a header that does not exist in the wild and hid the fact that
+    // the rule never matched the real one. Assembled from fragments because a
+    // contiguous PEM marker in a committed file matches this very rule.
+    ['-----BEGIN PGP PRIV', 'ATE KEY BLOCK-----'].join(''),
   ];
 
   // A real PEM body wraps base64 at 64 characters per line.

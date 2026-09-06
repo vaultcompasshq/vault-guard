@@ -98,14 +98,23 @@ export function resolveScanRoot(targetPaths: string[], cwd = process.cwd()): str
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 /**
- * Per-file wall-clock budget (ms). Defense-in-depth backstop: the built-in
- * regex bounds are the specific fix for a known catastrophic pattern, but a
- * future built-in edit or a user `extra_pattern` could reintroduce runaway
- * backtracking. A file whose scan exceeds this budget is treated as
- * unscannable, so the staged path fails closed instead of publishing a false
- * "clean" verdict on a file it never finished examining. Generous on purpose:
- * a normal file scans in single-digit milliseconds, so this only fires on a
- * genuine runaway.
+ * Per-file scan budget (ms). This is a **post-hoc** detector, NOT a wall-clock
+ * bound, and the distinction is load-bearing:
+ *
+ * Node's regex engine is **synchronous** and cannot be interrupted from
+ * JavaScript. There is no point at which this code can abandon, preempt, or
+ * time-bound a scan that is already running. The budget is therefore checked
+ * AFTER `scanner.scan` / `scanContent` has returned, by comparing elapsed time.
+ * A catastrophic pattern still runs to completion and still blocks the process
+ * for however long it takes; measured, an 11.3s file scan reports over budget
+ * only once those 11.3 seconds have already elapsed.
+ *
+ * What the budget buys is refusing to TRUST that result: an over-budget file is
+ * recorded as unscannable, so the staged path fails closed rather than
+ * publishing a "clean" verdict on a file whose scan behaved pathologically.
+ * The built-in regex bounds are what actually bound time; this catches the case
+ * where a future pattern edit or a user `extra_pattern` reintroduces a runaway
+ * shape. Generous on purpose: a normal file scans in single-digit milliseconds.
  */
 const DEFAULT_SCAN_BUDGET_MS = 5000;
 
@@ -142,10 +151,13 @@ function recordInlineSuppression(
 }
 
 /**
- * Record a file whose scan blew the per-file wall-clock budget. It is folded
+ * Record a file whose scan blew the per-file budget (detected post-hoc, after
+ * the synchronous scan returned; see DEFAULT_SCAN_BUDGET_MS). It is folded
  * into the same `unreadable` list an unreadable file uses, so `scanCommand`'s
  * existing fail-closed logic (staged -> exit 2) needs no change, and a distinct
- * `file.scan_timeout` diagnostic states why the file was abandoned.
+ * `file.scan_timeout` diagnostic states why the file is not trusted. The `kind`
+ * discriminator keeps the two apart in output: this file WAS read and scanned,
+ * so calling it unreadable would be a lie.
  */
 function recordBudgetExceeded(
   displayFile: string,
@@ -154,8 +166,9 @@ function recordBudgetExceeded(
   options: ScanOptions,
 ): void {
   options.unreadable?.push({
+    kind: 'scan_budget',
     file: displayFile,
-    reason: `scan exceeded ${budgetMs}ms budget (took ${Math.round(elapsedMs)}ms)`,
+    reason: `scan exceeded the ${budgetMs}ms budget (took ${Math.round(elapsedMs)}ms)`,
   });
   options.bus?.add({
     code: 'file.scan_timeout',
@@ -170,11 +183,22 @@ export interface ScanTelemetryStats {
   bytesScanned: number;
 }
 
-/** One file the scanner reached but could not read, so never examined. */
+/**
+ * One file whose result the run cannot vouch for. Two distinct causes share
+ * this list because they have the same consequence (the staged path must fail
+ * closed), but they are NOT the same event and output must not conflate them:
+ *
+ *   - `read_error`: the file was never examined; the read itself failed.
+ *   - `scan_budget`: the file WAS read and scanned, but the scan took longer
+ *     than the budget, so the result is not trusted. Calling this "could not be
+ *     read" would be false.
+ */
 export interface UnreadableFile {
+  /** Which of the two causes produced this entry. Defaults to a read failure. */
+  kind?: 'read_error' | 'scan_budget';
   /** cwd-relative where possible, for display and structured output. */
   file: string;
-  /** Why the read failed, as reported by the underlying error. */
+  /** Why the file's result cannot be trusted. */
   reason: string;
 }
 
@@ -199,11 +223,12 @@ export interface ScanOptions {
    */
   unreadable?: UnreadableFile[];
   /**
-   * Per-file wall-clock budget in milliseconds. A file whose scan exceeds it is
-   * recorded in {@link ScanOptions.unreadable} (so the staged path fails closed)
-   * and reported via a `file.scan_timeout` error diagnostic; a directory scan
-   * keeps going. Defaults to {@link DEFAULT_SCAN_BUDGET_MS}. This is the
-   * defense-in-depth backstop behind the built-in regex bounds.
+   * Per-file scan budget in milliseconds, checked **post-hoc** (the scan is
+   * synchronous and cannot be preempted; see {@link DEFAULT_SCAN_BUDGET_MS}).
+   * A file whose scan is found to have exceeded it is recorded in
+   * {@link ScanOptions.unreadable} (so the staged path fails closed) and
+   * reported via a `file.scan_timeout` error diagnostic; a directory scan keeps
+   * going. Defaults to {@link DEFAULT_SCAN_BUDGET_MS}.
    */
   scanBudgetMs?: number;
   /**
@@ -342,6 +367,7 @@ export async function scanFileListAsync(
       }
     } catch (error) {
       options.unreadable?.push({
+        kind: 'read_error',
         file: path.relative(cwd, file),
         reason: String(error),
       });
@@ -476,6 +502,7 @@ export async function scanFilesAsync(
         }
       } catch (error) {
         options.unreadable?.push({
+          kind: 'read_error',
           file: path.relative(process.cwd(), file),
           reason: String(error),
         });
@@ -591,6 +618,7 @@ export function scanFiles(
         }
       } catch (error) {
         options.unreadable?.push({
+          kind: 'read_error',
           file: path.relative(process.cwd(), file),
           reason: String(error),
         });

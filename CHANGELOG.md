@@ -9,46 +9,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.6.0] - 2026-09-05
 
-A security release. Two built-in patterns were audited for ReDoS (measured, not
-just read off source), a runtime scan budget was added as the backstop, and the
-init default was changed so test trees are scanned rather than ignored.
+A security release. Every built-in pattern was swept for ReDoS and timed at two
+input sizes (measured, not read off source); six that grew quadratically were
+bounded. A post-hoc per-file scan budget was added, and the init default was
+changed so test trees are scanned rather than ignored.
 
 ### Security
 
-- **`gcp-oauth` backtracked quadratically on a long digit run.** The greedy
-  `[0-9]+` before the literal `-` made a file containing a long unbroken run of
-  digits cost O(n squared). Measured on the unbounded pattern: 50k digits 1.0s,
-  100k 4.1s, 200k 16.6s, 400k 71.6s, i.e. doubling the input quadrupled the
-  time, a real catastrophic ReDoS reachable inside an ordinary file. The numeric
-  client-id prefix is now bounded to `{1,64}` (a real Google project number is
-  short), which is linear: 200k digits now scan in about 38ms. Detection of a
-  real OAuth client id is unchanged.
+- **Six built-in patterns backtracked quadratically.** Each was measured before
+  and after against an adversarial input. Doubling the input roughly quadrupled
+  the time in every case, which is a real ReDoS reachable inside an ordinary
+  file, not a theoretical shape. Measured at 200k characters, unbounded then
+  bounded:
+
+  | rule | cause | 200k before | 200k after |
+  |---|---|---|---|
+  | `gcp-oauth` | `[0-9]+` before `-`, one start per digit | 16,563 ms | 38 ms |
+  | `jwt-token` | segment repeat before `.`, one start per `eyJ` | 7,083 ms | 0.33 ms |
+  | `postgresql-url` | `[^@\s]+` contains the `:` that ends the previous class | 1,462 ms | 9.2 ms |
+  | `mysql-url` | same shape | 2,217 ms | 10.6 ms |
+  | `mongodb-url` | same shape | 1,848 ms | 8.5 ms |
+  | `redis-url` | same shape | 2,289 ms | 10.1 ms |
+
+  Fixes: `gcp-oauth`'s numeric prefix is bounded to `{1,64}`; each DSN component
+  is bounded (user/password/host 256, port 8 digits, path 1024); each JWT
+  segment is bounded to `{1,4096}` and the `eyJ` prefix is token-boundary
+  anchored, since the bound alone still scales with the bound while the
+  lookbehind removes the start offsets entirely. Detection is unchanged for a
+  real client id, a real three-segment JWT (including one with a 1k+ char
+  payload), and every DSN shape. The remaining 53 rules measured linear.
 - **`ssh-private-key` had an ambiguous repeat.** The space that must follow the
   key-type words was also a member of the repeated class `[A-Z0-9 ]+`. This
   shape measured linear already, so this is hardening rather than a fix: the
   space is now lifted out of the class while the same headers still match
-  (PKCS#8, RSA, EC, DSA, OPENSSH, ENCRYPTED, PGP).
-- **Per-file scan budget (defense in depth).** A file whose scan exceeds a
-  generous wall-clock budget (default 5s) is treated as unscannable. On the
-  staged path this fails closed (exit 2, no success line) via the same
-  incomplete-scan path an unreadable file uses; on a directory scan it is
-  reported with a `file.scan_timeout` diagnostic and scanning continues. This is
-  the runtime backstop behind the static regex bounds, covering any future
-  built-in or user `extra_pattern` that reintroduces runaway backtracking.
+  (PKCS#8, RSA, EC, DSA, OPENSSH, ENCRYPTED).
+- **Per-file scan budget (post-hoc, defense in depth).** This is **not** an
+  execution-time bound. Node's regex engine is **synchronous** and cannot be
+  interrupted, so the budget compares elapsed time *after* a file's scan has
+  already returned: it cannot abandon or preempt a runaway scan, which still
+  runs to completion. What it does is refuse to trust that result. An
+  over-budget file is treated as unscannable, so on the staged path the run
+  fails closed (exit 2, no success line) through the same incomplete-scan path
+  an unreadable file uses, and on a directory scan it is reported with a
+  `file.scan_timeout` diagnostic while scanning continues. The regex bounds are
+  what bound time; this catches the case where a future edit reintroduces a
+  runaway shape. Applied to the CLI directory and staged paths and to the MCP
+  `scan_file` / `scan_workspace` tools.
+
+### Fixed
+
+- **OpenPGP private key headers were never detected.** A real header ends
+  `-----BEGIN PGP PRIVATE KEY BLOCK-----`, and the rule required
+  `PRIVATE KEY-----`, so it matched neither the old nor the newly bounded form.
+  The test that claimed coverage manufactured its own pass by deleting
+  " BLOCK" from the header before scanning, so the gap was invisible. The rule
+  now accepts the optional ` BLOCK` suffix (a fixed literal, measured to add no
+  backtracking) and the test asserts the real header.
 
 ### Changed
 
 - **`init` no longer ignores test trees.** The generated `.vault-guard.json`
   used to write `**/__tests__/**` into `ignore.patterns`, which is what let a
-  real, vendor-anchored key committed to a test file slip past the hook
-  entirely: an ignore is total, so the scanner never looked. Test trees are now
-  scanned. The sequential-run and test-context downgrades keep fixture-shaped
-  credentials at `low` (visible, not blocking), while a real provider key in a
-  test file still blocks, which is the behaviour that catches the incident.
-  `fixtures/**` and `bench/fixtures/**` stay ignored because those directories
-  hold deliberately-planted, contiguous credential fixtures that vendor rules
-  never downgrade. This changes the default for new adopters only; existing
-  users keep their committed config.
+  vendor-anchored key committed to a test file slip past the hook entirely: an
+  ignore is total, so the scanner never looked. Test trees are now scanned. The
+  sequential-run and test-context downgrades keep the low-precision rules
+  (generic assignments, DSNs, JWTs, PEM headers) at `low` in a test path, but
+  **vendor-anchored patterns are not downgraded in test files at all**. The
+  practical consequence, which is the point of the change and also its cost: a
+  vendor-shaped value in a test blocks whether or not it is live, because the
+  scanner cannot tell a real `sk-ant-`/`ghp_`/`AKIA` string from a convincing
+  fabricated one. Fabricate test tokens as fragments joined at runtime, or use
+  the documented placeholder words. `fixtures/**` and `bench/fixtures/**` stay
+  ignored because those directories hold deliberately-planted, contiguous
+  credential fixtures. This changes the default for new adopters only; existing
+  users keep their committed config, and `init` now prints a one-line note
+  saying so.
 
 ## [1.5.0] - 2026-09-05
 

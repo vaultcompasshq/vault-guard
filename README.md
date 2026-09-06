@@ -271,12 +271,19 @@ Create `.vault-guard.json` at your repo root:
 ```
 
 `init` no longer ignores test trees by default. Ignoring `**/__tests__/**`
-means the scanner never looks there, which is how a real, vendor-anchored key
+means the scanner never looks there, which is how a vendor-anchored key
 committed to a test file can slip past the hook entirely. Instead, test trees
-are scanned: fixture-shaped credentials are downgraded to `low` (visible, not
-blocking), while a real provider key in a test file still blocks. Keep a
-`fixtures/**`-style ignore only for directories that hold deliberately-planted
-credential fixtures (a scanner's own true-positive corpus).
+are scanned, and the low-precision rules (generic assignments, DSNs, JWTs, PEM
+headers) are downgraded to `low` there.
+
+**Vendor-anchored rules are not downgraded in test files at all.** That is the
+point of the change, and also its cost: a vendor-shaped token in a test blocks
+whether or not it is live, because the scanner cannot tell a real `sk-ant-` /
+`ghp_` / `AKIA` string from a convincing fabricated one. Build fake tokens from
+fragments joined at runtime, or use the documented placeholder words
+(`EXAMPLE`, `test`, …). Keep a `fixtures/**`-style ignore only for directories
+that hold deliberately-planted credential fixtures (a scanner's own
+true-positive corpus).
 
 JSON Schema for editor autocomplete: **[schemas/vault-guard-config.json](./schemas/vault-guard-config.json)**.
 
