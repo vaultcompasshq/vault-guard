@@ -289,6 +289,28 @@ describe('pull-request mode (--trust-base)', () => {
       expect(r.err).toContain('identical tree');
     });
 
+    it('exits 2 when the scan target is outside the repository the base ref lives in', async () => {
+      seedBase();
+      addSecret();
+      commit('feature');
+      // A target in another tree. The trust base is resolved from the process
+      // cwd, so before this guard the tracked-file set came from THIS
+      // repository, intersected with a target none of it was under, and the
+      // run reported "no secrets found" over zero files scanned.
+      const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vg-outside-')));
+      fs.writeFileSync(path.join(outside, 'leak.ts'), `export const key = "${FAKE_KEY}";\n`);
+      try {
+        const r = await capture(() =>
+          scanCommand(outside, 'text', false, undefined, 'base-snapshot'),
+        );
+        expect(r.code).toBe(2);
+        expect(r.err).toContain('outside');
+        expect(r.log).not.toContain('SUCCESS');
+      } finally {
+        fs.rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
     it('exits 2 when the config at the base ref fails schema validation', async () => {
       seedBase({ fail_on: 'medium', ignore: { unknown_key: [] } });
       addSecret();

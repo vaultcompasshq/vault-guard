@@ -22,6 +22,8 @@ import {
   type VaultGuardConfig,
 } from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
+import fs from 'fs';
+import { isAbsolute, relative, resolve as pathResolve } from 'path';
 import {
   scanFilesAsync,
   scanFileListAsync,
@@ -49,6 +51,20 @@ export type OutputFormat = 'text' | 'json' | 'sarif';
  * something") would be a claim the run did not earn.
  */
 const COULD_NOT_RUN_EXIT = 2;
+
+/**
+ * Symlinks resolved, falling back to the input when they cannot be. The
+ * worktree root git reports is physical (`/private/var/...` on macOS, where
+ * `/var` is a link), so a target compared against it unresolved reads as
+ * outside a repository it is plainly inside.
+ */
+function canonicalPath(p: string): string {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return p;
+  }
+}
 
 export async function scanCommand(
   targetPath: string | string[],
@@ -113,6 +129,39 @@ export async function scanCommand(
         return COULD_NOT_RUN_EXIT;
       }
       throw e;
+    }
+  }
+
+  // The trust base is resolved from the run's anchor, which for a directory
+  // scan is the process cwd -- the same place the config is loaded from. A
+  // target somewhere else entirely therefore has NO tracked files in common
+  // with the repository the base ref lives in, and the intersection that makes
+  // pull-request mode safe becomes an intersection with nothing: the run
+  // scanned zero files and printed "no secrets found". Found by running the
+  // built CLI against another checkout by absolute path, which is exactly how
+  // someone would try this by hand.
+  //
+  // Refused rather than repaired by re-anchoring, because re-anchoring would
+  // move the config search, the output paths and the baseline fingerprints
+  // along with it, and quietly changing which config a scan obeys is the class
+  // of behaviour this whole flag exists to remove.
+  if (controls && !staged) {
+    for (const target of targetPaths) {
+      const abs = canonicalPath(pathResolve(cwd, target));
+      const rel = relative(controls.repoRoot, abs);
+      if (rel.startsWith('..') || isAbsolute(rel)) {
+        console.error(
+          chalk.red('❌ Cannot establish the trust base:'),
+          chalk.white(
+            `the scan target ${target} is outside the repository that "${trustBaseRef}" ` +
+              `lives in (${controls.repoRoot}), so pull-request mode would have no ` +
+              'tracked files to scan and would report a clean result over nothing. ' +
+              'Run vault-guard from inside the repository you are judging. ' +
+              'Nothing was scanned.',
+          ),
+        );
+        return COULD_NOT_RUN_EXIT;
+      }
     }
   }
 

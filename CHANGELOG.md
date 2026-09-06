@@ -73,6 +73,17 @@ than a patch.
   mode**, so a committed `src/vendor/` is scanned while a root `node_modules` is
   still skipped, and the run prints how many directories it skipped. Anchoring
   is safe there precisely because the set is tracked files.
+- **A scan target outside the repository the base ref lives in is refused**,
+  exit 2. Pull-request mode resolves the base from the run's anchor, which for a
+  directory scan is the process cwd, so a target in another checkout had no
+  tracked files in common with it: the intersection that makes the mode safe
+  became an intersection with nothing, and the run printed "no secrets found"
+  over zero files scanned. Found by running the built CLI against another
+  checkout by absolute path. Refused rather than re-anchored, because
+  re-anchoring would move the config search, the output paths and the baseline
+  fingerprints with it.
+- **A trust base beginning with a dash is refused**, because git would read it
+  as an option rather than as a revision.
 - **A trust base that resolves to the commit being scanned is refused**, exit 2,
   even though it names a real commit. `--trust-base HEAD` would put the boundary
   back exactly where it started while the report said pull-request mode was on.
