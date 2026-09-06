@@ -351,12 +351,23 @@ export async function scanCommand(
     );
 
     if (stagedScanIncomplete) {
-      console.error(
-        chalk.red.bold('❌ INCOMPLETE:'),
-        chalk.white(
-          `${unreadable.length} staged file(s) could not be read and were not scanned\n`,
-        ),
-      );
+      // Two different causes land in `unreadable` and they must not be
+      // conflated: a read failure means the file was never examined, while a
+      // budget overrun means it WAS read and scanned but took long enough that
+      // the result is not trusted. Reporting the latter as "could not be read"
+      // would be false.
+      const unread = unreadable.filter(u => u.kind !== 'scan_budget');
+      const overBudget = unreadable.filter(u => u.kind === 'scan_budget');
+      const parts: string[] = [];
+      if (unread.length > 0) {
+        parts.push(`${unread.length} staged file(s) could not be read and were not scanned`);
+      }
+      if (overBudget.length > 0) {
+        parts.push(
+          `${overBudget.length} staged file(s) exceeded the scan budget, so their result is not trusted`,
+        );
+      }
+      console.error(chalk.red.bold('❌ INCOMPLETE:'), chalk.white(`${parts.join('; ')}\n`));
       for (const { file, reason } of unreadable) {
         console.error(`  ${chalk.cyan(file)}`);
         console.error(`    ${chalk.gray(reason)}`);
@@ -369,7 +380,7 @@ export async function scanCommand(
       }
       console.error(
         chalk.gray(
-          '\n   vault-guard could not examine every staged file.\n' +
+          '\n   vault-guard cannot vouch for every staged file.\n' +
             '   Refusing to produce a ✅ result that may be incorrect.\n',
         ),
       );

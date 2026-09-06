@@ -235,7 +235,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: vaultcompasshq/vault-guard@v1.5.0
+      - uses: vaultcompasshq/vault-guard@v1.6.0
         with:
           version: latest
           path: .
@@ -259,7 +259,7 @@ Create `.vault-guard.json` at your repo root:
 {
   "fail_on": "medium",
   "ignore": {
-    "paths": ["**/__tests__/**", "fixtures/**"]
+    "paths": ["fixtures/**"]
   },
   "severity_overrides": {
     "jwt-token": "low"
@@ -269,6 +269,21 @@ Create `.vault-guard.json` at your repo root:
   ]
 }
 ```
+
+`init` no longer ignores test trees by default. Ignoring `**/__tests__/**`
+means the scanner never looks there, which is how a vendor-anchored key
+committed to a test file can slip past the hook entirely. Instead, test trees
+are scanned, and the low-precision rules (generic assignments, DSNs, JWTs, PEM
+headers) are downgraded to `low` there.
+
+**Vendor-anchored rules are not downgraded in test files at all.** That is the
+point of the change, and also its cost: a vendor-shaped token in a test blocks
+whether or not it is live, because the scanner cannot tell a real `sk-ant-` /
+`ghp_` / `AKIA` string from a convincing fabricated one. Build fake tokens from
+fragments joined at runtime, or use the documented placeholder words
+(`EXAMPLE`, `test`, …). Keep a `fixtures/**`-style ignore only for directories
+that hold deliberately-planted credential fixtures (a scanner's own
+true-positive corpus).
 
 JSON Schema for editor autocomplete: **[schemas/vault-guard-config.json](./schemas/vault-guard-config.json)**.
 

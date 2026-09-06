@@ -1,7 +1,7 @@
 import { readCliVersion } from '../version';
 
 /** Stable init template version; bump when file contents change materially. */
-export const INIT_TEMPLATE_VERSION = '1';
+export const INIT_TEMPLATE_VERSION = '2';
 
 export const MANIFEST_RELATIVE_PATH = '.vault-guard/manifest.json';
 
@@ -16,10 +16,32 @@ export const MANAGED_FILE_PATHS = [
 export type ManagedFilePath = (typeof MANAGED_FILE_PATHS)[number];
 
 export function defaultVaultGuardConfigJson(): string {
+  // Test trees are SCANNED by default, not ignored.
+  //
+  // Ignoring `**/__tests__/**` is what let a vendor-anchored key sitting in a
+  // test file slip past the hook entirely: an ignore is total, so the scanner
+  // never looked. Since 1.5.0 the sequential-run and test-context downgrades
+  // keep the LOW-PRECISION rules (generic assignments, DSNs, JWTs, PEM headers)
+  // at `low` on a test path.
+  //
+  // Vendor-anchored rules are NOT downgraded on a test path at all. The precise
+  // consequence, which is both the point of this change and its cost: a
+  // vendor-shaped value in a test blocks whether or not it is live, because the
+  // scanner cannot distinguish a real `sk-ant-`/`ghp_`/`AKIA` string from a
+  // convincing fabricated one. Fabricate test tokens as fragments joined at
+  // runtime, or use the documented placeholder words. `init` prints a one-line
+  // note saying exactly this on first run.
+  //
+  // `fixtures/**` and `bench/fixtures/**` stay for a DIFFERENT reason: those
+  // directories conventionally hold deliberately-planted, contiguous credential
+  // fixtures (a scanner's own true-positive corpus), and vendor-anchored rules
+  // are never downgraded even on a test path, so scanning them would flood with
+  // findings that are working as intended. A test tree is unit tests; a
+  // fixtures tree is planted secrets.
   return `${JSON.stringify(
     {
       ignore: {
-        patterns: ['**/__tests__/**', 'fixtures/**', 'bench/fixtures/**'],
+        patterns: ['fixtures/**', 'bench/fixtures/**'],
       },
     },
     null,

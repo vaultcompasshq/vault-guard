@@ -49,7 +49,32 @@ Vault Guard does not, and will not, claim to defend against:
   and alternation-quantifier shape detection). It catches the academic
   pathological shapes; it does not catch every pattern an attacker can
   construct. Real execution-time bounds require a regex engine like `re2`
-  (planned).
+  (planned). The **built-in** patterns are a separate matter. In 1.6.0 all 59
+  were swept against adversarial input and timed at two input sizes to compare
+  growth. The six that grew quadratically (`gcp-oauth`, `jwt-token`, and the
+  four DSN rules) were bounded, `ssh-private-key`'s ambiguous repeat was
+  rewritten, and every remaining rule measured linear. The claim is exactly
+  that and no more: **measured linear on the adversarial inputs we
+  constructed**, not a proof of linearity for all inputs. A future pattern edit
+  can reintroduce the shape, which is why each bound carries a timing test (with
+  one documented exception: the `jwt-token` segment bound is guarded
+  structurally, because with its token-boundary lookbehind in place the bound is
+  a constant factor rather than an asymptotic one and no practical input makes
+  it cross a time budget). The sweep is a maintained, checked-in harness with a
+  recorded baseline and a self-test that must detect the six
+  historically-quadratic forms. It is a manual pre-release check rather than a
+  CI gate, because timing on shared runners is noisy and a flaky security gate
+  gets disabled. See [`REDOS_SWEEP.md`](./REDOS_SWEEP.md).
+
+  The per-file budget is **not** an execution-time bound, and must not be read
+  as one. Node's regex engine is **synchronous** and cannot be interrupted, so
+  the budget is a **post-hoc** detector: it compares elapsed time *after* the
+  scan of a file has already returned. It cannot abandon, preempt, or otherwise
+  time-bound a runaway scan; a catastrophic pattern still runs to completion and
+  still blocks the process for as long as it takes. What the budget does is
+  refuse to call that result trustworthy, turning an over-budget file into a
+  fail-closed verdict on the staged path and a diagnostic on a directory scan.
+  **The regex bounds are what bound time.**
 - **Generic regex false positives.** Report as a normal issue. Improving
   signal/noise is product work, not security work.
 - **Third-party dependency vulnerabilities.** Report to the upstream
@@ -63,6 +88,7 @@ Vault Guard does not, and will not, claim to defend against:
 |-------------------------|-----------------------------------------------------|------------------------------------------------------------------------------|
 | Files on disk           | Pathological filenames, symlink loops               | `realpathSync` for symlink resolution; `seen` set; binary-file skip.          |
 | `.vault-guard.json`     | ReDoS via `extra_patterns`                          | `validateRegexSafety` (length cap 256, quantifier-density cap, shape check). |
+| File contents (built-in)| ReDoS via a catastrophic built-in pattern shape     | Every built-in repeat is bounded; all 59 rules measured linear on adversarial input (1.6.0 sweep), each bound guarded by a timing test. The per-file budget does **not** bound time: Node regexes are synchronous, so it is a **post-hoc** check that turns an over-budget file into a fail-closed verdict (staged) or a diagnostic (directory scan). |
 | `.vault-guard.json`     | Cross-trust load from a parent directory            | `loadConfig` walks only between `startDir` and the nearest `.git` root.       |
 | `.vault-guard.json`     | Silent default fallback on parse error              | `loadConfig` throws `ConfigError`; CLI exits non-zero with the parser message. |
 | Repository git config   | `diff.relative` shrinks the staged file list        | Config forced off per invocation (`git -c diff.relative=false ...`); staged paths resolved against the worktree root, never the caller's cwd. |

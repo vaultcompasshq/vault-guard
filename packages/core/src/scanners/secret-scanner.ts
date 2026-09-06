@@ -113,14 +113,29 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // OAuth 2.0 client ID, not a secret: Google documents these as safe for
   // client-side / public embedding (only the paired client *secret* is
   // sensitive). Kept at low severity for visibility, not blocking.
-  ['gcp-oauth',           { regex: /[0-9]+-[a-zA-Z0-9_]{32}\.apps\.googleusercontent\.com/g,    severity: 'low' }],
+  // The numeric client-id prefix is bounded ({1,64}) so a long unbroken digit
+  // run cannot make `[0-9]+` backtrack quadratically. A real Google client-id
+  // prefix is a short project number, well under 64 digits. Measured: the
+  // unbounded form took 16.6s on a 200k-digit run (quadratic); bounded it is
+  // linear.
+  ['gcp-oauth',           { regex: /[0-9]{1,64}-[a-zA-Z0-9_]{32}\.apps\.googleusercontent\.com/g, severity: 'low' }],
   ['azure-storage',       { regex: /DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{20,}/g, severity: 'critical' }],
 
   // --- Database connection strings ---
-  ['postgresql-url', { regex: /postgres(?:ql)?:\/\/[^:@\s]+:[^@\s]+@[^:\s/]+(?::\d+)?\/\S+/g,  severity: 'critical', connectionString: true }],
-  ['mysql-url',      { regex: /mysql:\/\/[^:@\s]+:[^@\s]+@[^:\s/]+(?::\d+)?\/\S+/g,             severity: 'critical', connectionString: true }],
-  ['mongodb-url',    { regex: /mongodb(?:\+srv)?:\/\/[^:@\s]+:[^@\s]+@[^:\s/]+(?::\d+)?/g,      severity: 'critical', connectionString: true }],
-  ['redis-url',      { regex: /rediss?:\/\/[^:@\s]+:[^@\s]+@[^:\s/]+(?::\d+)/g,                 severity: 'critical', connectionString: true }],
+  //
+  // Every component is bounded. The unbounded form was quadratic: `[^:@\s]+`
+  // ends at a `:`, but the NEXT class `[^@\s]+` also contains `:`, so every
+  // colon is a viable split for the first component and each split rescans to
+  // the end of the buffer looking for an `@` that may never come. On a buffer
+  // of repeated scheme literals (many viable start offsets) that measured
+  // 200k = 1.4s to 2.3s per rule, quadratic. Bounding each component to a sane
+  // maximum (user/password/host 256, port 8 digits, path 1024) caps the
+  // per-start work and makes all four linear; no real DSN comes close to these
+  // limits.
+  ['postgresql-url', { regex: /postgres(?:ql)?:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/\S{1,1024}/g, severity: 'critical', connectionString: true }],
+  ['mysql-url',      { regex: /mysql:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/\S{1,1024}/g,            severity: 'critical', connectionString: true }],
+  ['mongodb-url',    { regex: /mongodb(?:\+srv)?:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})?/g,            severity: 'critical', connectionString: true }],
+  ['redis-url',      { regex: /rediss?:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})/g,                       severity: 'critical', connectionString: true }],
 
   // --- Source control tokens ---
   ['github-token',   { regex: /gh[pousor]_[a-zA-Z0-9]{36}/g,                                    severity: 'critical' }],
@@ -176,8 +191,37 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // what GCP service-account JSON embeds — i.e. the most common private key
   // form in circulation. Requiring `[A-Z ]+` between BEGIN and PRIVATE meant
   // the scanner printed "No secrets found" on a bare PKCS#8 key file.
-  ['ssh-private-key',{ regex: /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/g,                    severity: 'critical' }],
-  ['jwt-token',      { regex: /eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g,            severity: 'high' }],
+  // The optional key-type prefix lifts the space OUT of the repeated class
+  // (`[A-Z0-9]+(?: [A-Z0-9]+)?` then a single required trailing space) so the
+  // delimiter is no longer a member of the set it terminates. This removes the
+  // ambiguous overlap in the old `[A-Z0-9 ]+ ` shape. Matches the same headers:
+  // bare PKCS#8 (no prefix), plus one- or two-word types (RSA, EC, OPENSSH,
+  // ENCRYPTED). Measured: the old form was already linear here, so this is
+  // hardening, not a fix.
+  //
+  // `(?: BLOCK)?` matches the OpenPGP header, which ends
+  // `PRIVATE KEY BLOCK-----` rather than `PRIVATE KEY-----`. Neither the old
+  // nor the first bounded form matched it, and the test that claimed otherwise
+  // manufactured the match by deleting " BLOCK" from the header. It is a fixed
+  // optional literal with no quantifier, so it adds no backtracking (measured
+  // alongside the other bounds).
+  ['ssh-private-key',{ regex: /-----BEGIN (?:[A-Z0-9]+(?: [A-Z0-9]+)? )?PRIVATE KEY(?: BLOCK)?-----/g, severity: 'critical' }],
+  // Each base64url segment is bounded, and the `eyJ` prefix is token-boundary
+  // anchored. Both are needed and they fix different halves of the same cost:
+  //
+  //   - The bound caps per-start backtracking. Unbounded, a buffer of repeated
+  //     `eyJ` measured 50k=436ms, 100k=1,758ms, 200k=7,083ms (quadratic),
+  //     because each segment runs to the end of the buffer hunting a `.`.
+  //   - The lookbehind removes the start offsets. In `eyJeyJeyJ...` every third
+  //     character starts a candidate; anchoring to a token boundary leaves one.
+  //     Without it the cost is linear but scales with the bound (a {1,4096}
+  //     bound alone still measured 622ms at 200k); with it, 200k is ~0.24ms,
+  //     which is what makes a GENEROUS bound affordable.
+  //
+  // 4096 per segment is deliberately generous so a real token with fat claims
+  // stays detected; a JWT glued directly to preceding word characters is not a
+  // standalone token reference, the same rule eight other entries here apply.
+  ['jwt-token',      { regex: /(?<![A-Za-z0-9_-])eyJ[a-zA-Z0-9_-]{1,4096}\.[a-zA-Z0-9_-]{1,4096}\.[a-zA-Z0-9_-]{1,4096}/g, severity: 'high' }],
 
   // Generic patterns — entropy-gated AND placeholder-filtered (aggressive) to
   // suppress false positives on documentation samples and unit-test fixtures.
