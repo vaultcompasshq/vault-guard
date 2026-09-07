@@ -1,5 +1,5 @@
 name: Vault Guard
-description: Scan a repository for secrets with @vaultcompass/vault-guard (SARIF-friendly). Requires a prior actions/checkout of your repo.
+description: Scan a repository for secrets with vault-guard and write a SARIF log. Run after actions/checkout.
 author: Vault & Compass LLC
 branding:
   icon: shield
