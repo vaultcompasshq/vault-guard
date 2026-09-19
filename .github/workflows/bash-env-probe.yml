@@ -1,0 +1,26 @@
+name: BASH_ENV reachability probe (throwaway)
+
+on:
+  pull_request:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      BASH_ENV: ${{ github.workspace }}/.github/bash_env_probe.sh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run vault-guard action with a backward-pinned version
+        id: probe_action
+        continue-on-error: true
+        uses: ./
+        with:
+          version: 1.6.0
+
+      - name: Post-action marker
+        if: always()
+        run: |
+          echo "BASH_ENV_PROBE: post-action marker step ran"
+          echo "BASH_ENV_PROBE: probe_action outcome=${{ steps.probe_action.outcome }} conclusion=${{ steps.probe_action.conclusion }}"
