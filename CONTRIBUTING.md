@@ -56,6 +56,25 @@ git checkout -b release/vX.Y.Z
 pnpm version-packages
 git add -A && git commit -m "chore(release): vX.Y.Z"
 git push -u origin release/vX.Y.Z
+```
+
+Two things changed in changesets 3 (the repository is on `@changesets/cli`
+3.0.3) that affect that step:
+
+- `pnpm version-packages` now exits 1 when no changeset is queued, printing
+  `No unreleased changesets found.`, where 2.x exited 0 and did nothing. A
+  release branch cut without a changeset therefore fails at step 2 instead
+  of producing an empty bump; add the changeset, do not retry the command.
+- Changelog formatting is controlled by a `format` key in
+  `.changeset/config.json` (`"auto"`, `"prettier"`, `"oxfmt"`, `"deno"`,
+  `"dprint"` or `false`); the old `prettier` key is gone. The config has no
+  `format` key, so the default `"auto"` applies, and since no formatter is
+  installed here nothing gets reformatted. If a `version-packages` run ever
+  starts rewriting CHANGELOG files it did not otherwise touch, a formatter
+  has appeared in the tree: set `"format": false` rather than accept the
+  noise in the release diff.
+
+```bash
 
 # 3. Open a PR, get it reviewed, and merge it.
 gh pr create --base main --title "release: X.Y.Z"
