@@ -26,7 +26,29 @@ describe('scan-output formatters', () => {
     it('formatJson rewrites absolute paths inside cwd as relative', () => {
       const results: FileScanResult[] = [{ file: insideFile, matches: [makeMatch()] }];
       const out = JSON.parse(formatJson(results, { cwd }));
-      expect(out.results[0].file).toBe(path.join('src', 'leak.ts'));
+      // Forward slashes on every OS (SARIF requires it; consumers such as
+      // conductor expect it). Literal, so this fails under path.win32 too.
+      expect(out.results[0].file).toBe('src/leak.ts');
+    });
+
+    it('formatJson uses forward slashes for a Windows-shaped relative path', () => {
+      const results: FileScanResult[] = [{ file: 'src\\a.ts', matches: [makeMatch()] }];
+      const out = JSON.parse(formatJson(results, { cwd }));
+      expect(out.results[0].file).toBe('src/a.ts');
+    });
+
+    it('formatJson relativises a Windows drive-letter absolute path and uses forward slashes', () => {
+      const results: FileScanResult[] = [
+        { file: 'C:\\repo\\project\\src\\a.ts', matches: [makeMatch()] },
+      ];
+      const out = JSON.parse(formatJson(results, { cwd: 'C:\\repo\\project' }));
+      expect(out.results[0].file).toBe('src/a.ts');
+    });
+
+    it('formatJson keeps a Windows path outside cwd absolute, with forward slashes', () => {
+      const results: FileScanResult[] = [{ file: 'D:\\other\\a.ts', matches: [makeMatch()] }];
+      const out = JSON.parse(formatJson(results, { cwd: 'C:\\repo\\project' }));
+      expect(out.results[0].file).toBe('D:/other/a.ts');
     });
 
     it('formatJson preserves paths that are outside cwd (no .. traversal)', () => {

@@ -50,6 +50,10 @@ docs.
   option) and an unexpected fatal error now exit 2 instead of 1. `--help`,
   `-h`, `help` and `--version` still exit 0. `init` with an unknown `--manager`
   value still exits 1; it is not a scan verdict and was left alone.
+- **JSON file paths use forward slashes on Windows too.** The `file` field
+  carried the platform separator (`src\a.ts`) on Windows; it is now `src/a.ts`
+  on every OS, matching SARIF uris. Consumers that matched the backslash form
+  on Windows need to expect forward slashes.
 - **`fix` judges path context the same way `scan` does.**
 - **README states exit 2 correctly.** JSON and SARIF documents are written when
   a staged scan ran but some files went unexamined (with
