@@ -15,9 +15,12 @@ OpenAI, Stripe, AWS, GitHub, Slack and the rest) are no longer downgraded to
 key pasted into `CLAUDE.md`, `AGENTS.md` or a docs page now blocks, and so does
 a documentation example shaped like a real vendor key. Write examples with the
 documented placeholder words (`EXAMPLE`, `test`) or in a shape that does not
-match a vendor rule. A full-body PEM private key (`ssh-private-key`) is likewise
-no longer downgraded on documentation or markdown paths; it is still downgraded
-under test, fixture and locale paths. Generic low-precision patterns (password
+match a vendor rule. A PEM private key (`ssh-private-key`) is likewise no longer
+downgraded on documentation or markdown paths; it is still downgraded under
+test, fixture and locale paths. The rule counts a header as a key only when a
+following line is at least 40 characters of mixed-case base64 holding a digit,
+`+` or `/`, so prose that merely names the header is not reported as a key
+(interior whitespace is no longer stripped when making that decision). Generic low-precision patterns (password
 and generic key assignments, connection strings, JWTs) are still downgraded in
 docs.
 
@@ -45,7 +48,8 @@ docs.
   `--fail-on`, an unknown `--format`, `--staged` outside a git repository, a
   Commander usage error (an unknown option or command, a missing required
   option) and an unexpected fatal error now exit 2 instead of 1. `--help`,
-  `-h`, `help` and `--version` still exit 0.
+  `-h`, `help` and `--version` still exit 0. `init` with an unknown `--manager`
+  value still exits 1; it is not a scan verdict and was left alone.
 - **`fix` judges path context the same way `scan` does.**
 - **README states exit 2 correctly.** JSON and SARIF documents are written when
   a staged scan ran but some files went unexamined (with

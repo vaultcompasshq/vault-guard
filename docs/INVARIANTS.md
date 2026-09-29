@@ -613,10 +613,20 @@ sits.
 `LOW_PRECISION_PATH_DOWNGRADE_IDS` (`password-in-code`, `api-key-generic`,
 `secret-generic`, `bearer-token`, the four connection-string rules,
 `ssh-private-key`, `jwt-token`). There is no vendor list to downgrade from. One
-further ruling: `ssh-private-key` fires only when key material follows the
-header, so a hit is a full-body private key; it is downgraded on test, fixture
-and locale paths (throwaway PEMs live there) but NOT on documentation or
-markdown paths (`CLAUDE.md`, `docs/`).
+further ruling: `ssh-private-key` is downgraded on test, fixture and locale paths
+(throwaway PEMs live there) but NOT on documentation or markdown paths
+(`CLAUDE.md`, `docs/`). That ruling is only as good as the body check that
+decides a hit is a key rather than prose naming the header
+(`isPemHeaderWithoutBody`, `packages/core/src/utils/placeholder.ts`). The rule
+reports a hit only when, within 400 characters after the header, some line, with
+only its ends trimmed of whitespace, quotes and backslashes (interior whitespace
+is kept), is at least 40 characters, entirely base64 characters (with optional
+`=` padding), and holds a lowercase letter, an uppercase letter, and a digit or
+`+` or `/`. The matching END marker is not required. This is a heuristic, not a
+proof: a real key body line essentially always passes, and English prose cannot
+(it has spaces and no digits), but a documentation line that is itself a 40+
+character mixed-case base64-looking token right after a header would still count
+as a body.
 
 **Enforced by:** `packages/core/src/utils/path-downgrade-ids.ts` no longer
 exports a docs vendor set, and `applyPathAwareSeverity` consults only the
@@ -631,7 +641,13 @@ low`; `path-severity.test.ts` `keeps an anthropic key at critical in NOTES.md`
 (and the CLAUDE.md, docs/x.md and website/page.mdx variants), `keeps a full-body
 PEM private key at critical in CLAUDE.md` (and docs/runbook.md), `still
 downgrades a PEM under a tests/ fixture directory` and `still downgrades a
-generic api-key match in docs`.
+generic api-key match in docs`; and, in `pem-body-prose.test.ts` (core),
+`prose that merely names the header in docs/setup.md is not critical` (and the
+README.md and CLAUDE.md variants), `a copy of the CHANGELOG paragraph about the
+PGP header is not critical`, `a real full-body PEM in docs/runbook.md still
+blocks` (and CLAUDE.md), `a key embedded in JSON with escaped newlines still
+blocks`, `a lowercase-only or letters-only 40+ run is not a body`, `a
+whitespace-separated sentence is not a body`.
 
 ## Exit 1 means findings only
 
@@ -652,8 +668,9 @@ an unknown `--format` value is rejected before scanning. Tests, in
 repository exits 2`, `an invalid --fail-on exits 2`, `a fatal error exits 2`; in
 `packages/cli/src/__tests__/integration/exit-codes-usage.test.ts`: `scan .
 --bogus exits 2`, `an unknown --format value exits 2 instead of falling back to
-text`, `a thrown non-ConfigError exits 2`, and the boundary `--version and
---help still exit 0`.
+text`, `a thrown non-ConfigError exits 2`, and the boundaries `scan --help exits
+0`, `--version exits 0` and `-h, --help and the help subcommand exit 0 and print
+usage`.
 
 **Known gap:** the `init` command still sets exit 1 for an unknown `--manager`.
 It is not a scan verdict, but it does not follow the rule either.
