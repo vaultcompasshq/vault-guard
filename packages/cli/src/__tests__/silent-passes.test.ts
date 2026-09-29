@@ -4,6 +4,8 @@ import * as path from 'path';
 import { execSync } from 'child_process';
 import { SecretScanner } from '@vaultcompass/vault-guard-core';
 import { scanCommand } from '../commands/scan';
+import { checkCommand } from '../commands/check';
+import { fixCommand } from '../commands/fix';
 
 /**
  * Regression pins for the "reports clean on things it did not properly check"
@@ -98,9 +100,16 @@ describe('silent-pass fixes', () => {
 
   // ---------------------------------------------------------------- fix 1
   describe('path context is judged relative to the scan root', () => {
-    it('directory mode, absolute target: vendor key in src/config.ts blocks under docs/ and loadtest/', async () => {
+    // The discriminating rule here is the PEM (ssh-private-key): a test-like
+    // directory still downgrades it, and `loadtest` in the ABSOLUTE path is a
+    // test-like directory. A vendor key would pass these with the root logic
+    // removed, so it is deliberately not used.
+    const pemFile = (root: string): void =>
+      write(root, 'src/config.ts', `export const pem = \`${PEM}\`;\n`);
+
+    it('directory mode, absolute target: a PEM in src/config.ts blocks under docs/ and loadtest/', async () => {
       const root = hostileRoot();
-      write(root, 'src/config.ts', `export const k = "${VENDOR_KEY}";\n`);
+      pemFile(root);
       process.chdir(root);
 
       const code = await scanCommand(root, 'text', false);
@@ -109,9 +118,9 @@ describe('silent-pass fixes', () => {
       expect(outText()).toMatch(/BLOCKED/);
     });
 
-    it('directory mode, target ".": vendor key in src/config.ts blocks under docs/ and loadtest/', async () => {
+    it('directory mode, target ".": a PEM in src/config.ts blocks under docs/ and loadtest/', async () => {
       const root = hostileRoot();
-      write(root, 'src/config.ts', `export const k = "${VENDOR_KEY}";\n`);
+      pemFile(root);
       process.chdir(root);
 
       const code = await scanCommand('.', 'text', false);
@@ -119,14 +128,59 @@ describe('silent-pass fixes', () => {
       expect(code).toBe(1);
     });
 
-    it('directory mode: a PEM private key in src/config.ts blocks under docs/ and loadtest/', async () => {
+    it('ancestor cwd, relative target: scan loadtest/docs/repo from the ancestor blocks', async () => {
       const root = hostileRoot();
-      write(root, 'src/config.ts', `export const pem = \`${PEM}\`;\n`);
-      process.chdir(root);
+      pemFile(root);
+      process.chdir(base);
 
-      const code = await scanCommand(root, 'text', false);
+      expect(await scanCommand(path.join('loadtest', 'docs', 'repo'), 'text', false)).toBe(1);
+    });
 
-      expect(code).toBe(1);
+    it('ancestor cwd, git repo target: scan loadtest/docs/repo from the ancestor blocks', async () => {
+      const root = hostileRoot();
+      gitInit(root);
+      pemFile(root);
+      process.chdir(base);
+
+      expect(await scanCommand(path.join('loadtest', 'docs', 'repo'), 'text', false)).toBe(1);
+    });
+
+    it('cwd is the filesystem root, absolute target blocks', async () => {
+      const root = hostileRoot();
+      pemFile(root);
+      process.chdir(path.parse(root).root);
+
+      expect(await scanCommand(root, 'text', false)).toBe(1);
+    });
+
+    it('a file target from an ancestor cwd blocks', async () => {
+      const root = hostileRoot();
+      pemFile(root);
+      process.chdir(base);
+
+      expect(await scanCommand(path.join(root, 'src', 'config.ts'), 'text', false)).toBe(1);
+    });
+
+    it('check with an absolute file from an ancestor cwd blocks', async () => {
+      const root = hostileRoot();
+      gitInit(root);
+      pemFile(root);
+      process.chdir(base);
+
+      expect(await checkCommand([path.join(root, 'src', 'config.ts')])).toBe(1);
+    });
+
+    it('fix passes the scanner the file\'s own root, not the absolute path (fix prints no severity, so the call is pinned)', async () => {
+      const root = hostileRoot();
+      pemFile(root);
+      process.chdir(base);
+      const spy = jest.spyOn(SecretScanner.prototype, 'scan');
+
+      await fixCommand([path.join(root, 'src', 'config.ts')]);
+
+      expect(spy).toHaveBeenCalledTimes(1);
+      // Not a git repo, so a file target's root is its own directory.
+      expect(spy.mock.calls[0][1]?.pathRoot).toBe(path.join(root, 'src'));
     });
 
     it('directory mode, cwd elsewhere: an absolute target outside cwd is judged from the target', async () => {
@@ -137,18 +191,6 @@ describe('silent-pass fixes', () => {
       process.chdir(elsewhere);
 
       const code = await scanCommand(root, 'text', false);
-
-      expect(code).toBe(1);
-    });
-
-    it('--staged: vendor key in src/config.ts blocks when the repo path contains docs/ and loadtest/', async () => {
-      const root = hostileRoot();
-      gitInit(root);
-      write(root, 'src/config.ts', `export const k = "${VENDOR_KEY}";\n`);
-      stage(root, 'src/config.ts');
-      process.chdir(root);
-
-      const code = await scanCommand('.', 'text', true);
 
       expect(code).toBe(1);
     });
@@ -177,8 +219,8 @@ describe('silent-pass fixes', () => {
   });
 
   // ---------------------------------------------------------------- fix 2
-  describe('--staged never silently passes a blob it skipped', () => {
-    it('a staged .ts file with a key and one NUL byte exits 2, not 0', async () => {
+  describe('--staged scans a NUL-bearing blob as text, as directory mode does', () => {
+    it('a staged .ts file with a key and one NUL byte exits 1 (a finding), not 0', async () => {
       gitInit(base);
       write(base, 'src/a.ts', `const k = "${VENDOR_KEY}";\n\0\n`);
       stage(base, 'src/a.ts');
@@ -186,22 +228,20 @@ describe('silent-pass fixes', () => {
 
       const code = await scanCommand('.', 'text', true);
 
-      expect(code).toBe(2);
+      expect(code).toBe(1);
       expect(outText()).not.toMatch(/SUCCESS/);
-      expect(errText()).toContain('src/a.ts');
+      expect(outText()).toContain('src/a.ts');
     });
 
-    it('the NUL-bearing blob is counted in run.unscannable_files in JSON', async () => {
+    it('a staged .woff2 containing a NUL does not exit 2', async () => {
       gitInit(base);
-      write(base, 'src/a.ts', `const k = "${VENDOR_KEY}";\n\0\n`);
-      stage(base, 'src/a.ts');
+      write(base, 'fonts/a.woff2', Buffer.from([0x77, 0x4f, 0x46, 0x32, 0x00, 0x01, 0x00, 0x02]));
+      stage(base, 'fonts/a.woff2');
       process.chdir(base);
 
-      const code = await scanCommand('.', 'json', true);
+      const code = await scanCommand('.', 'text', true);
 
-      const body = JSON.parse(outText().trim()) as { run?: { unscannable_files?: number } };
-      expect(body.run?.unscannable_files).toBe(1);
-      expect(code).toBe(2);
+      expect(code).toBe(0);
     });
 
     it('a staged binary-extension file (.png) with NUL is still skipped, as in directory mode', async () => {
@@ -214,6 +254,41 @@ describe('silent-pass fixes', () => {
 
       expect(code).toBe(0);
     });
+  });
+
+  // ------------------------------------------------ BOM-marked UTF-16 text
+  describe('a key in a BOM-marked UTF-16 file is not a silent pass', () => {
+    const text = `first line\nconst k = "${VENDOR_KEY}";\n`;
+    const le = (): Buffer => Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
+    const be = (): Buffer =>
+      Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(text, 'utf16le').swap16()]);
+    const encodings: Array<[string, () => Buffer]> = [
+      ['UTF-16LE', le],
+      ['UTF-16BE', be],
+    ];
+    const names = ['notes.txt', 'src/a.ts'];
+
+    for (const [label, enc] of encodings) {
+      for (const name of names) {
+        it(`directory mode finds a key in a ${label} ${name}`, async () => {
+          write(base, name, enc());
+          process.chdir(base);
+
+          expect(await scanCommand('.', 'text', false)).toBe(1);
+          expect(outText()).toContain(`${name}:2:`);
+        });
+
+        it(`--staged finds a key in a ${label} ${name}`, async () => {
+          gitInit(base);
+          write(base, name, enc());
+          stage(base, name);
+          process.chdir(base);
+
+          expect(await scanCommand('.', 'text', true)).toBe(1);
+          expect(outText()).toContain(`${name}:2:`);
+        });
+      }
+    }
   });
 
   // ---------------------------------------------------------------- fix 3
@@ -231,6 +306,23 @@ describe('silent-pass fixes', () => {
       const code = await scanCommand('.', 'text', false);
 
       expect(code).toBe(1);
+    });
+
+    it.each([
+      ['CLAUDE.md', `Key:\n${PEM}`],
+      ['docs/runbook.md', `Key:\n${PEM}`],
+    ])('a full-body PEM private key in %s still blocks', async (name, body) => {
+      write(base, name, body);
+      process.chdir(base);
+
+      expect(await scanCommand('.', 'text', false)).toBe(1);
+    });
+
+    it('a PEM under tests/fixtures still downgrades', async () => {
+      write(base, 'tests/fixtures/key.pem', PEM);
+      process.chdir(base);
+
+      expect(await scanCommand('.', 'text', false)).toBe(0);
     });
 
     it('a generic password assignment in docs still downgrades to low', async () => {

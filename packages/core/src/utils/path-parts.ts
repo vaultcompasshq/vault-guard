@@ -1,4 +1,21 @@
+import fs from 'fs';
 import path from 'path';
+
+/** Absolute, symlinks resolved when the path exists (macOS /var vs /private/var). */
+function canonical(p: string): string {
+  const abs = path.resolve(p);
+  try {
+    return fs.realpathSync.native(abs);
+  } catch {
+    // A path that does not exist (a staged file deleted from the worktree):
+    // resolve its parent instead, so it still lines up with a canonical root.
+    try {
+      return path.join(fs.realpathSync.native(path.dirname(abs)), path.basename(abs));
+    } catch {
+      return abs;
+    }
+  }
+}
 
 /**
  * Split a file path into directory/file segments (handles mixed `/` and platform sep).
@@ -25,7 +42,7 @@ export function splitPathParts(filePath: string): string[] {
  */
 export function contextPathFor(filePath: string, root?: string): string {
   if (root === undefined) return filePath;
-  const rel = path.relative(path.resolve(root), path.resolve(filePath));
+  const rel = path.relative(canonical(root), canonical(filePath));
   if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
     return path.basename(filePath);
   }

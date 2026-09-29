@@ -1,6 +1,7 @@
 import fs from 'fs';
-import { createReadStream } from 'fs';
 import * as readline from 'readline';
+import { Readable } from 'stream';
+import { decodeFileChunks, decodeTextBuffer } from './text-decode';
 
 import type { DiagnosticBus } from '../diagnostics';
 import { SecretScanner } from '../scanners/secret-scanner';
@@ -23,7 +24,8 @@ export interface ScanTextFileOptions {
 }
 
 /**
- * Read `filePath` as UTF-8 and run {@link SecretScanner.scanContent}.
+ * Read `filePath` as text (UTF-8, or UTF-16 when a BOM says so; see
+ * {@link decodeTextBuffer}) and run {@link SecretScanner.scanContent}.
  *
  * Files larger than `maxFileBytes` are scanned **line-by-line** so the
  * process does not load the entire file into memory. Multi-line secrets
@@ -41,7 +43,7 @@ export async function scanTextFileAsync(
   const maxLine = options.maxLineUtf16Units ?? DEFAULT_MAX_LINE_UTF16;
   const st = await fs.promises.stat(filePath);
   if (st.size <= options.maxFileBytes) {
-    const content = await fs.promises.readFile(filePath, 'utf-8');
+    const content = decodeTextBuffer(await fs.promises.readFile(filePath));
     return applyPathAwareSeverity(
       scanner.scanContent(content, { filePath, pathRoot: options.pathRoot }),
       filePath,
@@ -54,7 +56,7 @@ export async function scanTextFileAsync(
   let lineNo = 0;
 
   const rl = readline.createInterface({
-    input: createReadStream(filePath, { encoding: 'utf-8' }),
+    input: Readable.from(decodeFileChunks(filePath)),
     crlfDelay: Infinity,
   });
 
@@ -106,7 +108,7 @@ export function scanTextFileSync(
   const st = fs.statSync(filePath);
   if (st.size <= options.maxFileBytes) {
     return applyPathAwareSeverity(
-      scanner.scanContent(fs.readFileSync(filePath, 'utf-8'), {
+      scanner.scanContent(decodeTextBuffer(fs.readFileSync(filePath)), {
         filePath,
         pathRoot: options.pathRoot,
       }),

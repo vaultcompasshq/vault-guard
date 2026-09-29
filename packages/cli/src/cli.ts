@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, CommanderError } from 'commander';
 import { scanCommand, OutputFormat } from './commands/scan';
 import { installHookCommand } from './commands/install-hook';
 import { tokensCommand } from './commands/tokens';
@@ -18,8 +18,31 @@ function setExitCode(exitCode: number): void {
   }
 }
 
+/**
+ * Last-resort handler for anything that escapes a command: a Commander usage
+ * error (unknown option, missing argument) or an unexpected throw.
+ *
+ * Exit 1 is reserved for "scanned, and findings exist", so both are exit 2.
+ * `--help` and `--version` are also delivered as CommanderErrors (with exit
+ * code 0) once `exitOverride` is on, and stay 0.
+ */
+export function handleFatalError(error: unknown): void {
+  if (error instanceof CommanderError) {
+    // Commander has already written its own message to stderr.
+    process.exitCode = error.exitCode === 0 ? 0 : 2;
+    return;
+  }
+  console.error(error);
+  process.exitCode = 2;
+}
+
+const SCAN_FORMATS = ['text', 'json', 'sarif'] as const;
+
 export function buildCli(): Command {
   const program = new Command();
+  // Set before any subcommand is created so they inherit it. Without it,
+  // Commander calls process.exit(1) itself on a usage error.
+  program.exitOverride();
 
   program
     .name('vault-guard')
@@ -56,7 +79,14 @@ export function buildCli(): Command {
         path: string,
         options: { format: string; staged?: boolean; failOn?: string; trustBase?: string },
       ) => {
-        const format = (options.format as OutputFormat) ?? 'text';
+        const format = options.format as OutputFormat;
+        if (!(SCAN_FORMATS as readonly string[]).includes(format)) {
+          console.error(
+            `error: unknown --format value '${options.format}' (expected ${SCAN_FORMATS.join(' | ')}). Nothing was scanned.`,
+          );
+          setExitCode(2);
+          return;
+        }
         const exitCode = await scanCommand(
           path,
           format,

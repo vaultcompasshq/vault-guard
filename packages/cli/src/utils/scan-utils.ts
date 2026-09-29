@@ -1,5 +1,6 @@
 import path from 'path';
 import fs from 'fs';
+import { execFileSync } from 'child_process';
 import {
   SecretScanner,
   getFilesToScan,
@@ -102,6 +103,40 @@ export function resolveScanRoot(targetPaths: string[], cwd = process.cwd()): str
   }
 }
 
+/**
+ * The directory that test / documentation / locale path context is judged
+ * relative to, for one scan target. NOT the same question as
+ * {@link resolveScanRoot}, which picks SARIF's `%SRCROOT%` and returns the cwd
+ * whenever the target is inside it. That is wrong for context: an ancestor cwd
+ * (a workspace with the repo checked out at `website/`, HOME, or `/` in a
+ * container) would put every directory between it and the repo back into the
+ * judged path.
+ *
+ * The root is the git work tree containing the target; failing that, the
+ * target directory itself (its parent for a file target). Directories above it
+ * never count.
+ */
+export function resolveContextRoot(target: string, cwd = process.cwd()): string {
+  const abs = path.resolve(cwd, target);
+  let dir: string;
+  try {
+    dir = fs.statSync(abs).isDirectory() ? abs : path.dirname(abs);
+  } catch {
+    dir = path.dirname(abs);
+  }
+  try {
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: dir,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (top) return top;
+  } catch {
+    // Not a git work tree (or git is missing): fall through to the directory.
+  }
+  return dir;
+}
+
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 /**
@@ -187,28 +222,6 @@ function recordBudgetExceeded(
   });
 }
 
-/**
- * Record a staged blob that was read but not scanned because it contains a NUL
- * byte while carrying a text extension. A NUL in a `.ts` file is exactly what
- * someone hiding a key from a binary-sniffing scanner would add, so the blob
- * is unscannable, never a silent pass. Same `unreadable` list as the other two
- * causes, so the staged path exits 2 through the existing branch.
- */
-function recordNulContent(displayFile: string, options: ScanOptions): void {
-  options.unreadable?.push({
-    kind: 'nul_content',
-    file: displayFile,
-    reason:
-      'contains a NUL byte but has a text file extension, so it was not scanned ' +
-      '(a NUL can hide a secret from a text scan; remove it or rename the file if it is truly binary)',
-  });
-  options.bus?.add({
-    code: 'file.nul_content',
-    severity: 'error',
-    ctx: { file: displayFile },
-  });
-}
-
 /** Filled by scan runners when provided (files opened for secret scanning, bytes read). */
 export interface ScanTelemetryStats {
   filesScanned: number;
@@ -224,12 +237,10 @@ export interface ScanTelemetryStats {
  *   - `scan_budget`: the file WAS read and scanned, but the scan took longer
  *     than the budget, so the result is not trusted. Calling this "could not be
  *     read" would be false.
- *   - `nul_content`: the blob was read but holds a NUL byte under a text
- *     extension, so it was deliberately not scanned as text.
  */
 export interface UnreadableFile {
   /** Which of the two causes produced this entry. Defaults to a read failure. */
-  kind?: 'read_error' | 'scan_budget' | 'nul_content';
+  kind?: 'read_error' | 'scan_budget';
   /** cwd-relative where possible, for display and structured output. */
   file: string;
   /** Why the file's result cannot be trusted. */
@@ -364,13 +375,11 @@ export async function scanFileListAsync(
         // handing it over is what broke every staged scan launched from a
         // subdirectory. `rel` stays for display only.
         const content = readGitIndexFile(cwd, file);
-        // Binary-by-extension files were already skipped above, the same rule
-        // directory mode uses. A NUL under a text extension is not "binary"; it
-        // is a blob this run cannot vouch for, so it must not pass silently.
-        if (skipBinary && content.includes('\0')) {
-          recordNulContent(rel, options);
-          return;
-        }
+        // No content sniffing: only the extension rule above skips a blob, the
+        // same rule directory mode uses. A NUL byte is scanned as text like any
+        // other content. Skipping on NUL let a key sit beside one and pass
+        // silently; refusing on NUL broke ordinary commits of fonts and
+        // lockfiles.
 
         const byteLen = Buffer.byteLength(content, 'utf-8');
         if (byteLen > maxSize && verbose) {
@@ -503,7 +512,7 @@ export async function scanFilesAsync(
   const results: ScanResult[] = [];
 
   for (const targetPath of targetPaths) {
-    const pathRoot = options.pathRoot ?? resolveScanRoot([targetPath], process.cwd());
+    const pathRoot = options.pathRoot ?? resolveContextRoot(targetPath);
     try {
       await fs.promises.access(targetPath);
     } catch {
@@ -647,7 +656,7 @@ export function scanFiles(
   const results: ScanResult[] = [];
 
   for (const targetPath of targetPaths) {
-    const pathRoot = options.pathRoot ?? resolveScanRoot([targetPath], process.cwd());
+    const pathRoot = options.pathRoot ?? resolveContextRoot(targetPath);
     if (!fs.existsSync(targetPath)) {
       if (verbose) {
         console.error(chalk.red('❌ Error:'), chalk.white(`Path not found: ${targetPath}`));

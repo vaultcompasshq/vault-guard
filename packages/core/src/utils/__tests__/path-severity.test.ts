@@ -123,6 +123,22 @@ describe('applyPathAwareSeverity does not downgrade vendor-anchored keys in docs
     },
   );
 
+  it.each(['CLAUDE.md', 'docs/runbook.md'])(
+    'keeps a full-body PEM private key at critical in %s',
+    file => {
+      const [out] = applyPathAwareSeverity([match('ssh-private-key', 'critical')], file);
+      expect(out.severity).toBe('critical');
+    },
+  );
+
+  it('still downgrades a PEM under a tests/ fixture directory', () => {
+    const [out] = applyPathAwareSeverity(
+      [match('ssh-private-key', 'critical')],
+      'tests/fixtures/key.pem',
+    );
+    expect(out.severity).toBe('low');
+  });
+
   it('still downgrades a generic api-key match in docs', () => {
     const [out] = applyPathAwareSeverity([match('api-key-generic', 'high')], 'docs/x.md');
     expect(out.severity).toBe('low');

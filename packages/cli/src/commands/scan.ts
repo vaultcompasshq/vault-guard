@@ -325,6 +325,8 @@ export async function scanCommand(
         configIgnorePatterns,
         fromGitIndex: true,
         cwd: outputBase,
+        // Explicit: staged paths are judged relative to the repository root.
+        pathRoot: outputBase,
         inlineSuppressed,
       });
     } else {
@@ -566,15 +568,9 @@ export async function scanCommand(
       // budget overrun means it WAS read and scanned but took long enough that
       // the result is not trusted. Reporting the latter as "could not be read"
       // would be false.
-      const unread = unreadable.filter(u => u.kind !== 'scan_budget' && u.kind !== 'nul_content');
+      const unread = unreadable.filter(u => u.kind !== 'scan_budget');
       const overBudget = unreadable.filter(u => u.kind === 'scan_budget');
-      const nulBlobs = unreadable.filter(u => u.kind === 'nul_content');
       const parts: string[] = [];
-      if (nulBlobs.length > 0) {
-        parts.push(
-          `${nulBlobs.length} staged file(s) contain a NUL byte under a text extension and were not scanned`,
-        );
-      }
       if (unread.length > 0) {
         parts.push(`${unread.length} staged file(s) could not be read and were not scanned`);
       }
