@@ -6,9 +6,9 @@ of re-deriving a list from memory, and every new architectural decision appends
 to it.
 
 **This file is a claim, not a fact.** It was started during the 1.7.1
-action-only release and currently covers the composite Action and the two
-version numbers around it; it is not yet a complete list of this repository's
-invariants, and saying so is more useful than implying coverage it does not
+action-only release and covers the composite Action, the two version numbers
+around it, and (in the final section) four scanner-core properties; it is not
+yet a complete list of this repository's invariants, and saying so is more useful than implying coverage it does not
 have. Every entry below names what enforces it, so a reader can check the claim
 against the code rather than trusting the prose. An entry written in the same
 change as the fix it describes deserves the most scrutiny, and these were.
@@ -489,3 +489,116 @@ legal in 4.0, a syntax error in 3.2, and passed the gate. That is
 the enforcement; the textual guards against `${x,,}` and `${x^^}` here and in
 `action-path-validation.test.ts` are a faster, narrower net that only ever
 catches the idioms already on the list, and they name the bug when they fire.
+
+---
+
+# Scanner core
+
+The entries above cover the composite Action. The four below cover what the
+scanner itself reports, and were written in the change that fixed the audit
+finding each one describes, so weigh them accordingly: verify the named code and
+test against this text before relying on it. In the tests named below,
+`silent-passes.test.ts` is `packages/cli/src/__tests__/silent-passes.test.ts` and
+`path-severity.test.ts` is `packages/core/src/utils/__tests__/path-severity.test.ts`.
+
+## Path context is judged relative to the scan root, never on the absolute path
+
+Test, documentation and locale context (`docs`, `doc`, `website`, `tests`,
+`examples`, `fixtures`, anything ending in `test`, `*.md`) lowers a finding's
+severity. The Action scans an absolute `SCAN_ROOT` and `--staged` hands the
+scanner absolute paths, so a checkout that lives under a directory called
+`docs` (`/home/runner/work/docs/docs`) or `loadtest` (`/tmp/loadtest/repo`)
+made every file in it a docs or test file, and a vendor-shaped key or a PEM
+private key in `src/config.ts` was downgraded to `low` and exited 0. Scanning
+`.` did not show it, which is why it survived.
+
+**The rule:** context is judged on the file's path relative to the scan root.
+A file outside the root contributes only its basename. Directories above the
+scanned tree never count.
+
+**Enforced by:** `contextPathFor` in `packages/core/src/utils/path-parts.ts`,
+called from `applyPathAwareSeverity` (`path-severity.ts`) and from the
+doc-context suppression in `SecretScanner.scanContent`. The root is passed by
+every scan path: `scanFilesAsync`, `scanFiles` and `scanFileListAsync` in
+`packages/cli/src/utils/scan-utils.ts` (`resolveScanRoot` for a directory scan,
+the repository root for `--staged`), and the MCP workspace scan. Tests, in
+`silent-passes.test.ts`: `directory mode, absolute target: vendor key in
+src/config.ts blocks under docs/ and loadtest/`, `directory mode: a PEM private
+key in src/config.ts blocks under docs/ and loadtest/`, `directory mode, cwd
+elsewhere: an absolute target outside cwd is judged from the target`, `--staged:
+vendor key in src/config.ts blocks when the repo path contains docs/ and
+loadtest/`, `--staged: a PEM private key in src/config.ts blocks when the repo
+path contains docs/ and loadtest/`, and the counter-case `a real test directory
+INSIDE the scan root still downgrades a PEM fixture`. Unit level, in
+`path-severity.test.ts`: `does not downgrade in src/config.ts when the ROOT path
+contains docs and loadtest`, `still downgrades a real tests/ directory inside the
+root`, `uses only the basename for a file outside the root`.
+
+**Known gap:** a caller that passes no root (library use of
+`applyPathAwareSeverity` or `SecretScanner.scan` with an absolute path) still
+gets the old behaviour. The CLI and MCP always pass one. The vscode extension
+calls `scanContent` with an absolute `fsPath` and no root.
+
+## A staged blob that was skipped is never a silent pass
+
+`--staged` reads each blob from the index. A blob containing a NUL byte was
+skipped with a bare `return`: nothing recorded, nothing raised, so a `.ts` file
+holding a key and one NUL byte printed "No secrets found" and exited 0.
+
+**The rule:** on the staged path a file is either scanned, skipped for a
+reason the run states, or recorded as unscannable so the run exits 2. Binary by
+extension (`BINARY_EXTENSIONS`, the same rule directory mode uses) is the one
+stated skip. A NUL under a text extension is unscannable.
+
+**Enforced by:** `recordNulContent` in `packages/cli/src/utils/scan-utils.ts`
+(pushes a `nul_content` entry onto the `unreadable` list and emits a
+`file.nul_content` error diagnostic), and the `stagedScanIncomplete` branch of
+`scanCommand` in `packages/cli/src/commands/scan.ts`, which turns that list into
+exit 2. Tests, in `silent-passes.test.ts`: `a staged .ts file with a key and one
+NUL byte exits 2, not 0`, `the NUL-bearing blob is counted in
+run.unscannable_files in JSON`, and the boundary `a staged binary-extension file
+(.png) with NUL is still skipped, as in directory mode`.
+
+**Known gap:** directory mode does not look for NUL at all; it reads the file as
+UTF-8 and scans it, so a NUL does not hide a key there. Only the staged path had
+the skip.
+
+## Vendor-anchored rules are not downgraded in docs or markdown
+
+`DOCS_VENDOR_DOWNGRADE_IDS` used to drop Anthropic, OpenAI, Stripe, AWS, GitHub,
+Slack and other vendor rules to `low` in any `.md`, `.mdx` or docs directory. A
+live key pasted into `CLAUDE.md` or `AGENTS.md` (the files people paste into)
+passed the gate. Operator ruling: a live provider key is a live key wherever it
+sits.
+
+**The rule:** docs and test paths downgrade only
+`LOW_PRECISION_PATH_DOWNGRADE_IDS` (generic assignments, connection strings,
+JWTs, PEM headers). There is no vendor list to downgrade from.
+
+**Enforced by:** `packages/core/src/utils/path-downgrade-ids.ts` no longer
+exports a docs vendor set, and `applyPathAwareSeverity` consults only the
+low-precision set. Tests: `silent-passes.test.ts` `a vendor key in NOTES.md still
+blocks`, `a vendor key in CLAUDE.md still blocks`, `a vendor key in docs/x.md
+still blocks`, and the counter-case `a generic password assignment in docs still
+downgrades to low`; `path-severity.test.ts` `keeps an anthropic key at critical
+in NOTES.md` (and the CLAUDE.md, docs/x.md and website/page.mdx variants) and
+`still downgrades a generic api-key match in docs`.
+
+**Known gap:** a PEM private key in a markdown file is still downgraded, because
+`ssh-private-key` is in the low-precision set for the sake of test fixtures.
+That is a separate decision from this one.
+
+## Exit 1 means findings only
+
+`scan` returned 1 for an invalid config, a missing git repository, an invalid
+`--fail-on`, and an unexpected fatal error. Wrappers read 1 as "secrets found"
+and 2 as "could not run"; a bad flag reported as a leak sends someone hunting
+for a secret that is not there.
+
+**The rule:** exit 1 is "the scan ran and found something at or above the gate".
+Anything that is not a verdict on the tree is exit 2 (`COULD_NOT_RUN_EXIT`).
+
+**Enforced by:** `COULD_NOT_RUN_EXIT` at the four former `return 1` sites in
+`scanCommand` (`packages/cli/src/commands/scan.ts`). Tests, in
+`silent-passes.test.ts`: `an invalid config exits 2`, `--staged outside a git
+repository exits 2`, `an invalid --fail-on exits 2`, `a fatal error exits 2`.

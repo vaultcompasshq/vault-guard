@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Minor release pending (changeset `silent-passes-close-out`).** Four ways the scanner reported clean over things it had not checked are closed: path context (docs, tests, examples) is judged relative to the scan root instead of the absolute path; `--staged` records a NUL-bearing text-extension blob as unscannable and exits 2 instead of skipping it in silence; exit 1 now means findings only, so an invalid config, an invalid `--fail-on`, `--staged` outside a git repository and a fatal error exit 2; and README states correctly when JSON and SARIF are written on exit 2. **Example keys in docs will now be flagged:** vendor-anchored rules (Anthropic, OpenAI, Stripe, AWS, GitHub, Slack and others) keep their normal severity in markdown and docs directories, so a live key in `CLAUDE.md` or a docs page blocks. Generic low-precision patterns are still downgraded there. `docs/INVARIANTS.md` gains a scanner-core section naming the code and tests behind each.
+
 - The action hardening drift check pins the npm 10.5.2 floor comparisons, the version-shape regex and its occurrence count, `npm install` with `--ignore-scripts`, and the `npm audit signatures` statement. Each pin was proven by deleting the real line while comment copies survived: the test went red, the line was restored, and the test went green. The hygiene guard now names dep-guard, vault-guard, intent-guard, and conductor, and it fails a tracked em dash or en dash. README states the npm floor and the Node 20.13.0 remediation beside the action section, and links FINDINGS.md as the adopter feedback route.
 
 ## [1.8.1] - 2026-09-20
