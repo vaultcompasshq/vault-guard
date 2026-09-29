@@ -7,7 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- **Minor release pending (changeset `silent-passes-close-out`).** Ways the scanner reported clean over things it had not checked are closed: path context (docs, tests, examples) is judged relative to the git work tree containing the target, or the target directory when there is none, instead of the absolute path, so a checkout under `docs/` or `loadtest/` no longer downgrades findings, including when the scan runs from an ancestor directory or targets a file; a BOM-marked UTF-16LE or UTF-16BE file is decoded and scanned instead of read as garbage (BOM-less UTF-16 remains a known gap); `--staged` scans a NUL-bearing blob as text, as directory mode does, instead of skipping it in silence; exit 1 now means findings only, so an invalid config, an invalid `--fail-on`, an unknown `--format`, a Commander usage error, `--staged` outside a git repository and a fatal error exit 2 (`--help` and `--version` stay 0; `init` with an unknown `--manager` still exits 1); JSON file paths use forward slashes on Windows too; `fix` judges path context like `scan`; and README states correctly when JSON and SARIF are written on exit 2. **Example keys in docs will now be flagged:** vendor-anchored rules (Anthropic, OpenAI, Stripe, AWS, GitHub, Slack and others) keep their normal severity in markdown and docs directories, so a live key in `CLAUDE.md` or a docs page blocks, and a PEM private key is no longer downgraded on documentation paths (still downgraded under tests and fixtures); a header counts as a key only when a following line is 40+ characters of mixed-case base64 with a digit, `+` or `/`, so prose naming the header is not flagged. Generic low-precision patterns are still downgraded in docs. `docs/INVARIANTS.md` gains a scanner-core section naming the code and tests behind each.
+## [1.9.0] - 2026-09-30
+
+**Minor bump on all four packages.** `@vaultcompass/vault-guard`,
+`@vaultcompass/vault-guard-core`, `@vaultcompass/vault-guard-mcp` and
+`@vaultcompass/vault-guard-telemetry` move from 1.8.0 to 1.9.0 on npm. The
+Action's `version` default moves with them, to `1.9.0`, and the tag this
+release creates is `v1.9.0`, so tag and scanner are the same number. The
+telemetry package has no change of its own; it moves with the fixed group.
+
+What consumers will see:
+
+- **Example keys in docs will now be flagged.** Vendor-anchored keys and
+  full-body PEM private keys are no longer downgraded in docs or markdown, so a
+  documentation example shaped like a real key now blocks.
+- **Path context is judged from the git repository root**, not from the
+  absolute path, so a checkout under a directory named `docs` or `loadtest` no
+  longer downgrades findings.
+- **Staged NUL-bearing blobs are scanned**, and BOM-marked UTF-16 files are
+  decoded and scanned instead of read as garbage.
+- **Exit 1 means findings only.** A config error, a usage error, an unknown
+  `--format` and a fatal error now exit 2. `init --manager` with an unknown
+  value still exits 1.
+- **JSON file paths use forward slashes on Windows too.**
+
+- **Minor release (changeset `silent-passes-close-out`).** Ways the scanner reported clean over things it had not checked are closed: path context (docs, tests, examples) is judged relative to the git work tree containing the target, or the target directory when there is none, instead of the absolute path, so a checkout under `docs/` or `loadtest/` no longer downgrades findings, including when the scan runs from an ancestor directory or targets a file; a BOM-marked UTF-16LE or UTF-16BE file is decoded and scanned instead of read as garbage (BOM-less UTF-16 remains a known gap); `--staged` scans a NUL-bearing blob as text, as directory mode does, instead of skipping it in silence; exit 1 now means findings only, so an invalid config, an invalid `--fail-on`, an unknown `--format`, a Commander usage error, `--staged` outside a git repository and a fatal error exit 2 (`--help` and `--version` stay 0; `init` with an unknown `--manager` still exits 1); JSON file paths use forward slashes on Windows too; `fix` judges path context like `scan`; and README states correctly when JSON and SARIF are written on exit 2. **Example keys in docs will now be flagged:** vendor-anchored rules (Anthropic, OpenAI, Stripe, AWS, GitHub, Slack and others) keep their normal severity in markdown and docs directories, so a live key in `CLAUDE.md` or a docs page blocks, and a PEM private key is no longer downgraded on documentation paths (still downgraded under tests and fixtures); a header counts as a key only when a following line is 40+ characters of mixed-case base64 with a digit, `+` or `/`, so prose naming the header is not flagged. Generic low-precision patterns are still downgraded in docs. `docs/INVARIANTS.md` gains a scanner-core section naming the code and tests behind each.
 
 - The action hardening drift check pins the npm 10.5.2 floor comparisons, the version-shape regex and its occurrence count, `npm install` with `--ignore-scripts`, and the `npm audit signatures` statement. Each pin was proven by deleting the real line while comment copies survived: the test went red, the line was restored, and the test went green. The hygiene guard now names dep-guard, vault-guard, intent-guard, and conductor, and it fails a tracked em dash or en dash. README states the npm floor and the Node 20.13.0 remediation beside the action section, and links FINDINGS.md as the adopter feedback route.
 
