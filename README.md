@@ -162,11 +162,13 @@ exit 1 as "secrets found".
 
 Exit code **2** means vault-guard could not complete the scan and is refusing to
 call the result clean: an invalid `.vault-guard.json`, an invalid `--fail-on`
-value, `--staged` outside a git repository, `git diff --cached` failed,
-`--staged` reached a staged file it could not read or one that holds a NUL byte
-under a text extension (a NUL can hide a secret from a text scan, so the blob is
-unscannable rather than skipped), `--trust-base` named a ref whose control
-inputs it could not read, or the run hit an unexpected fatal error. When the run
+or `--format` value, a usage error such as an unknown option, `--staged` outside
+a git repository, `git diff --cached` failed, `--staged` reached a staged file it
+could not read, `--trust-base` named a ref whose control inputs it could not
+read, or the run hit an unexpected fatal error (`--help` and `--version` still
+exit 0). A staged blob containing a NUL byte is scanned as text, like any file;
+UTF-16 files that carry a byte order mark are decoded and scanned, while UTF-16
+without a BOM is not detected. When the run
 stops before or outside the scan itself (config, flag, git, fatal error, trust
 base), no JSON or SARIF document is written, because a document reporting zero
 findings would be a claim the run did not earn. When the scan ran but some staged
@@ -464,7 +466,7 @@ Create `.vault-guard.json` at your repo root:
 means the scanner never looks there, which is how a vendor-anchored key
 committed to a test file can slip past the hook entirely. Instead, test trees
 are scanned, and the low-precision rules (generic assignments, DSNs, JWTs, PEM
-headers) are downgraded to `low` there.
+private keys) are downgraded to `low` there.
 
 **Vendor-anchored rules are not downgraded in test files at all.** That is the
 point of the change, and also its cost: a vendor-shaped token in a test blocks

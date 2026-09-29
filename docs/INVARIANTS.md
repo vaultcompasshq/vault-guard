@@ -512,56 +512,94 @@ made every file in it a docs or test file, and a vendor-shaped key or a PEM
 private key in `src/config.ts` was downgraded to `low` and exited 0. Scanning
 `.` did not show it, which is why it survived.
 
-**The rule:** context is judged on the file's path relative to the scan root.
-A file outside the root contributes only its basename. Directories above the
-scanned tree never count.
+**The rule:** context is judged on the file's path relative to a root, and the
+root is, for one scan target, the git work tree containing the target
+(`git rev-parse --show-toplevel` run from the target, or from its directory for
+a file target). A target that is not in a git work tree uses the target
+directory itself (its parent for a file target). `--staged` uses the repository
+root. A file outside its root contributes only its basename. So the directories
+above the git work tree, or above the target directory when there is no work
+tree, never count. Directories BETWEEN the root and the file do count, which is
+the point: `tests/` inside the repo is still a test directory. Consequently a
+scan aimed at a subdirectory of a git repository (`scan repo/docs`) is judged
+from the repo root, and `docs` counts; a scan of a plain directory is judged
+from that directory, so `scan docs` outside git does not count `docs`.
 
-**Enforced by:** `contextPathFor` in `packages/core/src/utils/path-parts.ts`,
-called from `applyPathAwareSeverity` (`path-severity.ts`) and from the
-doc-context suppression in `SecretScanner.scanContent`. The root is passed by
-every scan path: `scanFilesAsync`, `scanFiles` and `scanFileListAsync` in
-`packages/cli/src/utils/scan-utils.ts` (`resolveScanRoot` for a directory scan,
-the repository root for `--staged`), and the MCP workspace scan. Tests, in
-`silent-passes.test.ts`: `directory mode, absolute target: vendor key in
-src/config.ts blocks under docs/ and loadtest/`, `directory mode: a PEM private
-key in src/config.ts blocks under docs/ and loadtest/`, `directory mode, cwd
-elsewhere: an absolute target outside cwd is judged from the target`, `--staged:
-vendor key in src/config.ts blocks when the repo path contains docs/ and
-loadtest/`, `--staged: a PEM private key in src/config.ts blocks when the repo
-path contains docs/ and loadtest/`, and the counter-case `a real test directory
-INSIDE the scan root still downgrades a PEM fixture`. Unit level, in
-`path-severity.test.ts`: `does not downgrade in src/config.ts when the ROOT path
-contains docs and loadtest`, `still downgrades a real tests/ directory inside the
-root`, `uses only the basename for a file outside the root`.
+**Enforced by:** `contextPathFor` in `packages/core/src/utils/path-parts.ts`
+(symlinks resolved on both sides), called from `applyPathAwareSeverity`
+(`path-severity.ts`) and from the doc-context suppression in
+`SecretScanner.scanContent`. The CLI root is `resolveContextRoot` in
+`packages/cli/src/utils/scan-utils.ts`, used per target by `scanFilesAsync` and
+`scanFiles` and by `fix`; `scanCommand` passes the repository root explicitly for
+`--staged`; the MCP workspace scan passes the workspace root. `resolveScanRoot`
+is unrelated and only picks SARIF `%SRCROOT%`; it returns the cwd for an
+in-tree target and must not be used for context. Tests, in
+`silent-passes.test.ts`: `directory mode, absolute target: a PEM in
+src/config.ts blocks under docs/ and loadtest/`, `ancestor cwd, relative target:
+scan loadtest/docs/repo from the ancestor blocks`, `ancestor cwd, git repo
+target: scan loadtest/docs/repo from the ancestor blocks`, `cwd is the
+filesystem root, absolute target blocks`, `a file target from an ancestor cwd
+blocks`, `check with an absolute file from an ancestor cwd blocks`, `directory
+mode, cwd elsewhere: an absolute target outside cwd is judged from the target`,
+`--staged: a PEM private key in src/config.ts blocks when the repo path contains
+docs/ and loadtest/`, `fix passes the scanner the file's own root, not the
+absolute path (fix prints no severity, so the call is pinned)`, and the
+counter-case `a real test directory INSIDE the scan root still downgrades a PEM
+fixture`. The PEM is the discriminating rule: a vendor key would pass these with
+the root logic removed, because vendor rules are no longer downgraded in any
+context path. Unit level, in `path-severity.test.ts`: `does not downgrade in
+src/config.ts when the ROOT path contains docs and loadtest`, `still downgrades
+a real tests/ directory inside the root`, `uses only the basename for a file
+outside the root`.
 
 **Known gap:** a caller that passes no root (library use of
 `applyPathAwareSeverity` or `SecretScanner.scan` with an absolute path) still
 gets the old behaviour. The CLI and MCP always pass one. The vscode extension
 calls `scanContent` with an absolute `fsPath` and no root.
 
-## A staged blob that was skipped is never a silent pass
+## The staged path skips a blob by extension only, never by content
 
 `--staged` reads each blob from the index. A blob containing a NUL byte was
 skipped with a bare `return`: nothing recorded, nothing raised, so a `.ts` file
 holding a key and one NUL byte printed "No secrets found" and exited 0.
+Refusing such blobs (exit 2) was tried and rejected, because it broke ordinary
+commits of fonts, images and lockfiles whose extension is not on the binary list.
 
-**The rule:** on the staged path a file is either scanned, skipped for a
-reason the run states, or recorded as unscannable so the run exits 2. Binary by
-extension (`BINARY_EXTENSIONS`, the same rule directory mode uses) is the one
-stated skip. A NUL under a text extension is unscannable.
+**The rule:** the staged path and directory mode decide skipping the same way:
+only `BINARY_EXTENSIONS`. Everything else, NUL bytes included, is scanned as
+text. Nothing is skipped on content.
 
-**Enforced by:** `recordNulContent` in `packages/cli/src/utils/scan-utils.ts`
-(pushes a `nul_content` entry onto the `unreadable` list and emits a
-`file.nul_content` error diagnostic), and the `stagedScanIncomplete` branch of
-`scanCommand` in `packages/cli/src/commands/scan.ts`, which turns that list into
-exit 2. Tests, in `silent-passes.test.ts`: `a staged .ts file with a key and one
-NUL byte exits 2, not 0`, `the NUL-bearing blob is counted in
-run.unscannable_files in JSON`, and the boundary `a staged binary-extension file
-(.png) with NUL is still skipped, as in directory mode`.
+**Enforced by:** the staged branch of `scanFileListAsync` in
+`packages/cli/src/utils/scan-utils.ts` carries no content check; the only skip is
+`isBinaryFile`. Tests, in `silent-passes.test.ts`: `a staged .ts file with a key
+and one NUL byte exits 1 (a finding), not 0`, `a staged .woff2 containing a NUL
+does not exit 2`, and `a staged binary-extension file (.png) with NUL is still
+skipped, as in directory mode`.
 
-**Known gap:** directory mode does not look for NUL at all; it reads the file as
-UTF-8 and scans it, so a NUL does not hide a key there. Only the staged path had
-the skip.
+**Text is decoded in one place, and a BOM is honoured.** Skipping nothing on
+content only helps if the content is read as what it is. Read as UTF-8, a UTF-16
+file (PowerShell 5 `>` redirection writes UTF-16LE with a BOM) is garbage with a
+NUL between every character, so a key in it never matched and the run passed. Every
+path that turns bytes into scanned text now goes through `decodeTextBuffer` and
+`decodeFileChunks` in `packages/core/src/utils/text-decode.ts`: `SecretScanner.scan`
+(directory and pull-request mode), `scanTextFileAsync` and `scanTextFileSync`
+including the streaming path for files over the size limit, and
+`readGitIndexFile` (`--staged`). `FF FE` decodes as UTF-16LE, `FE FF` as UTF-16BE,
+`EF BB BF` is stripped, and the BOM is always removed so line and column numbers
+describe the decoded text. Tests: `text-decode.test.ts` (`decodes UTF-16LE with a
+BOM and drops the BOM`, `decodes UTF-16BE with a BOM and drops the BOM`, `strips a
+UTF-8 BOM`, `SecretScanner.scan finds it in %s and reports line 2`, `scanTextFileSync
+finds it in %s`, `the streaming path (over maxFileBytes) finds it in %s at line 2`)
+and, in `silent-passes.test.ts`, `directory mode finds a key in a UTF-16LE
+notes.txt` and its UTF-16BE, `src/a.ts` and `--staged` variants.
+
+**Known gap: BOM-less UTF-16.** A UTF-16 file with no BOM is still read as UTF-8
+and a key in it is still not matched, in every mode, with no message. Detecting it
+means guessing from NUL density, which would also fire on real binary blobs, so it
+is deliberately not done. Other legacy encodings (Latin-1, Shift-JIS) are likewise
+read as UTF-8; they keep ASCII key material intact, so that is not a gap for
+key-shaped strings. The vscode extension scans the text VS Code already decoded and does
+not use the shared decoder.
 
 ## Vendor-anchored rules are not downgraded in docs or markdown
 
@@ -572,21 +610,28 @@ passed the gate. Operator ruling: a live provider key is a live key wherever it
 sits.
 
 **The rule:** docs and test paths downgrade only
-`LOW_PRECISION_PATH_DOWNGRADE_IDS` (generic assignments, connection strings,
-JWTs, PEM headers). There is no vendor list to downgrade from.
+`LOW_PRECISION_PATH_DOWNGRADE_IDS` (`password-in-code`, `api-key-generic`,
+`secret-generic`, `bearer-token`, the four connection-string rules,
+`ssh-private-key`, `jwt-token`). There is no vendor list to downgrade from. One
+further ruling: `ssh-private-key` fires only when key material follows the
+header, so a hit is a full-body private key; it is downgraded on test, fixture
+and locale paths (throwaway PEMs live there) but NOT on documentation or
+markdown paths (`CLAUDE.md`, `docs/`).
 
 **Enforced by:** `packages/core/src/utils/path-downgrade-ids.ts` no longer
 exports a docs vendor set, and `applyPathAwareSeverity` consults only the
-low-precision set. Tests: `silent-passes.test.ts` `a vendor key in NOTES.md still
-blocks`, `a vendor key in CLAUDE.md still blocks`, `a vendor key in docs/x.md
-still blocks`, and the counter-case `a generic password assignment in docs still
-downgrades to low`; `path-severity.test.ts` `keeps an anthropic key at critical
-in NOTES.md` (and the CLAUDE.md, docs/x.md and website/page.mdx variants) and
-`still downgrades a generic api-key match in docs`.
-
-**Known gap:** a PEM private key in a markdown file is still downgraded, because
-`ssh-private-key` is in the low-precision set for the sake of test fixtures.
-That is a separate decision from this one.
+low-precision set, skipping `DOCS_EXEMPT_IDS` (`ssh-private-key`) when the path
+is documentation and neither a test nor a locale path. Tests:
+`silent-passes.test.ts` `a vendor key in NOTES.md still blocks`, `a vendor key in
+CLAUDE.md still blocks`, `a vendor key in docs/x.md still blocks`, `a full-body
+PEM private key in CLAUDE.md still blocks`, `a full-body PEM private key in
+docs/runbook.md still blocks`, and the counter-cases `a PEM under tests/fixtures
+still downgrades` and `a generic password assignment in docs still downgrades to
+low`; `path-severity.test.ts` `keeps an anthropic key at critical in NOTES.md`
+(and the CLAUDE.md, docs/x.md and website/page.mdx variants), `keeps a full-body
+PEM private key at critical in CLAUDE.md` (and docs/runbook.md), `still
+downgrades a PEM under a tests/ fixture directory` and `still downgrades a
+generic api-key match in docs`.
 
 ## Exit 1 means findings only
 
@@ -599,6 +644,16 @@ for a secret that is not there.
 Anything that is not a verdict on the tree is exit 2 (`COULD_NOT_RUN_EXIT`).
 
 **Enforced by:** `COULD_NOT_RUN_EXIT` at the four former `return 1` sites in
-`scanCommand` (`packages/cli/src/commands/scan.ts`). Tests, in
+`scanCommand` (`packages/cli/src/commands/scan.ts`). Commander usage errors and
+escaped throws are covered by `exitOverride` and `handleFatalError` in
+`packages/cli/src/cli.ts`, which `cli-entry.ts` uses as its catch handler, and
+an unknown `--format` value is rejected before scanning. Tests, in
 `silent-passes.test.ts`: `an invalid config exits 2`, `--staged outside a git
-repository exits 2`, `an invalid --fail-on exits 2`, `a fatal error exits 2`.
+repository exits 2`, `an invalid --fail-on exits 2`, `a fatal error exits 2`; in
+`packages/cli/src/__tests__/integration/exit-codes-usage.test.ts`: `scan .
+--bogus exits 2`, `an unknown --format value exits 2 instead of falling back to
+text`, `a thrown non-ConfigError exits 2`, and the boundary `--version and
+--help still exit 0`.
+
+**Known gap:** the `init` command still sets exit 1 for an unknown `--manager`.
+It is not a scan verdict, but it does not follow the rule either.
