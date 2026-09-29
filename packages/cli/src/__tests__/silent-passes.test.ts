@@ -6,6 +6,7 @@ import { SecretScanner } from '@vaultcompass/vault-guard-core';
 import { scanCommand } from '../commands/scan';
 import { checkCommand } from '../commands/check';
 import { fixCommand } from '../commands/fix';
+import { resolveContextRoot } from '../utils/scan-utils';
 
 /**
  * Regression pins for the "reports clean on things it did not properly check"
@@ -96,6 +97,23 @@ describe('silent-pass fixes', () => {
   };
 
   const outText = (): string => cap.out.join('\n');
+
+  /**
+   * Findings from a `json` run. JSON `file` paths are always forward-slash,
+   * on every OS; text output prints the platform separator, so asserting on
+   * text would fail on Windows for a reason unrelated to the behaviour.
+   */
+  const findings = (): Array<{ file: string; line: number; type: string; severity: string }> => {
+    const doc = JSON.parse(outText().trim()) as {
+      results: Array<{
+        file: string;
+        matches: Array<{ line: number; type: string; severity: string }>;
+      }>;
+    };
+    return doc.results.flatMap(r =>
+      r.matches.map(m => ({ file: r.file, line: m.line, type: m.type, severity: m.severity })),
+    );
+  };
   const errText = (): string => cap.err.join('\n');
 
   // ---------------------------------------------------------------- fix 1
@@ -151,6 +169,22 @@ describe('silent-pass fixes', () => {
       process.chdir(path.parse(root).root);
 
       expect(await scanCommand(root, 'text', false)).toBe(1);
+    });
+
+    it('resolveContextRoot agrees with the canonical repo path (git prints forward slashes and a resolved path on Windows)', () => {
+      const root = hostileRoot();
+      gitInit(root);
+      pemFile(root);
+
+      const fromDir = resolveContextRoot(root);
+      const fromFile = resolveContextRoot(path.join(root, 'src', 'config.ts'), base);
+
+      // path.resolve normalises separators, so a forward-slash git answer and a
+      // backslash expected path compare equal; realpath makes drive-letter case
+      // and 8.3 / symlinked temp dirs compare equal too.
+      const canon = (p: string): string => fs.realpathSync.native(path.resolve(p));
+      expect(canon(fromDir)).toBe(canon(root));
+      expect(canon(fromFile)).toBe(canon(root));
     });
 
     it('a file target from an ancestor cwd blocks', async () => {
@@ -226,11 +260,12 @@ describe('silent-pass fixes', () => {
       stage(base, 'src/a.ts');
       process.chdir(base);
 
-      const code = await scanCommand('.', 'text', true);
+      const code = await scanCommand('.', 'json', true);
 
       expect(code).toBe(1);
-      expect(outText()).not.toMatch(/SUCCESS/);
-      expect(outText()).toContain('src/a.ts');
+      expect(findings()).toEqual([
+        { file: 'src/a.ts', line: 1, type: 'anthropic', severity: 'critical' },
+      ]);
     });
 
     it('a staged .woff2 containing a NUL does not exit 2', async () => {
@@ -274,8 +309,10 @@ describe('silent-pass fixes', () => {
           write(base, name, enc());
           process.chdir(base);
 
-          expect(await scanCommand('.', 'text', false)).toBe(1);
-          expect(outText()).toContain(`${name}:2:`);
+          expect(await scanCommand('.', 'json', false)).toBe(1);
+          expect(findings()).toEqual([
+            { file: name, line: 2, type: 'anthropic', severity: 'critical' },
+          ]);
         });
 
         it(`--staged finds a key in a ${label} ${name}`, async () => {
@@ -284,8 +321,10 @@ describe('silent-pass fixes', () => {
           stage(base, name);
           process.chdir(base);
 
-          expect(await scanCommand('.', 'text', true)).toBe(1);
-          expect(outText()).toContain(`${name}:2:`);
+          expect(await scanCommand('.', 'json', true)).toBe(1);
+          expect(findings()).toEqual([
+            { file: name, line: 2, type: 'anthropic', severity: 'critical' },
+          ]);
         });
       }
     }

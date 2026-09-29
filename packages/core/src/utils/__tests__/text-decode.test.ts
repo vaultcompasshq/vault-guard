@@ -40,6 +40,38 @@ describe('decodeTextBuffer', () => {
   });
 });
 
+describe('CRLF line endings after BOM decoding (a Windows-authored UTF-16 file)', () => {
+  const crlf = `first line\r\nsecond line\r\nconst k = "${KEY}";\r\n`;
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-utf16-crlf-'));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it.each([
+    ['UTF-16LE', utf16le],
+    ['UTF-16BE', utf16be],
+  ] as Array<[string, (s: string) => Buffer]>)(
+    'reports line 3 and the right column for a key after two CRLF lines in %s',
+    (_n, enc) => {
+      const f = path.join(dir, 'w.txt');
+      fs.writeFileSync(f, enc(crlf));
+      const [m] = new SecretScanner().scan(f);
+      expect(m.line).toBe(3);
+      expect(m.column).toBe('const k = "'.length);
+    },
+  );
+
+  it('the streaming path agrees on the line number with CRLF', async () => {
+    const f = path.join(dir, 'w-big.txt');
+    fs.writeFileSync(f, utf16le(crlf));
+    const [m] = await scanTextFileAsync(new SecretScanner(), f, { maxFileBytes: 16 });
+    expect(m.line).toBe(3);
+  });
+});
+
 describe('a key in a BOM-marked UTF-16 file is found, with sensible positions', () => {
   let dir: string;
   beforeEach(() => {
