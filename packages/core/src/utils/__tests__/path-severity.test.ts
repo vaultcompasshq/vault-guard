@@ -82,3 +82,49 @@ describe('applyPathAwareSeverity on Rust test files', () => {
     expect(out.severity).toBe('critical');
   });
 });
+
+describe('applyPathAwareSeverity judges context relative to the scan root', () => {
+  const root = '/home/runner/work/docs/loadtest/repo';
+
+  it('does not downgrade in src/config.ts when the ROOT path contains docs and loadtest', () => {
+    const [out] = applyPathAwareSeverity(
+      [match('ssh-private-key', 'critical')],
+      `${root}/src/config.ts`,
+      root,
+    );
+    expect(out.severity).toBe('critical');
+  });
+
+  it('still downgrades a real tests/ directory inside the root', () => {
+    const [out] = applyPathAwareSeverity(
+      [match('ssh-private-key', 'critical')],
+      `${root}/tests/key.ts`,
+      root,
+    );
+    expect(out.severity).toBe('low');
+  });
+
+  it('uses only the basename for a file outside the root', () => {
+    const [out] = applyPathAwareSeverity(
+      [match('ssh-private-key', 'critical')],
+      '/srv/docs/tests/key.ts',
+      root,
+    );
+    expect(out.severity).toBe('critical');
+  });
+});
+
+describe('applyPathAwareSeverity does not downgrade vendor-anchored keys in docs', () => {
+  it.each(['NOTES.md', 'CLAUDE.md', 'docs/x.md', 'website/page.mdx'])(
+    'keeps an anthropic key at critical in %s',
+    file => {
+      const [out] = applyPathAwareSeverity([match('anthropic', 'critical')], file);
+      expect(out.severity).toBe('critical');
+    },
+  );
+
+  it('still downgrades a generic api-key match in docs', () => {
+    const [out] = applyPathAwareSeverity([match('api-key-generic', 'high')], 'docs/x.md');
+    expect(out.severity).toBe('low');
+  });
+});

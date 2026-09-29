@@ -26,6 +26,7 @@ export type DiagnosticCode =
   | 'file.line_too_long'
   | 'file.read_error'
   | 'file.scan_timeout'
+  | 'file.nul_content'
   | 'fs.permission_denied'
   | 'git.staged_files_failed'
   | 'baseline.invalid'

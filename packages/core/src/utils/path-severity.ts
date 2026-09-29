@@ -1,11 +1,8 @@
 import path from 'path';
 import type { SecretMatch } from '../types';
 import { isDocumentationPath } from './doc-context';
-import { splitPathParts } from './path-parts';
-import {
-  DOCS_VENDOR_DOWNGRADE_IDS,
-  LOW_PRECISION_PATH_DOWNGRADE_IDS,
-} from './path-downgrade-ids';
+import { contextPathFor, splitPathParts } from './path-parts';
+import { LOW_PRECISION_PATH_DOWNGRADE_IDS } from './path-downgrade-ids';
 
 /**
  * Pattern IDs whose severity is downgraded to `low` in obvious test / fixture
@@ -21,8 +18,9 @@ import {
  * Hard vendor-anchored API-key patterns (anthropic, aws-access, stripe,
  * github-token, …) are intentionally **absent** from test-path downgrades: a real
  * provider key is a real key even in a test file, and those patterns have
- * near-zero false positives. Documentation paths additionally downgrade a small
- * vendor allowlist via {@link DOCS_VENDOR_DOWNGRADE_IDS}.
+ * near-zero false positives. The same holds in documentation and markdown: a
+ * live key pasted into CLAUDE.md or a docs page is still a live key, so docs
+ * paths get no vendor downgrade either.
  */
 const TEST_PATH_DOWNGRADE_IDS = LOW_PRECISION_PATH_DOWNGRADE_IDS;
 
@@ -160,22 +158,22 @@ function isLowPrecisionContextPath(filePath: string): boolean {
   return isTestFilePath(filePath) || isDocumentationPath(filePath) || isLocalePath(filePath);
 }
 
+/**
+ * `pathRoot` is the directory the scan is rooted at. Context is judged on
+ * `filePath` relative to it (see {@link contextPathFor}), so directories above
+ * the scanned tree never count as test or documentation context.
+ */
 export function applyPathAwareSeverity(
   matches: SecretMatch[],
   filePath: string,
+  pathRoot?: string,
 ): SecretMatch[] {
   if (matches.length === 0) return matches;
-  if (!isLowPrecisionContextPath(filePath)) return matches;
+  const ctxPath = contextPathFor(filePath, pathRoot);
+  if (!isLowPrecisionContextPath(ctxPath)) return matches;
 
   return matches.map(m => {
     if (TEST_PATH_DOWNGRADE_IDS.has(m.type) && m.severity !== 'low') {
-      return { ...m, severity: 'low' as const };
-    }
-    if (
-      isDocumentationPath(filePath) &&
-      DOCS_VENDOR_DOWNGRADE_IDS.has(m.type) &&
-      m.severity !== 'low'
-    ) {
       return { ...m, severity: 'low' as const };
     }
     return m;

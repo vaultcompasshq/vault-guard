@@ -14,6 +14,12 @@ export interface ScanTextFileOptions {
   /** Skip scanning lines longer than this (UTF-16 code units, same as `String#length`). */
   maxLineUtf16Units?: number;
   bus?: DiagnosticBus;
+  /**
+   * Directory the scan is rooted at. Test / docs / locale context is judged on
+   * the file's path relative to it, so directories above the scanned tree never
+   * downgrade findings. See `contextPathFor`.
+   */
+  pathRoot?: string;
 }
 
 /**
@@ -36,7 +42,11 @@ export async function scanTextFileAsync(
   const st = await fs.promises.stat(filePath);
   if (st.size <= options.maxFileBytes) {
     const content = await fs.promises.readFile(filePath, 'utf-8');
-    return applyPathAwareSeverity(scanner.scanContent(content, { filePath }), filePath);
+    return applyPathAwareSeverity(
+      scanner.scanContent(content, { filePath, pathRoot: options.pathRoot }),
+      filePath,
+      options.pathRoot,
+    );
   }
 
   const raw: SecretMatch[] = [];
@@ -79,7 +89,7 @@ export async function scanTextFileAsync(
     rl.close();
   }
 
-  return applyPathAwareSeverity(scanner.mergeChunkedMatches(raw), filePath);
+  return applyPathAwareSeverity(scanner.mergeChunkedMatches(raw), filePath, options.pathRoot);
 }
 
 /**
@@ -96,8 +106,12 @@ export function scanTextFileSync(
   const st = fs.statSync(filePath);
   if (st.size <= options.maxFileBytes) {
     return applyPathAwareSeverity(
-      scanner.scanContent(fs.readFileSync(filePath, 'utf-8'), { filePath }),
+      scanner.scanContent(fs.readFileSync(filePath, 'utf-8'), {
+        filePath,
+        pathRoot: options.pathRoot,
+      }),
       filePath,
+      options.pathRoot,
     );
   }
   options.bus?.add({

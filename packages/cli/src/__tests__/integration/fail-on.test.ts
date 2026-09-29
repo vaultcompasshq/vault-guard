@@ -114,7 +114,8 @@ describe('CLI --fail-on gate', () => {
 
   it('rejects an invalid --fail-on value instead of silently defaulting', () => {
     const proc = run(['scan', '.', '--fail-on', 'sometimes']);
-    expect(proc.status).toBe(1);
+    // 2, not 1: exit 1 means findings only, and a bad flag is not a finding.
+    expect(proc.status).toBe(2);
     expect(proc.stderr).toMatch(/Invalid fail-on value/);
   });
 
