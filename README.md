@@ -155,17 +155,28 @@ vault-guard scan . --format json
 
 ### What fails the build
 
-Findings at or above the **`--fail-on` threshold** produce exit code 1. Everything
-below it is still reported (text, JSON, SARIF) but does not break the gate.
+Findings at or above the **`--fail-on` threshold** produce exit code 1, and
+**only** findings do. Everything below the threshold is still reported (text,
+JSON, SARIF) but does not break the gate. Tools that wrap vault-guard read
+exit 1 as "secrets found".
 
 Exit code **2** means vault-guard could not complete the scan and is refusing to
-call the result clean: `git diff --cached` failed, `--staged` reached a staged
-file it could not read, or `--trust-base` named a ref whose control inputs it
-could not read. On exit 2 no JSON or SARIF document is written at all, because a
-document reporting zero findings would be a claim the run did not earn; if you
-pipe SARIF to `upload-sarif`, guard that step on the file being non-empty (see
-**[docs/GITHUB_ACTION.md](./docs/GITHUB_ACTION.md)**). In that case there is no `✅ SUCCESS` line, and
-`run.unscannable_files` says how many staged files went unexamined. Exit 2
+call the result clean: an invalid `.vault-guard.json`, an invalid `--fail-on`
+or `--format` value, a usage error such as an unknown option, `--staged` outside
+a git repository, `git diff --cached` failed, `--staged` reached a staged file it
+could not read, `--trust-base` named a ref whose control inputs it could not
+read, or the run hit an unexpected fatal error (`--help` and `--version` still
+exit 0). A staged blob containing a NUL byte is scanned as text, like any file;
+UTF-16 files that carry a byte order mark are decoded and scanned, while UTF-16
+without a BOM is not detected. When the run
+stops before or outside the scan itself (config, flag, git, fatal error, trust
+base), no JSON or SARIF document is written, because a document reporting zero
+findings would be a claim the run did not earn. When the scan ran but some staged
+files went unexamined, the JSON or SARIF document **is** written, with
+`run.unscannable_files` counting them and error-severity diagnostics naming them,
+and the exit is still 2. If you pipe SARIF to `upload-sarif`, guard that step on
+the file being non-empty (see **[docs/GITHUB_ACTION.md](./docs/GITHUB_ACTION.md)**).
+Either way there is no `✅ SUCCESS` line. Exit 2
 takes precedence over exit 1, so gate on **any** non-zero exit rather than on
 1 alone: a run that skipped files cannot report a complete finding set. See
 **[docs/THREAT_MODEL.md](./docs/THREAT_MODEL.md)** for why a directory scan
@@ -181,7 +192,16 @@ vault-guard scan . --fail-on none       # advisory mode: report, never fail
 The default is `medium` because the scanner deliberately downgrades findings to
 `low` where they are usually not real leaks: generic patterns inside
 `__tests__/`, `docs/`, `*.example` files, and public identifiers such as GCP
-OAuth client IDs and Sentry DSNs. Set `"fail_on"` in `.vault-guard.json` to
+OAuth client IDs and Sentry DSNs. Only the low-precision generic patterns are
+downgraded there. **Vendor-anchored rules (Anthropic, OpenAI, Stripe, AWS,
+GitHub, Slack and the rest) keep their normal severity in documentation and
+markdown too**: a live key pasted into `CLAUDE.md`, `AGENTS.md`, a README or a
+docs page is still a live key, so it blocks. Write example keys in docs with the
+documented placeholder words (`EXAMPLE`, `test`, ...) or in a shape that does
+not match a vendor rule. Test and docs context is judged on the path **relative
+to the scan root**, so the directories a checkout happens to live under (a
+runner workspace named `docs`, a temp directory named `loadtest`) never count.
+Set `"fail_on"` in `.vault-guard.json` to
 change it repo-wide. The JSON `run` block reports both `fail_on` and
 `blocking_matches`; gate on `blocking_matches`, not `summary.secrets`.
 
@@ -446,7 +466,7 @@ Create `.vault-guard.json` at your repo root:
 means the scanner never looks there, which is how a vendor-anchored key
 committed to a test file can slip past the hook entirely. Instead, test trees
 are scanned, and the low-precision rules (generic assignments, DSNs, JWTs, PEM
-headers) are downgraded to `low` there.
+private keys) are downgraded to `low` there.
 
 **Vendor-anchored rules are not downgraded in test files at all.** That is the
 point of the change, and also its cost: a vendor-shaped token in a test blocks

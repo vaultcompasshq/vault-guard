@@ -4,6 +4,8 @@ import { VaultGuardConfig } from '../config';
 import { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from '../utils/entropy';
 import { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder } from '../utils/placeholder';
 import { applyPathAwareSeverity } from '../utils/path-severity';
+import { contextPathFor } from '../utils/path-parts';
+import { decodeTextBuffer } from '../utils/text-decode';
 import { LOW_PRECISION_PATH_DOWNGRADE_IDS } from '../utils/path-downgrade-ids';
 import { findInlineTestRegions, isInsideInlineTestRegion } from '../utils/inline-test-context';
 import { shouldSuppressDocContextMatch, isInsidePythonTripleQuoted } from '../utils/doc-context';
@@ -485,15 +487,23 @@ export class SecretScanner {
   /**
    * Scan a file and return deduplicated, ignore-directive-filtered matches.
    */
-  scan(filePath: string, opts?: { ignoreHits?: IgnoreDirectiveHits }): SecretMatch[] {
+  scan(
+    filePath: string,
+    opts?: { ignoreHits?: IgnoreDirectiveHits; pathRoot?: string },
+  ): SecretMatch[] {
     if (!fs.existsSync(filePath)) return [];
-    const content = fs.readFileSync(filePath, 'utf-8');
+    const content = decodeTextBuffer(fs.readFileSync(filePath));
     // Path-aware severity is applied here (not in scanContent) because it needs
     // the file path. scanContent callers that know the path (scanTextFile*)
     // apply it themselves, so this does not double-apply.
     return applyPathAwareSeverity(
-      this.scanContent(content, { filePath, ignoreHits: opts?.ignoreHits }),
+      this.scanContent(content, {
+        filePath,
+        ignoreHits: opts?.ignoreHits,
+        pathRoot: opts?.pathRoot,
+      }),
       filePath,
+      opts?.pathRoot,
     );
   }
 
@@ -510,7 +520,7 @@ export class SecretScanner {
    */
   scanContent(
     content: string,
-    opts?: { filePath?: string; ignoreHits?: IgnoreDirectiveHits },
+    opts?: { filePath?: string; ignoreHits?: IgnoreDirectiveHits; pathRoot?: string },
   ): SecretMatch[] {
     const lineIndex = this.buildLineIndex(content);
     const ignoredLines = this.parseIgnoreDirectives(content, lineIndex);
@@ -644,7 +654,13 @@ export class SecretScanner {
 
         if (
           opts?.filePath &&
-          shouldSuppressDocContextMatch(type, opts.filePath, rawValue, fullMatch, lineContent)
+          shouldSuppressDocContextMatch(
+            type,
+            contextPathFor(opts.filePath, opts.pathRoot),
+            rawValue,
+            fullMatch,
+            lineContent,
+          )
         ) {
           continue;
         }

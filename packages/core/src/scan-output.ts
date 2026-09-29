@@ -172,11 +172,27 @@ export interface FormatOptions {
  * Code Scanning UI, support tickets, screenshots).
  */
 function normalizeFilePath(file: string, cwd: string | null | undefined): string {
+  return toForwardSlashes(relativizeFilePath(file, cwd));
+}
+
+/**
+ * The JSON `file` field always uses forward slashes, on every OS, like SARIF
+ * uris. On Windows `path.relative` returns `src\a.ts`; leaving that in the
+ * document made the field differ by platform for the same tree.
+ */
+function toForwardSlashes(p: string): string {
+  return p.split('\\').join('/');
+}
+
+function relativizeFilePath(file: string, cwd: string | null | undefined): string {
   if (cwd === null) return file;
   const base = cwd ?? process.cwd();
-  if (!path.isAbsolute(file)) return file;
-  const rel = path.relative(base, file);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) return file;
+  // Same rule as the SARIF uri: a Windows-style path is judged with path.win32
+  // even on a POSIX host (tests, or output produced elsewhere).
+  const impl = isWindowsStylePath(file) || isWindowsStylePath(base) ? path.win32 : path;
+  if (!impl.isAbsolute(file)) return file;
+  const rel = impl.relative(base, file);
+  if (rel.startsWith('..') || impl.isAbsolute(rel)) return file;
   return rel || '.';
 }
 

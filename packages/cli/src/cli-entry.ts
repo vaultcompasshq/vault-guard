@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { buildCli } from './cli';
+import { buildCli, handleFatalError } from './cli';
 
 const nodeMajor = Number(process.versions.node.split('.')[0]);
 if (nodeMajor < 22) {
@@ -20,8 +20,5 @@ if (process.argv[2] === '--') {
 }
 
 // Parse arguments and execute command
-program.parseAsync().catch((error) => {
-  // Handle errors
-  console.error(error);
-  process.exitCode = 1;
-});
+// Exit 1 means findings only, so an escaped error is exit 2 (see handleFatalError).
+program.parseAsync().catch(handleFatalError);

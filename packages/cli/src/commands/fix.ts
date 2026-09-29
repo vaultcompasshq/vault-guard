@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { SecretScanner } from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
+import { resolveContextRoot } from '../utils/scan-utils';
 
 export async function fixCommand(files: string[]): Promise<number> {
   console.log(chalk.blue.bold('🔧 Secret Remediation Guide\n'));
@@ -24,7 +25,7 @@ export async function fixCommand(files: string[]): Promise<number> {
       continue;
     }
 
-    const matches = scanner.scan(file);
+    const matches = scanner.scan(file, { pathRoot: resolveContextRoot(file) });
     if (matches.length === 0) {
       console.log(chalk.green('✅'), chalk.white(`${file}: No secrets found`));
       continue;

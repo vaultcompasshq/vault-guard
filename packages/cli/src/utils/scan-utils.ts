@@ -1,5 +1,6 @@
 import path from 'path';
 import fs from 'fs';
+import { execFileSync } from 'child_process';
 import {
   SecretScanner,
   getFilesToScan,
@@ -100,6 +101,40 @@ export function resolveScanRoot(targetPaths: string[], cwd = process.cwd()): str
     // base does not matter. Its parent is still the closest honest answer.
     return path.dirname(abs);
   }
+}
+
+/**
+ * The directory that test / documentation / locale path context is judged
+ * relative to, for one scan target. NOT the same question as
+ * {@link resolveScanRoot}, which picks SARIF's `%SRCROOT%` and returns the cwd
+ * whenever the target is inside it. That is wrong for context: an ancestor cwd
+ * (a workspace with the repo checked out at `website/`, HOME, or `/` in a
+ * container) would put every directory between it and the repo back into the
+ * judged path.
+ *
+ * The root is the git work tree containing the target; failing that, the
+ * target directory itself (its parent for a file target). Directories above it
+ * never count.
+ */
+export function resolveContextRoot(target: string, cwd = process.cwd()): string {
+  const abs = path.resolve(cwd, target);
+  let dir: string;
+  try {
+    dir = fs.statSync(abs).isDirectory() ? abs : path.dirname(abs);
+  } catch {
+    dir = path.dirname(abs);
+  }
+  try {
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: dir,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (top) return top;
+  } catch {
+    // Not a git work tree (or git is missing): fall through to the directory.
+  }
+  return dir;
 }
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -257,6 +292,13 @@ export interface ScanOptions {
   /** Repo root for `fromGitIndex` (defaults to `process.cwd()`). */
   cwd?: string;
   /**
+   * Directory test / documentation / locale path context is judged relative
+   * to. Defaults to `cwd` for a file list and to {@link resolveScanRoot} for a
+   * directory scan, so directories ABOVE the scanned tree (a runner workspace
+   * named `docs`, a temp dir named `loadtest`) can never count as context.
+   */
+  pathRoot?: string;
+  /**
    * Accumulates the total number of findings suppressed by inline
    * `vault-guard: ignore-line` / `ignore-next-line` directives across every
    * file scanned. Each such file also emits a `suppression.inline` diagnostic
@@ -305,6 +347,9 @@ export async function scanFileListAsync(
     cwd = process.cwd(),
     scanBudgetMs = DEFAULT_SCAN_BUDGET_MS,
   } = options;
+  // Context (test / docs / locale) is judged relative to this, never on the
+  // absolute path: the checkout's own location is not evidence about a file.
+  const pathRoot = options.pathRoot ?? cwd;
 
   // Apply config ignore patterns to the explicit file list (e.g. staged files).
   // buildConfigIgnoreFilter matches relative to cwd so patterns like
@@ -330,7 +375,11 @@ export async function scanFileListAsync(
         // handing it over is what broke every staged scan launched from a
         // subdirectory. `rel` stays for display only.
         const content = readGitIndexFile(cwd, file);
-        if (skipBinary && content.includes('\0')) return;
+        // No content sniffing: only the extension rule above skips a blob, the
+        // same rule directory mode uses. A NUL byte is scanned as text like any
+        // other content. Skipping on NUL let a key sit beside one and pass
+        // silently; refusing on NUL broke ordinary commits of fonts and
+        // lockfiles.
 
         const byteLen = Buffer.byteLength(content, 'utf-8');
         if (byteLen > maxSize && verbose) {
@@ -349,8 +398,9 @@ export async function scanFileListAsync(
         const hits: IgnoreDirectiveHits = { count: 0, lines: [] };
         const tScan = Date.now();
         const matches = applyPathAwareSeverity(
-          scanner.scanContent(content, { filePath: file, ignoreHits: hits }),
+          scanner.scanContent(content, { filePath: file, ignoreHits: hits, pathRoot }),
           file,
+          pathRoot,
         );
         const elapsed = Date.now() - tScan;
         recordInlineSuppression(hits, rel, options);
@@ -383,8 +433,12 @@ export async function scanFileListAsync(
       const tScan = Date.now();
       const matches =
         st.size > maxSize
-          ? await scanTextFileAsync(scanner, file, { maxFileBytes: maxSize, bus: options.bus })
-          : scanner.scan(file);
+          ? await scanTextFileAsync(scanner, file, {
+              maxFileBytes: maxSize,
+              bus: options.bus,
+              pathRoot,
+            })
+          : scanner.scan(file, { pathRoot });
       const elapsed = Date.now() - tScan;
       if (matches.length > 0) {
         results.push({ file, matches });
@@ -458,6 +512,7 @@ export async function scanFilesAsync(
   const results: ScanResult[] = [];
 
   for (const targetPath of targetPaths) {
+    const pathRoot = options.pathRoot ?? resolveContextRoot(targetPath);
     try {
       await fs.promises.access(targetPath);
     } catch {
@@ -521,10 +576,14 @@ export async function scanFilesAsync(
         if (fileStat.size > maxSize) {
           // Streaming path (large file): ignore directives that span lines are
           // unreliable here anyway, so the suppression tally skips it.
-          matches = await scanTextFileAsync(scanner, file, { maxFileBytes: maxSize, bus: options.bus });
+          matches = await scanTextFileAsync(scanner, file, {
+            maxFileBytes: maxSize,
+            bus: options.bus,
+            pathRoot,
+          });
         } else {
           const hits: IgnoreDirectiveHits = { count: 0, lines: [] };
-          matches = scanner.scan(file, { ignoreHits: hits });
+          matches = scanner.scan(file, { ignoreHits: hits, pathRoot });
           recordInlineSuppression(hits, path.relative(process.cwd(), file), options);
         }
         const elapsed = Date.now() - tScan;
@@ -597,6 +656,7 @@ export function scanFiles(
   const results: ScanResult[] = [];
 
   for (const targetPath of targetPaths) {
+    const pathRoot = options.pathRoot ?? resolveContextRoot(targetPath);
     if (!fs.existsSync(targetPath)) {
       if (verbose) {
         console.error(chalk.red('❌ Error:'), chalk.white(`Path not found: ${targetPath}`));
@@ -646,7 +706,11 @@ export function scanFiles(
           options.stats.bytesScanned += fileStat.size;
         }
 
-        const matches = scanTextFileSync(scanner, file, { maxFileBytes: maxSize, bus: options.bus });
+        const matches = scanTextFileSync(scanner, file, {
+          maxFileBytes: maxSize,
+          bus: options.bus,
+          pathRoot,
+        });
         if (matches.length > 0) {
           results.push({ file, matches });
         }

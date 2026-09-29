@@ -2,6 +2,7 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { GitError } from '../errors';
+import { decodeTextBuffer } from './text-decode';
 
 /**
  * Repository config that must never be allowed to decide what vault-guard
@@ -267,12 +268,15 @@ export function readGitIndexFile(cwd: string, filePath: string): string {
 
   const catArgs = [...FORCED_GIT_CONFIG, 'cat-file', 'blob', blobId];
   try {
-    return execFileSync('git', catArgs, {
-      cwd: root,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      maxBuffer: 32 * 1024 * 1024,
-    });
+    // Bytes, then decoded with the shared BOM sniff: a staged UTF-16 blob must
+    // reach the scanner as text, not as garbage with a NUL between characters.
+    return decodeTextBuffer(
+      execFileSync('git', catArgs, {
+        cwd: root,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        maxBuffer: 32 * 1024 * 1024,
+      }),
+    );
   } catch (err) {
     throw new GitError(
       `Failed to read staged blob for ${rootRelative}\nUnderlying error: ${String(err)}`,

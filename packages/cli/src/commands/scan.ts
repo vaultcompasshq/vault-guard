@@ -52,6 +52,10 @@ export type OutputFormat = 'text' | 'json' | 'sarif';
  * ("scanned fine, found something") would be a claim the run did not earn.
  */
 const COULD_NOT_RUN_EXIT = 2;
+// Exit 1 is reserved for "scanned, and findings at or above the gate exist".
+// Everything that is not a verdict on the tree (bad config, bad flag, not a git
+// repo, an unexpected crash) is COULD_NOT_RUN_EXIT, because callers such as
+// conductor read 1 as "secrets found".
 
 /**
  * Symlinks resolved, falling back to the input when they cannot be. The
@@ -191,7 +195,7 @@ export async function scanCommand(
             'fallback to defaults would mask the rules you intended.\n',
         ),
       );
-      return 1;
+      return COULD_NOT_RUN_EXIT;
     }
     throw e;
   }
@@ -205,7 +209,7 @@ export async function scanCommand(
       chalk.white(failOnResolved.invalid),
     );
     console.error(chalk.gray(`   Expected one of: ${FAIL_ON_VALUES.join(' | ')}\n`));
-    return 1;
+    return COULD_NOT_RUN_EXIT;
   }
   const failOn: FailOnThreshold = failOnResolved.threshold;
   // True when neither the flag nor the config chose a threshold. Drives the
@@ -280,7 +284,7 @@ export async function scanCommand(
     if (staged) {
       if (!isInsideGitWorkTree(cwd)) {
         console.error(chalk.red('❌ Error:'), chalk.white('Not a git repository (or outside a work tree).'));
-        return 1;
+        return COULD_NOT_RUN_EXIT;
       }
 
       let stagedFiles: string[];
@@ -321,6 +325,8 @@ export async function scanCommand(
         configIgnorePatterns,
         fromGitIndex: true,
         cwd: outputBase,
+        // Explicit: staged paths are judged relative to the repository root.
+        pathRoot: outputBase,
         inlineSuppressed,
       });
     } else {
@@ -617,6 +623,6 @@ export async function scanCommand(
     return 1;
   } catch (error) {
     console.error(chalk.red('❌ Fatal error:'), chalk.white(String(error)));
-    return 1;
+    return COULD_NOT_RUN_EXIT;
   }
 }

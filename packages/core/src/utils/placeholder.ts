@@ -140,13 +140,29 @@ export function isPemHeaderWithoutBody(content: string, headerEndOffset: number)
   const lines = window.split(/\r?\n|\\r\\n|\\n/);
 
   for (const line of lines) {
-    const token = line.replace(/["'`\\\s]/g, '');
+    // Trim only the ends: whitespace, and the quote and escape characters that
+    // JSON or YAML embedding leaves. Interior whitespace is NOT removed. Doing
+    // so turned any prose line of 32+ unpunctuated letters into a "body".
+    const token = line.replace(/^["'`\\\s]+|["'`\\\s]+$/g, '');
     // A PEM body wraps base64 at 64 characters, so a body line is base64 and
     // nothing else. Requiring the *whole* line to match is what separates it
     // from surrounding code: a long camelCase identifier such as
     // `onUpdateDatasourceSecureJsonDataOption` is a valid base64 substring,
     // but the line it sits on never is.
-    if (token.length >= 32 && /^[A-Za-z0-9+/]+={0,2}$/.test(token)) {
+    //
+    // Length and character mix separate it from English: at least 40 characters
+    // (a real body line is 64, the last one may be shorter but the first is
+    // never below 40 for any key size in use), mixed case, and a digit or + or /.
+    // A 64-character random base64 line lacks all of digit, + and / with
+    // probability about (52/64)^64, roughly one in a million; English words
+    // never carry a digit.
+    if (
+      token.length >= 40 &&
+      /^[A-Za-z0-9+/]+={0,2}$/.test(token) &&
+      /[a-z]/.test(token) &&
+      /[A-Z]/.test(token) &&
+      /[0-9+/]/.test(token)
+    ) {
       return false;
     }
   }

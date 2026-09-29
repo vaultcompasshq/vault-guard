@@ -1,6 +1,7 @@
 import fs from 'fs';
-import { createReadStream } from 'fs';
 import * as readline from 'readline';
+import { Readable } from 'stream';
+import { decodeFileChunks, decodeTextBuffer } from './text-decode';
 
 import type { DiagnosticBus } from '../diagnostics';
 import { SecretScanner } from '../scanners/secret-scanner';
@@ -14,10 +15,17 @@ export interface ScanTextFileOptions {
   /** Skip scanning lines longer than this (UTF-16 code units, same as `String#length`). */
   maxLineUtf16Units?: number;
   bus?: DiagnosticBus;
+  /**
+   * Directory the scan is rooted at. Test / docs / locale context is judged on
+   * the file's path relative to it, so directories above the scanned tree never
+   * downgrade findings. See `contextPathFor`.
+   */
+  pathRoot?: string;
 }
 
 /**
- * Read `filePath` as UTF-8 and run {@link SecretScanner.scanContent}.
+ * Read `filePath` as text (UTF-8, or UTF-16 when a BOM says so; see
+ * {@link decodeTextBuffer}) and run {@link SecretScanner.scanContent}.
  *
  * Files larger than `maxFileBytes` are scanned **line-by-line** so the
  * process does not load the entire file into memory. Multi-line secrets
@@ -35,8 +43,12 @@ export async function scanTextFileAsync(
   const maxLine = options.maxLineUtf16Units ?? DEFAULT_MAX_LINE_UTF16;
   const st = await fs.promises.stat(filePath);
   if (st.size <= options.maxFileBytes) {
-    const content = await fs.promises.readFile(filePath, 'utf-8');
-    return applyPathAwareSeverity(scanner.scanContent(content, { filePath }), filePath);
+    const content = decodeTextBuffer(await fs.promises.readFile(filePath));
+    return applyPathAwareSeverity(
+      scanner.scanContent(content, { filePath, pathRoot: options.pathRoot }),
+      filePath,
+      options.pathRoot,
+    );
   }
 
   const raw: SecretMatch[] = [];
@@ -44,7 +56,7 @@ export async function scanTextFileAsync(
   let lineNo = 0;
 
   const rl = readline.createInterface({
-    input: createReadStream(filePath, { encoding: 'utf-8' }),
+    input: Readable.from(decodeFileChunks(filePath)),
     crlfDelay: Infinity,
   });
 
@@ -79,7 +91,7 @@ export async function scanTextFileAsync(
     rl.close();
   }
 
-  return applyPathAwareSeverity(scanner.mergeChunkedMatches(raw), filePath);
+  return applyPathAwareSeverity(scanner.mergeChunkedMatches(raw), filePath, options.pathRoot);
 }
 
 /**
@@ -96,8 +108,12 @@ export function scanTextFileSync(
   const st = fs.statSync(filePath);
   if (st.size <= options.maxFileBytes) {
     return applyPathAwareSeverity(
-      scanner.scanContent(fs.readFileSync(filePath, 'utf-8'), { filePath }),
+      scanner.scanContent(decodeTextBuffer(fs.readFileSync(filePath)), {
+        filePath,
+        pathRoot: options.pathRoot,
+      }),
       filePath,
+      options.pathRoot,
     );
   }
   options.bus?.add({

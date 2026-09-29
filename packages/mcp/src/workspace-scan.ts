@@ -65,7 +65,10 @@ export async function scanWorkspaceDirectory(
       filesScanned += 1;
       bytesScanned += st.size;
       const t0 = Date.now();
-      const matches = await scanTextFileAsync(scanner, file, { maxFileBytes: MAX_FILE_SIZE });
+      const matches = await scanTextFileAsync(scanner, file, {
+        maxFileBytes: MAX_FILE_SIZE,
+        pathRoot: root,
+      });
       const elapsed = Date.now() - t0;
       if (matches.length > 0) {
         results.push({ file, matches });

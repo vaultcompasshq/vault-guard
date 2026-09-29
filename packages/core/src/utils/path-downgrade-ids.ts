@@ -14,21 +14,8 @@ export const LOW_PRECISION_PATH_DOWNGRADE_IDS = new Set([
   'jwt-token',
 ]);
 
-/**
- * Vendor-anchored patterns downgraded to `low` in documentation paths only.
- */
-export const DOCS_VENDOR_DOWNGRADE_IDS = new Set([
-  'anthropic',
-  'openai',
-  'openai-project',
-  'stripe',
-  'stripe-test',
-  'aws-access',
-  'gcp-api-key',
-  'gcp-oauth',
-  'resend-api',
-  'github-token',
-  'sendgrid-api',
-  'slack-webhook',
-  'slack-token',
-]);
+// Vendor-anchored rules (anthropic, openai, stripe, aws-access, github-token,
+// slack, ...) are deliberately NOT in this list and there is no separate
+// documentation-only list for them: a live provider key pasted into a README,
+// CLAUDE.md or a docs page is still a live key. Docs and test paths downgrade
+// only the low-precision generic patterns above.

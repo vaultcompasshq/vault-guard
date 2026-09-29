@@ -255,7 +255,7 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
         return toolPayload({ error: 'file_too_large', path: fp, bytes: st.size, max_bytes: MAX_SCAN_BYTES });
       }
       const t0 = Date.now();
-      const matches = scanner.scan(fp);
+      const matches = scanner.scan(fp, { pathRoot: workspaceRoot });
       const elapsed = Date.now() - t0;
       const run: JsonRunMetadata = {
         duration_ms: elapsed,

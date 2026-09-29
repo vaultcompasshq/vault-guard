@@ -1,11 +1,8 @@
 import path from 'path';
 import type { SecretMatch } from '../types';
 import { isDocumentationPath } from './doc-context';
-import { splitPathParts } from './path-parts';
-import {
-  DOCS_VENDOR_DOWNGRADE_IDS,
-  LOW_PRECISION_PATH_DOWNGRADE_IDS,
-} from './path-downgrade-ids';
+import { contextPathFor, splitPathParts } from './path-parts';
+import { LOW_PRECISION_PATH_DOWNGRADE_IDS } from './path-downgrade-ids';
 
 /**
  * Pattern IDs whose severity is downgraded to `low` in obvious test / fixture
@@ -21,10 +18,19 @@ import {
  * Hard vendor-anchored API-key patterns (anthropic, aws-access, stripe,
  * github-token, …) are intentionally **absent** from test-path downgrades: a real
  * provider key is a real key even in a test file, and those patterns have
- * near-zero false positives. Documentation paths additionally downgrade a small
- * vendor allowlist via {@link DOCS_VENDOR_DOWNGRADE_IDS}.
+ * near-zero false positives. The same holds in documentation and markdown: a
+ * live key pasted into CLAUDE.md or a docs page is still a live key, so docs
+ * paths get no vendor downgrade either.
  */
 const TEST_PATH_DOWNGRADE_IDS = LOW_PRECISION_PATH_DOWNGRADE_IDS;
+
+/**
+ * Downgrade-eligible rules that documentation paths do NOT downgrade. The PEM
+ * rule only fires when key material follows the header (a bare header is
+ * suppressed upstream), so a hit in a docs or markdown file is a real private
+ * key, not a label. Test / fixture paths still downgrade it.
+ */
+const DOCS_EXEMPT_IDS = new Set(['ssh-private-key']);
 
 /**
  * Segments that indicate a file lives in a test / fixture tree.
@@ -160,22 +166,28 @@ function isLowPrecisionContextPath(filePath: string): boolean {
   return isTestFilePath(filePath) || isDocumentationPath(filePath) || isLocalePath(filePath);
 }
 
+/**
+ * `pathRoot` is the directory the scan is rooted at. Context is judged on
+ * `filePath` relative to it (see {@link contextPathFor}), so directories above
+ * the scanned tree never count as test or documentation context.
+ */
 export function applyPathAwareSeverity(
   matches: SecretMatch[],
   filePath: string,
+  pathRoot?: string,
 ): SecretMatch[] {
   if (matches.length === 0) return matches;
-  if (!isLowPrecisionContextPath(filePath)) return matches;
+  const ctxPath = contextPathFor(filePath, pathRoot);
+  if (!isLowPrecisionContextPath(ctxPath)) return matches;
+  // Documentation is not a fixture directory. Test / fixture / locale paths
+  // hold throwaway PEMs, so they still downgrade one; a docs or markdown path
+  // alone does not (a full-body private key pasted into CLAUDE.md is a leak).
+  const docsOnly =
+    !isTestFilePath(ctxPath) && !isLocalePath(ctxPath) && isDocumentationPath(ctxPath);
 
   return matches.map(m => {
+    if (docsOnly && DOCS_EXEMPT_IDS.has(m.type)) return m;
     if (TEST_PATH_DOWNGRADE_IDS.has(m.type) && m.severity !== 'low') {
-      return { ...m, severity: 'low' as const };
-    }
-    if (
-      isDocumentationPath(filePath) &&
-      DOCS_VENDOR_DOWNGRADE_IDS.has(m.type) &&
-      m.severity !== 'low'
-    ) {
       return { ...m, severity: 'low' as const };
     }
     return m;
