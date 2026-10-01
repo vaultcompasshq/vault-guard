@@ -39,8 +39,8 @@ importers:
         specifier: ^8.70.1
         version: 8.70.1(eslint@10.11.0)(typescript@5.9.3)
       '@vaultcompass/conductor':
-        specifier: 0.4.0
-        version: 0.4.0
+        specifier: 0.6.0
+        version: 0.6.0
       '@vaultcompass/dep-guard':
         specifier: 0.6.0
         version: 0.6.0
@@ -1167,8 +1167,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@vaultcompass/conductor@0.4.0':
-    resolution: {integrity: sha512-y1q/u3giY8HCojwoyIh8MxpnAep62BDsu2LvARpCcDsWNSbEdVOwy4dWfY9dkI+FKFD8hJIYPoBpzskMV5S9fg==}
+  '@vaultcompass/conductor@0.6.0':
+    resolution: {integrity: sha512-QdPBYsYBbcuW3FkS2A8LvAOW/8qQGxUY0v9u5RTfxyzTHddVN9Vo607oh0HeY7B8bquSaIDMnkLUKIZNWlzmjQ==}
     engines: {node: '>=22'}
     hasBin: true
 
@@ -2605,11 +2605,6 @@ packages:
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
 
-  yaml@2.9.0:
-    resolution: {integrity: sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==}
-    engines: {node: '>= 14.6'}
-    hasBin: true
-
   yaml@2.9.1:
     resolution: {integrity: sha512-3NxN8+78OdzbT7C/WjGsyfPAtJaN3FNDsWxv7Y7mcDsT/oOmgW8BpyQQFFBnvZE3j9Y2Sdz1ULFLezL7Eb2yFw==}
     engines: {node: '>= 14.6'}
@@ -3707,15 +3702,15 @@ snapshots:
   '@unrs/resolver-binding-win32-x64-msvc@1.12.2':
     optional: true
 
-  '@vaultcompass/conductor@0.4.0':
+  '@vaultcompass/conductor@0.6.0':
     dependencies:
       ajv: 8.20.0
       commander: 12.1.0
-      yaml: 2.9.0
+      yaml: 2.9.1
 
   '@vaultcompass/dep-guard-core@0.6.0':
     dependencies:
-      yaml: 2.9.0
+      yaml: 2.9.1
 
   '@vaultcompass/dep-guard@0.6.0':
     dependencies:
@@ -3725,7 +3720,7 @@ snapshots:
   '@vaultcompass/intent-guard-core@1.4.0':
     dependencies:
       '@vaultcompass/intent-guard-schema': 1.4.0
-      yaml: 2.9.0
+      yaml: 2.9.1
 
   '@vaultcompass/intent-guard-schema@1.4.0':
     dependencies:
@@ -3736,7 +3731,7 @@ snapshots:
     dependencies:
       '@vaultcompass/intent-guard-core': 1.4.0
       '@vaultcompass/intent-guard-schema': 1.4.0
-      yaml: 2.9.0
+      yaml: 2.9.1
 
   '@vaultcompass/intent-guard@1.4.0':
     dependencies:
@@ -5359,8 +5354,6 @@ snapshots:
   y18n@5.0.8: {}
 
   yallist@3.1.1: {}
-
-  yaml@2.9.0: {}
 
   yaml@2.9.1: {}
 
