@@ -3,11 +3,10 @@ import path from 'path';
 import {
   getFilesToScanAsync,
   scanTextFileAsync,
+  FileTooLargeError,
   SecretScanner,
   type FileScanResult,
 } from '@vaultcompass/vault-guard-core';
-
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 const BINARY_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip',
@@ -42,6 +41,13 @@ export interface WorkspaceScanOutcome {
   bytesScanned: number;
   /** Files whose scan exceeded the budget; their result is reported but not trusted. */
   overBudget: OverBudgetFile[];
+  /** Files that were not scanned at all (over the size limit, or unreadable). */
+  unscannable: UnscannableFile[];
+}
+
+export interface UnscannableFile {
+  file: string;
+  reason: string;
 }
 
 export async function scanWorkspaceDirectory(
@@ -54,6 +60,7 @@ export async function scanWorkspaceDirectory(
   const files = await getFilesToScanAsync(root, false, undefined, configIgnorePatterns);
   const results: FileScanResult[] = [];
   const overBudget: OverBudgetFile[] = [];
+  const unscannable: UnscannableFile[] = [];
   let filesScanned = 0;
   let bytesScanned = 0;
 
@@ -62,22 +69,26 @@ export async function scanWorkspaceDirectory(
       if (isBinaryFile(file)) return;
       const st = await fs.promises.stat(file);
       if (!st.isFile()) return;
+      const t0 = Date.now();
+      const matches = await scanTextFileAsync(scanner, file, { pathRoot: root });
+      const elapsed = Date.now() - t0;
+      // Counted only once the scan has run: a file refused for its size is in
+      // `unscannable`, not in the scanned totals.
       filesScanned += 1;
       bytesScanned += st.size;
-      const t0 = Date.now();
-      const matches = await scanTextFileAsync(scanner, file, {
-        maxFileBytes: MAX_FILE_SIZE,
-        pathRoot: root,
-      });
-      const elapsed = Date.now() - t0;
       if (matches.length > 0) {
         results.push({ file, matches });
       }
       if (elapsed > scanBudgetMs) {
         overBudget.push({ file, elapsed_ms: elapsed, budget_ms: scanBudgetMs });
       }
-    } catch {
-      /* skip unreadable */
+    } catch (error) {
+      // A file above the scan limit, or one that cannot be read, was NOT
+      // scanned; say so instead of letting it pass as clean.
+      unscannable.push({
+        file,
+        reason: error instanceof FileTooLargeError ? error.message : String(error),
+      });
     }
   };
 
@@ -86,5 +97,5 @@ export async function scanWorkspaceDirectory(
     await Promise.all(batch.map(scanOne));
   }
 
-  return { results, filesScanned, bytesScanned, overBudget };
+  return { results, filesScanned, bytesScanned, overBudget, unscannable };
 }

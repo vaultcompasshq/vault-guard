@@ -41,7 +41,12 @@ export {
   REGEX_MAX_QUANTIFIERS,
 } from './utils/regex-safety';
 
-export { scanTextFileAsync, scanTextFileSync } from './utils/scan-file';
+export {
+  scanTextFileAsync,
+  scanTextFileSync,
+  MAX_SCAN_FILE_BYTES,
+  FileTooLargeError,
+} from './utils/scan-file';
 export { applyPathAwareSeverity, isTestFilePath, isLocalePath } from './utils/path-severity';
 export { findInlineTestRegions, isInsideInlineTestRegion } from './utils/inline-test-context';
 export type { InlineTestRegion, InlineTestRegionFinder } from './utils/inline-test-context';

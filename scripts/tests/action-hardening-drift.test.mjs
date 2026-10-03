@@ -50,9 +50,20 @@ describe('action.yml hardening drift check', () => {
   });
 
   it('installs with --ignore-scripts', () => {
-    expect(actionYml).toContain(
-      'npm install -g --ignore-scripts "@vaultcompass/vault-guard@${VG_VERSION}"',
-    );
+    // A line of its own that is not a comment: the same text in a comment is not
+    // a pin, and neither is one good install beside a flagless one.
+    const code = actionYml.split('\n').filter((l) => !l.trim().startsWith('#'));
+    expect(
+      code.some(
+        (l) =>
+          l.trim() === 'npm install -g --ignore-scripts "@vaultcompass/vault-guard@${VG_VERSION}"',
+      ),
+    ).toBe(true);
+    for (const line of code) {
+      if (/\bnpm\s+(install|i|add|ci)\b/.test(line)) {
+        expect([line, line.includes('--ignore-scripts')]).toEqual([line, true]);
+      }
+    }
   });
 
   it('invokes npm audit signatures as its own statement', () => {

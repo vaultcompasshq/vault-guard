@@ -23,6 +23,25 @@ describe('scanWorkspaceDirectory', () => {
     }
   });
 
+  it('lists an oversized file as not scanned, and does not count it as scanned', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-big-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'ok.txt'), 'hello\n', 'utf8');
+      fs.writeFileSync(path.join(dir, 'huge.txt'), Buffer.alloc(33 * 1024 * 1024, 0x61));
+      const { filesScanned, bytesScanned, unscannable } = await scanWorkspaceDirectory(
+        dir,
+        new SecretScanner(),
+      );
+      expect(unscannable).toHaveLength(1);
+      expect(unscannable[0].file).toContain('huge.txt');
+      expect(unscannable[0].reason).toMatch(/not scanned/);
+      expect(filesScanned).toBe(1);
+      expect(bytesScanned).toBeLessThan(1024);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   /**
    * The agent-driven MCP surface gets the same post-hoc scan budget the CLI has.
    * It cannot preempt a synchronous runaway scan; it reports that the file's

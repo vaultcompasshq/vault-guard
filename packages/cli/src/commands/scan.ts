@@ -31,6 +31,9 @@ import {
   formatJson,
   formatSarif,
   resolveScanRoot,
+  formatExcludeEntry,
+  excludeEntryNote,
+  type RunSkipCounts,
   type UnreadableFile,
 } from '../utils/scan-utils';
 import type { Diagnostic } from '@vaultcompass/vault-guard-core';
@@ -69,6 +72,67 @@ function canonicalPath(p: string): string {
   } catch {
     return p;
   }
+}
+
+/**
+ * The INCOMPLETE block, on stderr, for every output format: what could not be
+ * vouched for, why, and the exact `ignore.paths` entry that would declare it.
+ * `between` runs after the file list and before the closing lines (text mode
+ * uses it to show what DID scan).
+ *
+ * Two different causes land in `unreadable` and must not be conflated: a read
+ * failure means the file was never examined, a budget overrun means it WAS
+ * scanned but slowly enough that the result is not trusted, and a too-large file
+ * was refused before it was read.
+ */
+function reportIncomplete(
+  unreadable: UnreadableFile[],
+  staged: boolean,
+  trustBase: TrustBaseReport | undefined,
+  between?: () => void,
+): void {
+  const unread = unreadable.filter(u => u.kind !== 'scan_budget' && u.kind !== 'too_large');
+  const overBudget = unreadable.filter(u => u.kind === 'scan_budget');
+  const tooLarge = unreadable.filter(u => u.kind === 'too_large');
+  const parts: string[] = [];
+  const what = staged ? 'staged file(s)' : 'file(s) or target(s)';
+  if (unread.length > 0) {
+    parts.push(`${unread.length} ${what} could not be read and were not scanned`);
+  }
+  if (overBudget.length > 0) {
+    parts.push(
+      `${overBudget.length} ${what} exceeded the per-file scan budget, so their result is not trusted`,
+    );
+  }
+  if (tooLarge.length > 0) {
+    parts.push(`${tooLarge.length} ${what} over the 32 MiB scan limit were not scanned`);
+  }
+  console.error(chalk.red.bold('❌ INCOMPLETE:'), chalk.white(`${parts.join('; ')}\n`));
+  const ignoreWhere = trustBase
+    ? `"ignore.paths" in .vault-guard.json on the base ref "${trustBase.ref}" (a change made in this pull request is only a proposal)`
+    : '"ignore.paths" in .vault-guard.json';
+  for (const { file, reason, exclude } of unreadable) {
+    console.error(`  ${chalk.cyan(file)}`);
+    console.error(`    ${chalk.gray(reason)}`);
+    if (exclude) {
+      console.error(
+        `    ${chalk.gray(`to exclude it on purpose, add ${formatExcludeEntry(exclude)} to ${ignoreWhere}`)}`,
+      );
+      const note = excludeEntryNote(exclude);
+      if (note) console.error(`    ${chalk.gray(`(${note})`)}`);
+    } else {
+      console.error(`    ${chalk.gray('check the path, or stop passing it to vault-guard')}`);
+    }
+  }
+  between?.();
+  console.error(
+    chalk.gray(
+      `\n   vault-guard cannot vouch for every ${staged ? 'staged file' : 'file it was asked to scan'}.\n` +
+        '   Refusing to produce a ✅ result that may be incorrect (exit 2).\n' +
+        '   Fix the cause, or exclude the file deliberately: an excluded file is counted\n' +
+        '   and reported as "Excluded by config ignore", never hidden.\n',
+    ),
+  );
 }
 
 export async function scanCommand(
@@ -272,9 +336,18 @@ export async function scanCommand(
   // `--staged` takes its list from the index and consults neither the vendored
   // names nor the type filters, so both counts are structurally zero there and
   // printing them would invent a reassurance.
-  const prSkips: PullRequestSkips = { dirCount: 0, dirNames: [], typeFilteredFiles: 0 };
-  // Files the scanner reached but could not read. On the staged path this is
-  // fatal (see below); on a directory scan it is reported but not fatal.
+  const prSkips: PullRequestSkips = {
+    dirCount: 0,
+    dirNames: [],
+    typeFilteredFiles: 0,
+    configIgnoredFiles: 0,
+  };
+  // What the run skipped without opening: the walk's type filter, the config's
+  // own `ignore` list (a declared skip) and binary extensions. On a
+  // pull-request directory scan the first two are counted into `prSkips`.
+  const skips: RunSkipCounts = { typeFiltered: 0, configIgnored: 0, binary: 0 };
+  // Files the run reached but could not vouch for: unreadable, over the scan
+  // budget, or a named target that is not there. Fatal (exit 2) on every path.
   const unreadable: UnreadableFile[] = [];
   const t0 = Date.now();
 
@@ -322,6 +395,7 @@ export async function scanCommand(
         bus,
         stats,
         unreadable,
+        skips,
         configIgnorePatterns,
         fromGitIndex: true,
         cwd: outputBase,
@@ -337,6 +411,7 @@ export async function scanCommand(
         bus,
         stats,
         unreadable,
+        skips,
         configIgnorePatterns,
         inlineSuppressed,
         ...(controls
@@ -371,7 +446,10 @@ export async function scanCommand(
     // `results` holds only files WITH findings, so a clean scan of 500 files
     // has `results.length === 0` and must stay exit 0. `filesScanned` counts
     // every file actually opened and scanned, findings or not.
-    if (!staged && stats.filesScanned === 0) {
+    // Skipped when something was recorded as unscannable: the INCOMPLETE path
+    // below then runs, naming the file and the remedy in every format, which
+    // says more than "resolved to no files".
+    if (!staged && stats.filesScanned === 0 && unreadable.length === 0) {
       console.error(
         chalk.red('❌ Cannot establish a result:'),
         chalk.white(
@@ -420,6 +498,10 @@ export async function scanCommand(
     results = afterBaseline;
 
     const durationMs = Date.now() - t0;
+    // Pull-request mode counts the ignore list while building its file set;
+    // every other path counts it in `skips`.
+    const configIgnored =
+      controls && !staged ? (prSkips.configIgnoredFiles ?? 0) : skips.configIgnored;
     const totalMatches = results.reduce((n, r) => n + r.matches.length, 0);
     const blocking = countBlockingMatches(results, failOn);
     const run = {
@@ -440,21 +522,39 @@ export async function scanCommand(
             type_filtered_files: prSkips.typeFilteredFiles,
           }
         : {}),
-      ...(unreadable.length > 0 ? { unscannable_files: unreadable.length } : {}),
+      // A plain directory walk has the same type filter; it was silent there.
+      ...(!controls && !staged ? { type_filtered_files: skips.typeFiltered } : {}),
+      // Both are stated every run, even at zero: a skip by extension or by the
+      // project's own ignore list is a decision the run must say it made.
+      binary_files_skipped: skips.binary,
+      config_ignored_files: configIgnored,
+      ...(unreadable.length > 0
+        ? {
+            unscannable_files: unreadable.length,
+            // Which files, why, and the exact exclude that would declare each.
+            unscannable: unreadable.map(u => ({
+              file: u.file,
+              kind: u.kind ?? 'read_error',
+              ...(u.exclude ? { exclude: u.exclude } : {}),
+            })),
+          }
+        : {}),
     };
 
-    // A staged file vault-guard could not read is a file it did not check,
-    // and the staged list is exactly what is about to be committed -- so the
-    // run cannot claim to have cleared the commit. This is the one place the
-    // fail-closed promise is load-bearing, and it is enforced here rather
-    // than left to a "N warning(s)" line the caller has to notice.
+    // A file vault-guard could not read, or whose scan blew the budget, or a
+    // named target that is not there, is a file it did not check, so the run
+    // cannot claim to have cleared the tree, the commit or the pull request.
+    // This is enforced here rather than left to a "N warning(s)" line the
+    // caller has to notice, on EVERY path: staged, directory and pull-request.
     //
-    // A directory scan deliberately does NOT do this: its file set is
-    // discovered rather than declared, and unreadable entries in it are
-    // ordinary (root-owned caches, sockets, other users' files). Failing
-    // there would make the command unrunnable for reasons the user cannot
-    // fix, and a gate people stop running protects nothing.
-    const stagedScanIncomplete = staged && unreadable.length > 0;
+    // Directory and pull-request runs used to carry on and exit 0 here, on the
+    // theory that unreadable entries in a walked tree are ordinary (root-owned
+    // caches, sockets). That is true of a developer's own scratch directory and
+    // false of the thing a CI gate is judging: a file that is tracked in the
+    // repository and cannot be read is exactly the file nobody checked. The way
+    // out is deliberate rather than silent: fix the file, or list it under
+    // `ignore.paths` in the config, which is then counted and reported.
+    const scanIncomplete = unreadable.length > 0;
     // Exit 2 is already this CLI's "cannot vouch for the result" code -- the
     // GitError branch above uses it for the same reason. Exit 1 means
     // "scanned fine, found something", which this run did not establish.
@@ -487,7 +587,12 @@ export async function scanCommand(
       process.stdout.write(
         formatJson(results, { diagnostics, run, cwd: outputBase, trustBase }) + '\n',
       );
-      if (stagedScanIncomplete) return INCOMPLETE_SCAN_EXIT;
+      if (scanIncomplete) {
+        // stdout carries the document; the reason and the remedy go to stderr,
+        // so the Action and any wrapper that shows stderr can say why.
+        reportIncomplete(unreadable, staged, trustBase);
+        return INCOMPLETE_SCAN_EXIT;
+      }
       return blocking === 0 ? 0 : 1;
     }
 
@@ -499,7 +604,10 @@ export async function scanCommand(
       process.stdout.write(
         formatSarif(results, { diagnostics, run, scanRoot, cwd: outputBase, trustBase }) + '\n',
       );
-      if (stagedScanIncomplete) return INCOMPLETE_SCAN_EXIT;
+      if (scanIncomplete) {
+        reportIncomplete(unreadable, staged, trustBase);
+        return INCOMPLETE_SCAN_EXIT;
+      }
       return blocking === 0 ? 0 : 1;
     }
 
@@ -562,40 +670,33 @@ export async function scanCommand(
       ),
     );
 
-    if (stagedScanIncomplete) {
-      // Two different causes land in `unreadable` and they must not be
-      // conflated: a read failure means the file was never examined, while a
-      // budget overrun means it WAS read and scanned but took long enough that
-      // the result is not trusted. Reporting the latter as "could not be read"
-      // would be false.
-      const unread = unreadable.filter(u => u.kind !== 'scan_budget');
-      const overBudget = unreadable.filter(u => u.kind === 'scan_budget');
-      const parts: string[] = [];
-      if (unread.length > 0) {
-        parts.push(`${unread.length} staged file(s) could not be read and were not scanned`);
-      }
-      if (overBudget.length > 0) {
-        parts.push(
-          `${overBudget.length} staged file(s) exceeded the scan budget, so their result is not trusted`,
-        );
-      }
-      console.error(chalk.red.bold('❌ INCOMPLETE:'), chalk.white(`${parts.join('; ')}\n`));
-      for (const { file, reason } of unreadable) {
-        console.error(`  ${chalk.cyan(file)}`);
-        console.error(`    ${chalk.gray(reason)}`);
-      }
-      // Anything that DID scan is still worth showing; the reader needs both
-      // "here is what I found" and "here is what I never looked at".
-      if (results.length > 0) {
-        console.error('');
-        displayScanResults(results, blocking, outputBase);
-      }
-      console.error(
-        chalk.gray(
-          '\n   vault-guard cannot vouch for every staged file.\n' +
-            '   Refusing to produce a ✅ result that may be incorrect.\n',
-        ),
+    // What the run declined to open. In text mode a line appears only when it
+    // is non-zero, because the plain-mode summary is pinned byte for byte (see
+    // the before-state test) and a clean run reads at a glance; JSON and SARIF
+    // state every count, including zero, for anything that parses rather than
+    // reads. A plain directory walk has the same type filter pull-request mode
+    // reports above.
+    if (!trustBase && !staged && skips.typeFiltered > 0) {
+      console.log(chalk.gray(`Files skipped by type or name: ${skips.typeFiltered}`));
+    }
+    if (configIgnored > 0) {
+      console.log(
+        chalk.gray(`Excluded by config ignore: ${configIgnored} (declared in the config "ignore" list)`),
       );
+    }
+    if (skips.binary > 0) {
+      console.log(chalk.gray(`Binary files skipped: ${skips.binary}`));
+    }
+
+    if (scanIncomplete) {
+      reportIncomplete(unreadable, staged, trustBase, () => {
+        // Anything that DID scan is still worth showing; the reader needs both
+        // "here is what I found" and "here is what I never looked at".
+        if (results.length > 0) {
+          console.error('');
+          displayScanResults(results, blocking, outputBase);
+        }
+      });
       return INCOMPLETE_SCAN_EXIT;
     }
 

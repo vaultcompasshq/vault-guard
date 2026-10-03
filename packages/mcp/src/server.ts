@@ -201,7 +201,7 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
       }
       const dir = resolved.path;
       const t0 = Date.now();
-      const { results, filesScanned, bytesScanned, overBudget } = await scanWorkspaceDirectory(
+      const { results, filesScanned, bytesScanned, overBudget, unscannable } = await scanWorkspaceDirectory(
         dir,
         scanner,
         10,
@@ -221,8 +221,11 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
           // result is not trusted. Surfaced so an agent is not handed a silent
           // "clean" for a file whose scan behaved pathologically.
           ...(overBudget.length > 0 ? { files_over_scan_budget: overBudget.length } : {}),
+          // Not scanned at all (over the size limit or unreadable): never a clean.
+          ...(unscannable.length > 0 ? { files_not_scanned: unscannable.length } : {}),
         },
         ...(overBudget.length > 0 ? { over_budget: overBudget } : {}),
+        ...(unscannable.length > 0 ? { not_scanned: unscannable } : {}),
         json: JSON.parse(formatJson(results, { cwd: dir, run })) as unknown,
         sarif: formatSarif(results, { cwd: dir, run }),
         results,

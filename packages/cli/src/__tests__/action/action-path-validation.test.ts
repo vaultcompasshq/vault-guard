@@ -378,6 +378,20 @@ describe('action.yml "Validate inputs", pinning the scanner backward on a pull r
     }
   });
 
+  it('refuses a 1.8.x pin on a pull request against the file as shipped', () => {
+    // The unmodified action.yml, not the synthetic future above. The flag floor
+    // (1.7.0) and the tag scanner (1.9.x) are different numbers now, so 1.7.0
+    // and 1.8.0 clear the first and must be stopped by the second. Until this
+    // case the real gap between the two floors had no test of its own.
+    for (const old of ['1.7.0', '1.8.0']) {
+      const run = runValidateWith({ version: old }, { GITHUB_BASE_REF: 'main' });
+      expect([old, run.status === 0]).toEqual([old, false]);
+      expect(run.stdout).toContain('pull request');
+    }
+    // Scope, not safety: the same pin on a push event is accepted.
+    expect(runValidateWith({ version: '1.8.0' }, {}).status).toBe(0);
+  });
+
   it('lets the flag floor answer first for a version below it', () => {
     // Two separate checks, deliberately, and the order decides which message a
     // reader gets. 1.6.9 is below BOTH, and the useful answer names
@@ -651,9 +665,12 @@ describe('action.yml text guards', () => {
     const auditAt = code.indexOf('npm audit signatures');
     expect([installAt, auditAt].every((i) => i !== -1)).toBe(true);
     expect(auditAt).toBeGreaterThan(installAt);
-    // No install anywhere in the step that skips the flag.
+    // No install anywhere in the step that skips the flag. Judged line by line
+    // and by every spelling of an install, wherever it sits on the line: the
+    // old form only looked at a line that BEGAN with "npm install", so a second
+    // install written "npm i -g ..." or after "&&" stayed green.
     for (const line of code.split('\n')) {
-      if (line.trim().startsWith('npm install')) {
+      if (/\bnpm\s+(install|i|add|ci)\b/.test(line)) {
         expect([line, line.includes('--ignore-scripts')]).toEqual([line, true]);
       }
     }

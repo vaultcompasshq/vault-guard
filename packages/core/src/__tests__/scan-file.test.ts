@@ -21,18 +21,22 @@ describe('scanTextFileAsync', () => {
     expect(matches[0].line).toBe(1);
   });
 
-  it('streams line-by-line when file exceeds maxFileBytes', async () => {
-    const p = tmp('stream');
+  it('reads a file larger than 10 KiB whole and finds a key on a very long line', async () => {
+    const p = tmp('whole');
     const scanner = new SecretScanner();
-    const padding = 'x'.repeat(12 * 1024);
-    const body = `${padding}\nexport const k = '${OPENAI_LIKE}'\n`;
-    fs.writeFileSync(p, body, 'utf-8');
-    const st = fs.statSync(p);
-    expect(st.size).toBeGreaterThan(10 * 1024);
-
-    const matches = await scanTextFileAsync(scanner, p, { maxFileBytes: 10 * 1024 });
+    const long = `${'x'.repeat(2 * 1024 * 1024)} export const k = '${OPENAI_LIKE}'\n`;
+    fs.writeFileSync(p, `first\n${long}`, 'utf-8');
+    const matches = await scanTextFileAsync(scanner, p, { maxFileBytes: 4 * 1024 * 1024 });
     expect(matches.length).toBeGreaterThan(0);
     expect(matches[0].line).toBe(2);
+  });
+
+  it('refuses, rather than partly scanning, a file above maxFileBytes', async () => {
+    const p = tmp('refuse');
+    fs.writeFileSync(p, `export const k = '${OPENAI_LIKE}'\n${'x'.repeat(12 * 1024)}\n`, 'utf-8');
+    await expect(
+      scanTextFileAsync(new SecretScanner(), p, { maxFileBytes: 10 * 1024 }),
+    ).rejects.toThrow(/not scanned/);
   });
 });
 
@@ -45,11 +49,10 @@ describe('scanTextFileSync', () => {
     expect(matches.length).toBeGreaterThan(0);
   });
 
-  it('returns empty matches for oversized files', () => {
+  it('refuses oversized files instead of returning an empty result', () => {
     const p = tmp('sync-big');
     const scanner = new SecretScanner();
     fs.writeFileSync(p, 'y'.repeat(20 * 1024), 'utf-8');
-    const matches = scanTextFileSync(scanner, p, { maxFileBytes: 1024 });
-    expect(matches).toEqual([]);
+    expect(() => scanTextFileSync(scanner, p, { maxFileBytes: 1024 })).toThrow(/not scanned/);
   });
 });

@@ -50,6 +50,20 @@ export interface JsonRunMetadata {
    * skip is unchanged; this is the number that makes the silence visible.
    */
   type_filtered_files?: number;
+  /**
+   * Files skipped when the scanner reached them because their extension marks
+   * them binary (`.bin`, `.exe` and the like; images and archives are usually
+   * removed earlier, by the type filter above). Counted so a skip by name is
+   * never silent. Emitted even at zero.
+   */
+  binary_files_skipped?: number;
+  /**
+   * Files dropped by the project's own `ignore` list in the config. A declared
+   * skip: the written decision of the project (the BASE ref's on a
+   * pull-request run), counted so a reader sees how much it covers. Emitted
+   * even at zero.
+   */
+  config_ignored_files?: number;
   /** Effective gate threshold for this run (`--fail-on` / `fail_on` / default). */
   fail_on?: string;
   /**
@@ -64,14 +78,20 @@ export interface JsonRunMetadata {
    *
    * A non-zero value means the run is INCOMPLETE: `blocking_matches` counts
    * only what the scanner actually looked at, so a clean gate result sits on
-   * top of files nobody checked. On the `--staged` path this is fatal on its
-   * own (exit 2) because that file list is exactly what is about to be
-   * committed; on a directory scan it is reported and counted but does not
-   * fail the gate, since an unreadable file inside a walked tree is an
-   * ordinary occurrence. Unreadable DIRECTORIES are not counted here -- they
-   * surface as `fs.permission_denied` diagnostics instead.
+   * top of files nobody checked. The run exits 2 on every path (staged,
+   * directory, pull-request), with the output still emitted. The way out is to
+   * fix the file or to exclude it through the config's `ignore` list, which is
+   * then counted in {@link config_ignored_files}. Counts a scan that blew its
+   * per-file budget, a file over the 32 MiB scan limit, and a named target that
+   * does not exist.
    */
   unscannable_files?: number;
+  /**
+   * Which files make up {@link unscannable_files}: the path, the cause
+   * (`read_error`, `scan_budget` or `too_large`) and, when a config entry could
+   * name the file, the exact `ignore.paths` entry that would declare it.
+   */
+  unscannable?: Array<{ file: string; kind: string; exclude?: string }>;
 }
 
 /**
@@ -436,6 +456,12 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
               : {}),
             ...(opts.run.type_filtered_files !== undefined
               ? { type_filtered_files: opts.run.type_filtered_files }
+              : {}),
+            ...(opts.run.binary_files_skipped !== undefined
+              ? { binary_files_skipped: opts.run.binary_files_skipped }
+              : {}),
+            ...(opts.run.config_ignored_files !== undefined
+              ? { config_ignored_files: opts.run.config_ignored_files }
               : {}),
             ...(opts.run.unscannable_files !== undefined
               ? { unscannable_files: opts.run.unscannable_files }
