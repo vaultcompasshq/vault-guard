@@ -562,9 +562,9 @@ src/config.ts when the ROOT path contains docs and loadtest`, `still downgrades
 a real tests/ directory inside the root`, `uses only the basename for a file
 outside the root`.
 
-**Known gap:** a caller that passes no root (library use of
-`applyPathAwareSeverity` or `SecretScanner.scan` with an absolute path) still
-gets the old behaviour. The CLI and MCP always pass one.
+**Scope:** the rule applies whenever a root is passed, which the CLI and MCP
+always do. Library callers of `applyPathAwareSeverity` or `SecretScanner.scan`
+should pass one too.
 
 `scanFileListAsync` used to default its root to the process cwd, which is the
 same ancestor bug for any caller that omitted `pathRoot`. From 1.9.1 an omitted
@@ -620,13 +620,13 @@ finds it in %s`, `scanTextFileAsync finds it in %s at line 2`)
 and, in `silent-passes.test.ts`, `directory mode finds a key in a UTF-16LE
 notes.txt` and its UTF-16BE, `src/a.ts` and `--staged` variants.
 
-**Known gap: BOM-less UTF-16.** A UTF-16 file with no BOM is still read as UTF-8
-and a key in it is still not matched, in every mode, with no message. Detecting it
-means guessing from NUL density, which would also fire on real binary blobs, so it
-is deliberately not done. Other legacy encodings (Latin-1, Shift-JIS) are likewise
-read as UTF-8; they keep ASCII key material intact, so that is not a gap for
-key-shaped strings. The vscode extension scans the text VS Code already decoded and does
-not use the shared decoder.
+**Scope: supported encodings.** The decoder handles UTF-8 and UTF-16 with a BOM.
+Text in any other encoding is read as UTF-8. Legacy encodings such as Latin-1 and
+Shift-JIS keep ASCII key material intact, so key-shaped strings in them are still
+matched. UTF-16 is recognised by its BOM only: guessing it from NUL density would
+also fire on real binary blobs, so that is deliberately not done. The vscode
+extension scans the text VS Code already decoded and does not use the shared
+decoder.
 
 ## Vendor-anchored rules are not downgraded in docs or markdown
 
