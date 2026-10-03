@@ -2,7 +2,7 @@ import fs from 'fs';
 import { SecretMatch } from '../types';
 import { VaultGuardConfig } from '../config';
 import { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from '../utils/entropy';
-import { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder } from '../utils/placeholder';
+import { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, isShortDockerPatExample } from '../utils/placeholder';
 import { applyPathAwareSeverity } from '../utils/path-severity';
 import { contextPathFor } from '../utils/path-parts';
 import { decodeTextBuffer } from '../utils/text-decode';
@@ -582,6 +582,12 @@ export class SecretScanner {
         }
 
         if (GENERIC_ASSIGNMENT_IDS.has(type) && isEnvVarNameToken(rawValue)) {
+          continue;
+        }
+
+        // A short `dckr_pat_` value in API reference docs is a mashed-keyboard
+        // example, not an issued token. Generic rules only.
+        if (GENERIC_ASSIGNMENT_IDS.has(type) && isShortDockerPatExample(rawValue)) {
           continue;
         }
 

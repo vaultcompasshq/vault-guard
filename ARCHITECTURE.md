@@ -60,7 +60,7 @@ hook.install(); // Returns {success, message}
 - Symbolic link protection
 - `.gitignore` pattern matching (with negation support)
 - Binary file filtering
-- File size limits (10MB max)
+- File size limit (32 MiB max; a larger file makes the run exit 2 unless excluded)
 
 ## CLI Architecture
 

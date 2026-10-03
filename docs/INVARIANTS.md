@@ -52,7 +52,10 @@ rather than of this repository, and is not what the boundary should rest on.
 (runs both steps with npm stubbed, recording npm's argv, cwd and prefix),
 `packages/cli/src/__tests__/action/action-path-validation.test.ts` (the steps
 exist at all, and neither runs npx), and `bench/action-install.cjs` (real npm,
-two local registries, both routes mounted).
+two local registries, both routes mounted). `bench/action-install.cjs` is NOT
+run by any workflow: it is a manual harness, and its checked-in baseline
+(`bench/baseline.action-install.json`) still records scanner 1.7.0. Treat its
+results as evidence from the day somebody last ran it, not as a standing gate.
 
 `scripts/test-action-path-validation.sh` also runs on a macOS runner, where the
 jest suites do not, and what it carries is two different things. Its grep guards
@@ -123,7 +126,11 @@ left to be discovered from a red required check.
 manifest is written declaring the version being installed, the audit is
 recorded, and the audit comes after the install), the text guards in
 `action-path-validation.test.ts`, and `scripts/test-action-path-validation.sh`,
-which refuses ANY `npm install` line in the file lacking the flag. The jest
+which refuses any executable line that spells an install the way this file
+spells installs (`install`, `i`, `add`, `ci`) without the flag, judged per line
+with comments excluded. These are drift checks, not a parser: they catch the
+spellings used in the file and the obvious variants, and a new spelling of an
+install would need the pattern extended. The jest
 suites run against a STUBBED npm, so they prove the action ASKS and say nothing
 about what a real npm does when asked -- and that gap is precisely what hid the
 missing manifest, since the stub laid down an empty `lib` where the real command
@@ -183,9 +190,10 @@ nothing. A value that normalises to nothing or to a single dot names a
 directory, and is refused with the input's name rather than left to fail as a
 shell redirect error deep in the run step.
 
-**Enforced by:** the `.github/`, symlink and directory cases in both action test
-files, including the trailing-slash spellings; the symlink case is proven by
-planting a real link and asserting nothing was written through it.
+**Enforced by:** the `.github/` and directory cases in
+`action-path-validation.test.ts` only, and the behavioural symlink case (a real
+link planted, asserting nothing was written through it) in
+`action-run-script.test.ts` only, including the trailing-slash spellings.
 
 ## Only 0, 1 and 2 are verdicts, in the step's exit AND in its output
 
@@ -238,7 +246,7 @@ and an UNKNOWN OPTION writes zero bytes to stdout, its message to stderr, and
 exits 1. That last one is a stand-in for the reported failure rather than a
 reproduction of it: it runs a made-up flag against a current scanner, not
 `--trust-base` against an old one, which is a different way into the same
-Commander code path at `lib/command.js:2010`, where `error()` computes
+Commander code path at `lib/command.js:1829` (commander 12.1.0), where `error()` computes
 `config.exitCode || 1`. Nobody has run an old scanner here, and this entry
 should not be read as saying otherwise.
 
@@ -256,7 +264,8 @@ treated as a dist-tag. The refusal message names the migration (`REMOVE the
 input`), because `latest` used to be the default and a refusal with no
 alternative in it is a wall.
 
-**Enforced by:** the version cases in both action test files, and the SHAPE half
+**Enforced by:** the version cases in `action-path-validation.test.ts` (not in
+`action-run-script.test.ts`, whose version cases are about the argv), and the SHAPE half
 of the contract in `scripts/test-action-path-validation.sh`. That script checks
 a hand-copied regex rather than the step itself, so it can run on the macOS
 runner's bash 3.2. The copy has already cost once: it kept asserting `0.0.0` was
@@ -302,8 +311,10 @@ accepted whatever its rules turn out to be.
 
 Four properties, each load-bearing:
 
-- `VG_TAG_SCANNER_*` is a SEPARATE constant from `VG_MIN_*`. They hold the same
-  number today and mean different things: the floor is the oldest scanner that
+- `VG_TAG_SCANNER_*` is a SEPARATE constant from `VG_MIN_*`. They hold different
+  numbers (`VG_MIN` is 1.7.0 and `VG_TAG_SCANNER` is 1.9.0 in `action.yml`; they
+  were equal when this entry was written, and the claim that they stay equal is
+  false) and mean different things: the floor is the oldest scanner that
   understands this tag's flags, this is the tested scanner the tag ships. One
   constant serving both is how raising one silently raises the other.
 - The comparison is against that hardcoded constant, never against anything
@@ -320,19 +331,13 @@ Four properties, each load-bearing:
   GitHub documents that the default `GITHUB_*` and `RUNNER_*` variables cannot
   be overwritten and that such an assignment is ignored
   (https://docs.github.com/en/actions/reference/workflows-and-actions/variables).
-  The Validate inputs step also DECLARES `GITHUB_BASE_REF: ${{ github.base_ref }}`
-  in its own `env:` mapping, the same spelling the run step uses. A step-level
-  entry wins over a job-level one, and `github.base_ref` is read out of the
-  event payload rather than out of anything a workflow author writes, so the
-  value cannot come from the workflow file either way. The declared form is
-  defense in depth and is stronger than a bare read of the runner default,
-  because its value comes from the event payload rather than from anything a
-  workflow author can write, but it is not absolute immunity: a job-level
-  `env: BASH_ENV: <a file>` that runs `unset GITHUB_BASE_REF` would still
-  defeat it, because BASH_ENV is sourced before the step script runs and is
-  not itself one of the GITHUB_*/RUNNER_* variables the no-overwrite guarantee
-  covers. The platform no-overwrite guarantee above remains a second, separate
-  line of defence, and neither form is depended on as the sole control.
+  The Validate inputs step DECLARES `GITHUB_BASE_REF: ${{ github.base_ref }}`
+  in its own `env:` mapping (`action.yml`, the Validate step) and uses it to
+  decide whether the run is a pull request. A step-level entry wins over a
+  job-level one, and `github.base_ref` is read out of the event payload rather
+  than out of anything a workflow author writes. The platform no-overwrite
+  guarantee above is a second, separate line of defence, and neither is depended
+  on as the sole control.
 - Written accept-only-if, not refuse-if, for the same reason as the npm floor:
   `[` returns 2 on a malformed comparison and an `if` reads 2 as false, so a
   refuse-if shape turns an arithmetic error into permission.
@@ -360,16 +365,18 @@ else.
   safety: a push to an UNPROTECTED feature branch runs that branch's own
   workflow file, written by the same author, with `GITHUB_BASE_REF` empty, so it
   is as author-controlled as a pull request and the rule does not cover it.
-- It costs consumers nothing today, because the tag scanner equals the only
-  published version. It starts costing something the first time two versions
-  exist.
+- It costs consumers something now. The tag scanner is 1.9.0 and older
+  versions are published, so a `version:` input of 1.7.x or 1.8.x is refused on
+  every pull request (and, per the fork bullet above, on forks too). The entry
+  once said it cost nothing; that stopped being true when 1.8.0 shipped.
 
 **Enforced by:** the `pinning the scanner backward on a pull request` cases in
-`action-path-validation.test.ts`. Because the two floors are the same number
-today, no real input lands between them, so the behavioural cases drive the real
-step text with the tag-scanner constant advanced one minor version -- the action
-as it will be the day a 1.8.0 scanner ships -- and assert the replacement matched,
-so deleting the constant turns them red. Plus a drift case tying
+`action-path-validation.test.ts`. The behavioural cases drive the real step text
+with the tag-scanner constant advanced one minor version and assert the
+replacement matched, so deleting the constant turns them red; that advanced
+copy is a synthetic future, not the file as shipped. The unmodified file is
+covered by the case `refuses a 1.8.x pin on a pull request against the file as
+shipped`, which pins today's real gap between the two floors. Plus a drift case tying
 `VG_TAG_SCANNER_*`, the `version` input's default and
 `packages/cli/package.json` to one number, a case proving the flag floor answers
 first for a version below BOTH, and the bash 3.2 mirror in
@@ -460,7 +467,9 @@ exists to carry.
 made to fail on demand. Both files honour it; one of them not honouring it would
 produce a green run against a weakened file. Verified in this change by deleting
 the install step from a copy of `action.yml` (8 tests red) and by removing
-`working-directory` from the run step (2 tests red).
+`working-directory` from the run step (2 tests red). Those counts were measured
+when the entry was written and have not been re-measured since the suites
+changed; treat them as the shape of the check, not as a current number.
 
 ## action.yml must parse and behave on bash 3.2
 
@@ -494,10 +503,11 @@ catches the idioms already on the list, and they name the bug when they fire.
 
 # Scanner core
 
-The entries above cover the composite Action. The four below cover what the
-scanner itself reports, and were written in the change that fixed the audit
-finding each one describes, so weigh them accordingly: verify the named code and
-test against this text before relying on it. In the tests named below,
+The entries above cover the composite Action. The entries below cover what the
+scanner itself reports. The first four were written in the change that fixed the
+audit finding each one describes, and the rest in 1.9.1, so weigh them
+accordingly: verify the named code and test against this text before relying on
+it. In the tests named below,
 `silent-passes.test.ts` is `packages/cli/src/__tests__/silent-passes.test.ts` and
 `path-severity.test.ts` is `packages/core/src/utils/__tests__/path-severity.test.ts`.
 
@@ -554,8 +564,14 @@ outside the root`.
 
 **Known gap:** a caller that passes no root (library use of
 `applyPathAwareSeverity` or `SecretScanner.scan` with an absolute path) still
-gets the old behaviour. The CLI and MCP always pass one. The vscode extension
-calls `scanContent` with an absolute `fsPath` and no root.
+gets the old behaviour. The CLI and MCP always pass one.
+
+`scanFileListAsync` used to default its root to the process cwd, which is the
+same ancestor bug for any caller that omitted `pathRoot`. From 1.9.1 an omitted
+root is each file's own git work tree (memoised per directory), through
+`resolveContextRoot`; `scan-file-list-path-root.test.ts` (`judges context from
+the repository, not from an ancestor cwd`) pins it. `scanFiles` (sync) has no
+production caller.
 
 ## The staged path skips a blob by extension only, never by content
 
@@ -569,9 +585,21 @@ commits of fonts, images and lockfiles whose extension is not on the binary list
 only `BINARY_EXTENSIONS`. Everything else, NUL bytes included, is scanned as
 text. Nothing is skipped on content.
 
+The skip is by extension. Until 1.9.1 it was also silent. It is now COUNTED
+(`run.binary_files_skipped` in JSON and SARIF, and a `Binary files skipped: N`
+line in text when N is not zero), and the walk's own type filter (images,
+archives, lockfiles, `.log`, `.map`, minified bundles) is counted the same way
+in `run.type_filtered_files` on a plain directory run, as it already was in
+pull-request mode. A PNG of any size is removed by the walk filter before any
+size or time budget applies.
+
 **Enforced by:** the staged branch of `scanFileListAsync` in
 `packages/cli/src/utils/scan-utils.ts` carries no content check; the only skip is
-`isBinaryFile`. Tests, in `silent-passes.test.ts`: `a staged .ts file with a key
+`isBinaryFile`. The counts are pinned by `directory-pr-fail-closed.test.ts`
+(`a binary extension the walk lets through is counted in the run`, `a PNG removed
+by the walk filter is counted as type-filtered, before any budget`). The
+`.png` case below asserts only exit 0, which does not by itself prove the file
+was skipped; the count test does. Tests, in `silent-passes.test.ts`: `a staged .ts file with a key
 and one NUL byte exits 1 (a finding), not 0`, `a staged .woff2 containing a NUL
 does not exit 2`, and `a staged binary-extension file (.png) with NUL is still
 skipped, as in directory mode`.
@@ -581,15 +609,14 @@ content only helps if the content is read as what it is. Read as UTF-8, a UTF-16
 file (PowerShell 5 `>` redirection writes UTF-16LE with a BOM) is garbage with a
 NUL between every character, so a key in it never matched and the run passed. Every
 path that turns bytes into scanned text now goes through `decodeTextBuffer` and
-`decodeFileChunks` in `packages/core/src/utils/text-decode.ts`: `SecretScanner.scan`
-(directory and pull-request mode), `scanTextFileAsync` and `scanTextFileSync`
-including the streaming path for files over the size limit, and
-`readGitIndexFile` (`--staged`). `FF FE` decodes as UTF-16LE, `FE FF` as UTF-16BE,
+`packages/core/src/utils/text-decode.ts`: `SecretScanner.scan`
+(directory and pull-request mode), `scanTextFileAsync` and `scanTextFileSync`,
+and `readGitIndexFile` (`--staged`). `FF FE` decodes as UTF-16LE, `FE FF` as UTF-16BE,
 `EF BB BF` is stripped, and the BOM is always removed so line and column numbers
 describe the decoded text. Tests: `text-decode.test.ts` (`decodes UTF-16LE with a
 BOM and drops the BOM`, `decodes UTF-16BE with a BOM and drops the BOM`, `strips a
 UTF-8 BOM`, `SecretScanner.scan finds it in %s and reports line 2`, `scanTextFileSync
-finds it in %s`, `the streaming path (over maxFileBytes) finds it in %s at line 2`)
+finds it in %s`, `scanTextFileAsync finds it in %s at line 2`)
 and, in `silent-passes.test.ts`, `directory mode finds a key in a UTF-16LE
 notes.txt` and its UTF-16BE, `src/a.ts` and `--staged` variants.
 
@@ -618,15 +645,27 @@ further ruling: `ssh-private-key` is downgraded on test, fixture and locale path
 (`CLAUDE.md`, `docs/`). That ruling is only as good as the body check that
 decides a hit is a key rather than prose naming the header
 (`isPemHeaderWithoutBody`, `packages/core/src/utils/placeholder.ts`). The rule
-reports a hit only when, within 400 characters after the header, some line, with
-only its ends trimmed of whitespace, quotes and backslashes (interior whitespace
-is kept), is at least 40 characters, entirely base64 characters (with optional
-`=` padding), and holds a lowercase letter, an uppercase letter, and a digit or
-`+` or `/`. The matching END marker is not required. This is a heuristic, not a
-proof: a real key body line essentially always passes, and English prose cannot
-(it has spaces and no digits), but a documentation line that is itself a 40+
-character mixed-case base64-looking token right after a header would still count
-as a body.
+reports a hit only when, in the text between the header and the END marker that
+closes it (or the next BEGIN, or 8192 characters when neither exists), some line
+qualifies. A line qualifies when, after each whitespace-separated token has its
+comment leader (`#`, `//`, `*`, `>`, `--`, `;`), Python string prefix (`b"`,
+`r'`), quotes, brackets, a trailing comma, plus, semicolon, dot, ampersand or
+pipe, and a lone list marker or line-continuation token (`-`, `_`) peeled off,
+EVERY token is base64 characters (with optional `=` padding), at least one token is 40
+or more characters with a lowercase letter, an uppercase letter and a digit or
+`+` or `/`, and those qualifying tokens are at least 85 percent of the line's
+characters. Newlines written as `\n`, `\r\n`, XML character references
+(`&#xA;`, `&#10;`, `&#13;`), `<br>` tags or `\u000a` / `\u000d` split lines. The END marker is not required.
+
+This is a heuristic, not a proof. The earlier text here ("a real key body line
+essentially always passes") was not true of the previous rule, and the rewrite
+replaced it, with the shapes it now handles pinned as tests. The corpus that pins
+both halves, the shapes that must be found and the
+look-alikes that must not (a header beside prose, an ssh public key line, a
+certificate block that follows a mention, a hex dump), is
+`pem-body-corpus.test.ts` (core). A change to the heuristic has to keep both
+halves green. A documentation line that is itself a lone 40+ character
+mixed-case base64-looking token right after a header counts as a body.
 
 **Enforced by:** `packages/core/src/utils/path-downgrade-ids.ts` no longer
 exports a docs vendor set, and `applyPathAwareSeverity` consults only the
@@ -641,7 +680,9 @@ low`; `path-severity.test.ts` `keeps an anthropic key at critical in NOTES.md`
 (and the CLAUDE.md, docs/x.md and website/page.mdx variants), `keeps a full-body
 PEM private key at critical in CLAUDE.md` (and docs/runbook.md), `still
 downgrades a PEM under a tests/ fixture directory` and `still downgrades a
-generic api-key match in docs`; and, in `pem-body-prose.test.ts` (core),
+generic api-key match in docs` (its "full-body PEM" cases use a synthetic match
+with no body, so they pin the severity rule and not the body check); and, in
+`pem-body-prose.test.ts` (core),
 `prose that merely names the header in docs/setup.md is not critical` (and the
 README.md and CLAUDE.md variants), `a copy of the CHANGELOG paragraph about the
 PGP header is not critical`, `a real full-body PEM in docs/runbook.md still
@@ -659,8 +700,10 @@ for a secret that is not there.
 **The rule:** exit 1 is "the scan ran and found something at or above the gate".
 Anything that is not a verdict on the tree is exit 2 (`COULD_NOT_RUN_EXIT`).
 
-**Enforced by:** `COULD_NOT_RUN_EXIT` at the four former `return 1` sites in
-`scanCommand` (`packages/cli/src/commands/scan.ts`). Commander usage errors and
+**Enforced by:** `COULD_NOT_RUN_EXIT` at the former `return 1` sites in
+`scanCommand` (`packages/cli/src/commands/scan.ts`; there are seven returns of
+the constant now, plus the literal 2 for a git failure and the shared
+`INCOMPLETE_SCAN_EXIT`, all of them 2). Commander usage errors and
 escaped throws are covered by `exitOverride` and `handleFatalError` in
 `packages/cli/src/cli.ts`, which `cli-entry.ts` uses as its catch handler, and
 an unknown `--format` value is rejected before scanning. Tests, in
@@ -673,4 +716,84 @@ text`, `a thrown non-ConfigError exits 2`, and the boundaries `scan --help exits
 usage`.
 
 **Known gap:** the `init` command still sets exit 1 for an unknown `--manager`.
-It is not a scan verdict, but it does not follow the rule either.
+It is not a scan verdict, but it does not follow the rule either. `install-hook`
+and the proxy's `--max-rpm` validation and errors also exit 1. The
+`exit-codes-usage` suite needs a built `dist` and is skipped on Windows.
+
+## Directory and pull-request mode fail closed, with a declared way out
+
+Through 1.9.0 only `--staged` exited 2 over a file it could not read or whose
+scan blew the budget. A directory or pull-request run exited 0 and printed
+"No secrets found" over it, and `check a.ts missing.ts` exited 0 on the strength
+of the one file that existed (only the all-missing case exited 2).
+
+**The rule:** on every path (staged, directory, pull-request), a file that was
+selected for scanning and could not be read or examined on disk (in pull-request
+mode that includes a tracked file under a directory that cannot be entered, or
+missing from the checkout), a file over the size limit, a scan that exceeded the
+per-file budget, and a named target that does not exist each make the run exit 2,
+with the output still emitted. In every output format (text, JSON, SARIF) the
+message goes to stderr and names the file or target and the reason. For a file
+selected from a directory or pull-request scan it also gives the `ignore.paths`
+entry that would exclude it, printed as a JSON string that can be pasted into
+the config as written (an entry containing a question mark carries a sentence
+saying the question mark matches any single character there, so it may also
+exclude a similarly named file); on a pull-request run it says the entry must be
+on the base ref, because a change in the pull request is only a proposal. For a
+file named explicitly on the command line, which the ignore list never filters,
+it says to check the path or stop passing it. The same holds when nothing else
+was scanned: the run still prints this message and a valid JSON or SARIF
+document. The JSON run object carries the same facts in `run.unscannable` (file,
+kind, and the exclude when there is one). A file excluded through the config's `ignore` list is a DECLARED skip:
+it is never opened, the run exits on the findings alone, and the number is
+stated (`run.config_ignored_files` in JSON and SARIF; `Excluded by config
+ignore: N` in text when N is not zero).
+
+**The limits.** A file is read and scanned whole up to 32 MiB
+(`MAX_SCAN_FILE_BYTES` in core, the one constant shared by directory mode, the
+MCP scan and `--staged`, where it is applied to the raw blob size in the index
+through the `git cat-file` output limit). Above it the file is unscannable: exit
+2 with the exclude entry, never partly scanned. `scanTextFileAsync` and
+`scanTextFileSync` throw above it. `DEFAULT_SCAN_BUDGET_MS` is 5000 ms per file, checked after
+the scan returns (the regex engine cannot be interrupted), so it refuses to TRUST
+a slow result rather than bounding time. There is no total-run budget. Binary
+extensions and the walk's type filter are removed before either number applies.
+
+**Where the exclude is read from.** `ignore.paths` and `ignore.patterns` in
+`.vault-guard.json`, merged in `scanCommand` and matched with gitignore syntax
+relative to the scanned directory (to the repository root for `--staged`). On a
+pull-request run (`--trust-base`) the config comes from the BASE ref, so a pull
+request cannot add its own exclude; in plain directory mode and `--staged` it is
+the config of the tree being scanned, which is the user's own. An explicit file
+target is never filtered by it.
+
+**Enforced by:** `INCOMPLETE_SCAN_EXIT`, `scanIncomplete` and `reportIncomplete`
+in `scanCommand`, `recordUnusableTarget` and `recordTooLarge` in
+`scan-utils.ts`, the `unreadable` list of `getPullRequestFilesToScan`,
+`excludePatternFor` and `formatExcludeEntry`; `directory-pr-fail-closed.test.ts`
+(several targets with one missing, an unreadable file in directory and
+pull-request mode, a tracked file under a directory that cannot be entered, a
+head-tree file missing on disk, a scan that blows the budget through a mocked
+clock, the declared exclude as a counted exit-0 skip, stderr in JSON and SARIF,
+`run.unscannable`); `oversized-files.test.ts` (a key at the top of an 11 MiB file,
+a secret on a line over 1 MiB, a 33 MiB file refused with the hint, the same
+file declared, an oversized file as the only candidate in text, JSON and SARIF,
+and a UTF-16 blob under the limit scanned when staged); `exclude-hint.test.ts`
+(the printed entry, pasted as written, excludes the named file and not an
+unrelated sibling for names with spaces, brackets, star, backslash, hash and
+bang; for a question mark the test states that a decoy differing at that
+position is excluded too, and that the note says so); `directory-scan-unreadable.test.ts` (flipped from
+exit 0 to exit 2).
+
+## JSON and SARIF file paths use forward slashes on every OS
+
+A `file` value in JSON output and a SARIF artifact uri are POSIX-style on
+Windows too (`src/a.ts`, never `src\a.ts`), because consumers match them against
+repository paths and baselines fingerprint them. A POSIX filename that really
+contains a backslash is rewritten to a different path by this conversion, which
+is a known cost.
+
+**Enforced by:** `toForwardSlashes` in `packages/core/src/scan-output.ts`, called
+from the path relativiser; `packages/core/src/scanners/__tests__/scan-output.test.ts`
+(the forward-slash cases; the comment beside them that says "platform-native" is
+stale). `silent-passes.test.ts` reads findings from JSON for the same reason.

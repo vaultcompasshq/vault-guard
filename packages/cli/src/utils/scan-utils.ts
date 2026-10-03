@@ -6,8 +6,8 @@ import {
   getFilesToScan,
   getFilesToScanAsync,
   buildConfigIgnoreFilter,
-  scanTextFileAsync,
   scanTextFileSync,
+  MAX_SCAN_FILE_BYTES,
   readGitIndexFile,
   applyPathAwareSeverity,
   formatJson as formatJsonResults,
@@ -17,6 +17,7 @@ import {
   type JsonRunMetadata,
   type TrustBaseReport,
   type PullRequestSkips,
+  type ScanSkipCounts,
   type FileScanResult,
   type Diagnostic,
   type DiagnosticBus,
@@ -137,7 +138,37 @@ export function resolveContextRoot(target: string, cwd = process.cwd()): string 
   return dir;
 }
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+/**
+ * The most one file may weigh and still be scanned (32 MiB, the core constant,
+ * which is also what `--staged` allows a blob). Files up to it are read and
+ * scanned whole; above it a file is unscannable, never partly scanned.
+ */
+const MAX_FILE_SIZE = MAX_SCAN_FILE_BYTES;
+
+/**
+ * Record a file above the size limit as unscannable. Like an unreadable file it
+ * makes the run exit 2, and it carries the exclude entry that would declare it.
+ */
+function recordTooLarge(
+  displayFile: string,
+  bytes: number,
+  maxBytes: number,
+  options: ScanOptions,
+  exclude?: string,
+): void {
+  const reason = `${(bytes / 1024 / 1024).toFixed(1)} MiB: over ${Math.round(maxBytes / 1024 / 1024)} MiB, not scanned`;
+  options.unreadable?.push({
+    kind: 'too_large',
+    file: displayFile,
+    reason,
+    ...(exclude ? { exclude } : {}),
+  });
+  options.bus?.add({
+    code: 'file.read_error',
+    severity: 'error',
+    ctx: { file: displayFile, detail: reason },
+  });
+}
 
 /**
  * Per-file scan budget (ms). This is a **post-hoc** detector, NOT a wall-clock
@@ -209,11 +240,13 @@ function recordBudgetExceeded(
   elapsedMs: number,
   budgetMs: number,
   options: ScanOptions,
+  exclude?: string,
 ): void {
   options.unreadable?.push({
     kind: 'scan_budget',
     file: displayFile,
     reason: `scan exceeded the ${budgetMs}ms budget (took ${Math.round(elapsedMs)}ms)`,
+    ...(exclude ? { exclude } : {}),
   });
   options.bus?.add({
     code: 'file.scan_timeout',
@@ -240,11 +273,64 @@ export interface ScanTelemetryStats {
  */
 export interface UnreadableFile {
   /** Which of the two causes produced this entry. Defaults to a read failure. */
-  kind?: 'read_error' | 'scan_budget';
+  kind?: 'read_error' | 'scan_budget' | 'too_large';
   /** cwd-relative where possible, for display and structured output. */
   file: string;
   /** Why the file's result cannot be trusted. */
   reason: string;
+  /**
+   * The `ignore.paths` entry that would exclude exactly this file, relative to
+   * the root `ignore` patterns are matched against. Absent when the entry is
+   * not a file the config could name (a missing target).
+   */
+  exclude?: string;
+}
+
+/**
+ * Tallies of what the run declined to open, beyond the pull-request-only
+ * counts: the walk's type filter, the config's own `ignore` list, and files the
+ * extension rule skips at scan time.
+ */
+export interface RunSkipCounts extends ScanSkipCounts {
+  /** Files skipped by {@link isBinaryFile} when the scanner reached them. */
+  binary: number;
+}
+
+/**
+ * The gitignore-style entry that excludes exactly `file`: its path relative to
+ * `root`, anchored with a leading slash so it cannot match a same-named file
+ * elsewhere, with the characters gitignore treats as syntax escaped.
+ * Undefined when `file` is not under `root`.
+ */
+export function excludePatternFor(file: string, root: string): string | undefined {
+  const rel = path.relative(path.resolve(root), path.resolve(file));
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return undefined;
+  // Escaped: backslash, star and brackets, which gitignore reads as syntax, and
+  // a trailing space, which it strips. NOT escaped: `?`, which already matches
+  // itself (an escaped one matches nothing here), and `#` and `!`, which only
+  // mean something at the start of a pattern and this one starts with a slash.
+  const posix = rel
+    .split(path.sep)
+    .join('/')
+    .replace(/([\\*[\]])/g, '\\$1')
+    .replace(/ $/, '\\ ');
+  return `/${posix}`;
+}
+
+/**
+ * One plain sentence for an entry that contains a question mark, which the
+ * gitignore matcher reads as "any single character" and cannot match literally,
+ * so the entry may also exclude a similarly named file. Empty otherwise.
+ */
+export function excludeEntryNote(pattern: string): string {
+  return pattern.includes('?')
+    ? 'the question mark matches any single character in this entry, so it may also exclude a similarly named file'
+    : '';
+}
+
+/** The entry as it is printed for pasting into the config: a JSON string. */
+export function formatExcludeEntry(pattern: string): string {
+  return JSON.stringify(pattern);
 }
 
 export interface ScanOptions {
@@ -263,8 +349,7 @@ export interface ScanOptions {
    * describes the same event. A diagnostic is advisory and gets summarised as
    * "N warning(s)"; this list is what the caller uses to decide whether the
    * run may claim success at all. `scanCommand` treats a non-empty list as
-   * fatal on the `--staged` path and as reportable-but-not-fatal on a
-   * directory scan.
+   * fatal (exit 2) on every path: staged, directory and pull-request.
    */
   unreadable?: UnreadableFile[];
   /**
@@ -276,6 +361,8 @@ export interface ScanOptions {
    * going. Defaults to {@link DEFAULT_SCAN_BUDGET_MS}.
    */
   scanBudgetMs?: number;
+  /** Filled with what the run skipped without opening, so it can be reported. */
+  skips?: RunSkipCounts;
   /**
    * Combined gitignore-style patterns from `config.ignore.paths` and
    * `config.ignore.patterns`. Applied to every file before scanning so that
@@ -349,7 +436,20 @@ export async function scanFileListAsync(
   } = options;
   // Context (test / docs / locale) is judged relative to this, never on the
   // absolute path: the checkout's own location is not evidence about a file.
-  const pathRoot = options.pathRoot ?? cwd;
+  // With no root given it is each file's own git work tree (memoised per
+  // directory), NOT the process cwd: a cwd above the repository would put every
+  // directory between the two back into the judged path.
+  const rootByDir = new Map<string, string>();
+  const pathRootFor = (file: string): string => {
+    if (options.pathRoot !== undefined) return options.pathRoot;
+    const dir = path.dirname(path.resolve(cwd, file));
+    let root = rootByDir.get(dir);
+    if (root === undefined) {
+      root = resolveContextRoot(dir, cwd);
+      rootByDir.set(dir, root);
+    }
+    return root;
+  };
 
   // Apply config ignore patterns to the explicit file list (e.g. staged files).
   // buildConfigIgnoreFilter matches relative to cwd so patterns like
@@ -359,16 +459,25 @@ export async function scanFileListAsync(
       ? buildConfigIgnoreFilter(configIgnorePatterns, cwd)
       : null;
   const filteredFiles = configIgnoreTester
-    ? files.filter(f => !configIgnoreTester(f))
+    ? files.filter(f => {
+        if (!configIgnoreTester(f)) return true;
+        if (options.skips) options.skips.configIgnored++;
+        return false;
+      })
     : files;
 
   const results: ScanResult[] = [];
 
   const scanFile = async (file: string): Promise<void> => {
+    const pathRoot = pathRootFor(file);
+    const exclude = excludePatternFor(file, cwd);
     try {
       if (fromGitIndex) {
         const rel = path.relative(cwd, file).split(path.sep).join('/');
-        if (skipBinary && isBinaryFile(file)) return;
+        if (skipBinary && isBinaryFile(file)) {
+          if (options.skips) options.skips.binary++;
+          return;
+        }
 
         // Pass the ABSOLUTE path. `git show :<path>` resolves against the
         // worktree root, not the process cwd, and `rel` is cwd-relative --
@@ -381,14 +490,11 @@ export async function scanFileListAsync(
         // silently; refusing on NUL broke ordinary commits of fonts and
         // lockfiles.
 
+        // The size limit is on the RAW blob (readGitIndexFile refuses one over
+        // MAX_SCAN_FILE_BYTES, and the catch below records it as unscannable),
+        // not on the decoded text: a UTF-16 blob under the limit decodes to a
+        // different length and must not be refused for that.
         const byteLen = Buffer.byteLength(content, 'utf-8');
-        if (byteLen > maxSize && verbose) {
-          console.warn(
-            chalk.yellow(`⚠️  Large staged blob (scanning in memory):`),
-            chalk.white(rel),
-            chalk.gray(`(${(byteLen / 1024 / 1024).toFixed(2)}MB)`),
-          );
-        }
 
         if (options.stats) {
           options.stats.filesScanned += 1;
@@ -407,7 +513,7 @@ export async function scanFileListAsync(
         if (matches.length > 0) {
           results.push({ file, matches });
         }
-        if (elapsed > scanBudgetMs) recordBudgetExceeded(rel, elapsed, scanBudgetMs, options);
+        if (elapsed > scanBudgetMs) recordBudgetExceeded(rel, elapsed, scanBudgetMs, options, exclude);
         return;
       }
 
@@ -415,14 +521,14 @@ export async function scanFileListAsync(
       const st = await fs.promises.stat(file);
       if (!st.isFile()) return;
 
-      if (skipBinary && isBinaryFile(file)) return;
+      if (skipBinary && isBinaryFile(file)) {
+        if (options.skips) options.skips.binary++;
+        return;
+      }
 
-      if (st.size > maxSize && verbose) {
-        console.warn(
-          chalk.yellow(`⚠️  Large file (streaming line-by-line):`),
-          chalk.white(path.relative(cwd, file)),
-          chalk.gray(`(${(st.size / 1024 / 1024).toFixed(2)}MB)`),
-        );
+      if (st.size > maxSize) {
+        recordTooLarge(path.relative(cwd, file), st.size, maxSize, options, exclude);
+        return;
       }
 
       if (options.stats) {
@@ -431,26 +537,20 @@ export async function scanFileListAsync(
       }
 
       const tScan = Date.now();
-      const matches =
-        st.size > maxSize
-          ? await scanTextFileAsync(scanner, file, {
-              maxFileBytes: maxSize,
-              bus: options.bus,
-              pathRoot,
-            })
-          : scanner.scan(file, { pathRoot });
+      const matches = scanner.scan(file, { pathRoot });
       const elapsed = Date.now() - tScan;
       if (matches.length > 0) {
         results.push({ file, matches });
       }
       if (elapsed > scanBudgetMs) {
-        recordBudgetExceeded(path.relative(cwd, file), elapsed, scanBudgetMs, options);
+        recordBudgetExceeded(path.relative(cwd, file), elapsed, scanBudgetMs, options, exclude);
       }
     } catch (error) {
       options.unreadable?.push({
         kind: 'read_error',
         file: path.relative(cwd, file),
         reason: String(error),
+        ...(exclude ? { exclude } : {}),
       });
       if (options.bus) {
         options.bus.add({
@@ -513,12 +613,24 @@ export async function scanFilesAsync(
 
   for (const targetPath of targetPaths) {
     const pathRoot = options.pathRoot ?? resolveContextRoot(targetPath);
+    // A target that is not there is a target the run did not check. It used
+    // to be skipped, so `check a.ts missing.ts` printed "No secrets found" and
+    // exited 0 on the strength of one file out of two.
+    const recordUnusableTarget = (reason: string): void => {
+      options.unreadable?.push({ kind: 'read_error', file: targetPath, reason });
+      options.bus?.add({
+        code: 'file.read_error',
+        severity: 'error',
+        ctx: { file: targetPath, detail: reason },
+      });
+    };
     try {
       await fs.promises.access(targetPath);
     } catch {
       if (verbose) {
         console.error(chalk.red('❌ Error:'), chalk.white(`Path not found: ${targetPath}`));
       }
+      recordUnusableTarget('path not found, so nothing under it was scanned');
       continue;
     }
 
@@ -540,30 +652,57 @@ export async function scanFilesAsync(
             verbose,
             options.bus,
             options.configIgnorePatterns ?? [],
+            options.skips,
           );
     } else {
       if (verbose) {
         console.error(chalk.red('❌ Error:'), chalk.white(`Invalid path: ${targetPath}`));
       }
+      recordUnusableTarget('not a regular file or directory, so nothing was scanned');
       continue;
     }
+    // Tracked files the pull-request file set could not examine on disk are
+    // files the run did not check: record them so the run exits 2.
+    for (const u of options.pullRequest?.skipped.unreadable ?? []) {
+      const exclude = stat.isDirectory() ? excludePatternFor(u.file, targetPath) : undefined;
+      const display = path.relative(process.cwd(), u.file);
+      options.unreadable?.push({
+        kind: 'read_error',
+        file: display,
+        reason: u.reason,
+        ...(exclude ? { exclude } : {}),
+      });
+      options.bus?.add({
+        code: 'file.read_error',
+        severity: 'error',
+        ctx: { file: display, detail: u.reason },
+      });
+    }
+    // Ignore patterns are matched against the directory being walked, so that
+    // is the root an exclude entry has to be written against. A file named on
+    // the command line is never filtered by them: stop naming it instead.
+    const excludeRoot = stat.isDirectory() ? targetPath : undefined;
 
     // Scan each file with proper safeguards (parallel with concurrency limit)
     const scanFile = async (file: string): Promise<void> => {
       try {
         // Skip binary files
         if (skipBinary && isBinaryFile(file)) {
+          if (options.skips) options.skips.binary++;
           return;
         }
 
         // Check file size
         const fileStat = await fs.promises.stat(file);
-        if (fileStat.size > maxSize && verbose) {
-          console.warn(
-            chalk.yellow(`⚠️  Large file (streaming line-by-line):`),
-            chalk.white(path.relative(process.cwd(), file)),
-            chalk.gray(`(${(fileStat.size / 1024 / 1024).toFixed(2)}MB)`),
+        if (fileStat.size > maxSize) {
+          recordTooLarge(
+            path.relative(process.cwd(), file),
+            fileStat.size,
+            maxSize,
+            options,
+            excludeRoot ? excludePatternFor(file, excludeRoot) : undefined,
           );
+          return;
         }
 
         if (options.stats) {
@@ -571,33 +710,30 @@ export async function scanFilesAsync(
           options.stats.bytesScanned += fileStat.size;
         }
 
-        let matches;
         const tScan = Date.now();
-        if (fileStat.size > maxSize) {
-          // Streaming path (large file): ignore directives that span lines are
-          // unreliable here anyway, so the suppression tally skips it.
-          matches = await scanTextFileAsync(scanner, file, {
-            maxFileBytes: maxSize,
-            bus: options.bus,
-            pathRoot,
-          });
-        } else {
-          const hits: IgnoreDirectiveHits = { count: 0, lines: [] };
-          matches = scanner.scan(file, { ignoreHits: hits, pathRoot });
-          recordInlineSuppression(hits, path.relative(process.cwd(), file), options);
-        }
+        const hits: IgnoreDirectiveHits = { count: 0, lines: [] };
+        const matches = scanner.scan(file, { ignoreHits: hits, pathRoot });
+        recordInlineSuppression(hits, path.relative(process.cwd(), file), options);
         const elapsed = Date.now() - tScan;
         if (matches.length > 0) {
           results.push({ file, matches });
         }
         if (elapsed > scanBudgetMs) {
-          recordBudgetExceeded(path.relative(process.cwd(), file), elapsed, scanBudgetMs, options);
+          recordBudgetExceeded(
+            path.relative(process.cwd(), file),
+            elapsed,
+            scanBudgetMs,
+            options,
+            excludeRoot ? excludePatternFor(file, excludeRoot) : undefined,
+          );
         }
       } catch (error) {
+        const exclude = excludeRoot ? excludePatternFor(file, excludeRoot) : undefined;
         options.unreadable?.push({
           kind: 'read_error',
           file: path.relative(process.cwd(), file),
           reason: String(error),
+          ...(exclude ? { exclude } : {}),
         });
         if (options.bus) {
           options.bus.add({
@@ -693,14 +829,8 @@ export function scanFiles(
 
         // Check file size
         const fileStat = fs.statSync(file);
-        if (fileStat.size > maxSize && verbose) {
-          console.warn(
-            chalk.yellow(`⚠️  Large file (sync read only ≤ ${(maxSize / 1024 / 1024).toFixed(0)} MB; use async scan):`),
-            chalk.white(path.relative(process.cwd(), file)),
-            chalk.gray(`(${(fileStat.size / 1024 / 1024).toFixed(2)}MB)`),
-          );
-        }
-
+        // Above the limit scanTextFileSync throws, and the catch below records
+        // the file as unscannable.
         if (options.stats) {
           options.stats.filesScanned += 1;
           options.stats.bytesScanned += fileStat.size;

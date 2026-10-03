@@ -265,8 +265,8 @@ runs:
         # event where the workflow file is written by the side under judgment,
         # is refused.
         #
-        # A SEPARATE CONSTANT FROM VG_MIN_*, and they are the same number today.
-        # They mean different things. VG_MIN_* is FLAG COMPATIBILITY: the oldest
+        # A SEPARATE CONSTANT FROM VG_MIN_*, and they are different numbers
+        # (the floor is older than the tag scanner). They mean different things. VG_MIN_* is FLAG COMPATIBILITY: the oldest
         # scanner that understands the arguments this tag passes, raised in the
         # commit that starts passing a newer flag. VG_TAG_SCANNER is THE TESTED
         # SCANNER THIS TAG SHIPS, which moves with the published packages. One

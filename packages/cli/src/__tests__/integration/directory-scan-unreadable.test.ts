@@ -6,18 +6,12 @@ import { scanCommand } from '../../commands/scan';
 /**
  * The scope decision for the fail-closed rule, pinned deliberately.
  *
- * A directory walk is an OPEN set discovered by the scanner, not a closed
- * list of what is about to be committed. Unreadable entries in it are
- * ordinary on a real developer machine (root-owned caches, half-removed
- * node_modules, sockets, other users' files), and making them fatal would
- * turn `vault-guard scan .` into a command that refuses to run for reasons
- * the user cannot fix -- whose predictable outcome is that people stop
- * running it, which is strictly worse for the thing this tool defends. So
- * the directory path keeps DIAGNOSING: the unreadable file is reported and
- * counted, and the gate's exit code still reflects the findings only.
- *
- * The fail-closed promise is load-bearing on the staged path, and that is
- * where it is enforced -- see `staged-unreadable-fail-closed.test.ts`.
+ * Through 1.9.0 a directory walk kept DIAGNOSING an unreadable file and exited
+ * 0, on the theory that unreadable entries in a walked tree are ordinary
+ * (root-owned caches, sockets). From 1.9.1 it fails closed like `--staged`: a
+ * CI gate judging a repository cannot call a tree clean over a file it could
+ * not read. The deliberate way out is the config's `ignore` list, which is
+ * counted and reported; see `directory-pr-fail-closed.test.ts`.
  *
  * This lives under `__tests__/integration/` because `pnpm test:windows`
  * excludes that directory. The test turns on `chmod 0o000`, which on Windows
@@ -59,7 +53,7 @@ describe('directory scan keeps diagnosing an unreadable file', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('does not fail the gate, and counts the file it could not read', async () => {
+  it('fails closed (exit 2), and counts the file it could not read', async () => {
     if (isRoot) return; // root reads the 0o000 file, so there is nothing to diagnose
 
     const code = await scanCommand('.', 'json', false);
@@ -74,6 +68,7 @@ describe('directory scan keeps diagnosing an unreadable file', () => {
         expect.objectContaining({ code: 'file.read_error', severity: 'error' }),
       ]),
     );
-    expect(code).toBe(0);
+    // 1.9.1: was 0. A tracked file nobody could read is a file nobody checked.
+    expect(code).toBe(2);
   });
 });

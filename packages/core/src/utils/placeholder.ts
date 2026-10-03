@@ -104,6 +104,20 @@ export function isRedactedTemplateValue(value: string): boolean {
 }
 
 /**
+ * A `dckr_pat_` value with too short a suffix to be one Docker issued.
+ *
+ * Real Docker personal access tokens carry a long random suffix (27 characters
+ * at the time of writing). API reference docs show a keyboard-mash value such as
+ * `dckr_pat_124509ugsdjga93` under a `secret` key, which the generic assignment
+ * rule reports. Used for the generic rules ONLY: a vendor-anchored rule is never
+ * weakened by it. The threshold is 20, below the issued length, so a real token
+ * is never judged by it.
+ */
+export function isShortDockerPatExample(value: string): boolean {
+  return /^dckr_pat_[A-Za-z0-9_-]{1,19}$/.test(value);
+}
+
+/**
  * A stored password *hash* is the safe-at-rest form of a credential, not a
  * credential. Seed data, fixtures, and migration files are full of them, and
  * flagging them as `password-in-code` is noise: rotating them is meaningless
@@ -133,41 +147,82 @@ export function isPasswordHash(value: string): boolean {
  * key is embedded in JSON with escaped newlines.
  */
 export function isPemHeaderWithoutBody(content: string, headerEndOffset: number): boolean {
-  const window = content.slice(headerEndOffset, headerEndOffset + 400);
+  // Judge the text between this header and the END marker that closes it (or
+  // the next BEGIN, or the cap when neither exists). A fixed 400-character
+  // window missed any key whose armor headers ran long.
+  let region = content.slice(headerEndOffset, headerEndOffset + PEM_REGION_CAP);
+  const stop = region.search(/-----(?:END|BEGIN) /);
+  if (stop >= 0) region = region.slice(0, stop);
+
+  // Newlines can hide as XML character references.
+  region = region.replace(/&#(?:x0*[aAdD]|0*1[03]);/g, '\n');
+  // Or as markup and escapes: `<br>`, `<br/>` and the JSON `\u000a` / `\u000d`.
+  region = region.replace(/<br\s*\/?>|\\u000[aAdD]/gi, '\n');
 
   // Split on real newlines and on the escaped `\n` used when a key is embedded
-  // in JSON or YAML, then strip the quoting that survives that embedding.
-  const lines = window.split(/\r?\n|\\r\\n|\\n/);
+  // in JSON, YAML or a string literal.
+  const lines = region.split(/\r?\n|\\r\\n|\\n|\\r/);
 
   for (const line of lines) {
-    // Trim only the ends: whitespace, and the quote and escape characters that
-    // JSON or YAML embedding leaves. Interior whitespace is NOT removed. Doing
-    // so turned any prose line of 32+ unpunctuated letters into a "body".
-    const token = line.replace(/^["'`\\\s]+|["'`\\\s]+$/g, '');
-    // A PEM body wraps base64 at 64 characters, so a body line is base64 and
-    // nothing else. Requiring the *whole* line to match is what separates it
-    // from surrounding code: a long camelCase identifier such as
-    // `onUpdateDatasourceSecureJsonDataOption` is a valid base64 substring,
-    // but the line it sits on never is.
-    //
-    // Length and character mix separate it from English: at least 40 characters
-    // (a real body line is 64, the last one may be shorter but the first is
-    // never below 40 for any key size in use), mixed case, and a digit or + or /.
-    // A 64-character random base64 line lacks all of digit, + and / with
-    // probability about (52/64)^64, roughly one in a million; English words
-    // never carry a digit.
-    if (
-      token.length >= 40 &&
-      /^[A-Za-z0-9+/]+={0,2}$/.test(token) &&
-      /[a-z]/.test(token) &&
-      /[A-Z]/.test(token) &&
-      /[0-9+/]/.test(token)
-    ) {
-      return false;
+    const tokens: string[] = [];
+    for (const raw of line.split(/\s+/)) {
+      const token = cleanPemToken(raw);
+      if (token !== '') tokens.push(token);
     }
+    if (tokens.length === 0) continue;
+
+    // A PEM body wraps base64 at 64 characters, so a body line is base64 and
+    // nothing else, after comment markers and string syntax are peeled off.
+    // Requiring EVERY token on the line to be base64 is what separates it from
+    // surrounding code and prose: `ssh-rsa AAAA... user@host` and
+    // `const x = someLongIdentifier;` each carry a token that is not.
+    if (!tokens.every(t => /^[A-Za-z0-9+/]+={0,2}$/.test(t))) continue;
+
+    // Length and character mix separate a body from English: at least 40
+    // characters, mixed case, and a digit or + or /. A 64-character random
+    // base64 line lacks all of digit, + and / with probability about
+    // (52/64)^64, roughly one in a million; English words never carry a digit.
+    // A body flattened onto one line with spaces yields one such token per
+    // original line, so the tokens that qualify must make up nearly all of the
+    // line: a long token inside a sentence of short words does not.
+    let bodyChars = 0;
+    let allChars = 0;
+    for (const t of tokens) {
+      allChars += t.length;
+      if (t.length >= 40 && /[a-z]/.test(t) && /[A-Z]/.test(t) && /[0-9+/]/.test(t)) {
+        bodyChars += t.length;
+      }
+    }
+    if (bodyChars > 0 && bodyChars / allChars >= 0.85) return false;
   }
 
   return true;
+}
+
+/** How far past a PEM header the body check looks when no END marker bounds it. */
+const PEM_REGION_CAP = 8192;
+
+/**
+ * Peel what surrounds a base64 body line in the places keys get pasted: comment
+ * leaders (`#`, `//`, `*`, `>`, `--`, `;`), a Python string prefix (`b"`, `r'`),
+ * quotes and brackets, and the trailing comma, plus or semicolon of a literal.
+ * A leading or trailing `+` or `/` can be a base64 character, but losing one
+ * from a 64-character line cannot change a verdict that needs 40.
+ */
+function cleanPemToken(raw: string): string {
+  let t = raw;
+  for (let i = 0; i < 4; i++) {
+    const before = t;
+    t = t
+      .replace(/^(?:[#>;%|*]+|\/{2,}|-{2,})/, '')
+      .replace(/^[bBrRuUfF]{1,2}(?=["'`])/, '')
+      .replace(/^["'`[({\\]+/, '');
+    if (t === before) break;
+  }
+  t = t.replace(/[\s"'`\])},;+\\.&|]+$/, '');
+  // A token that is only an operator or list marker (a YAML `-`, a line
+  // continuation `_`) carries no content and must not fail the line.
+  return /^[-.&|+_]+$/.test(t) ? '' : t;
 }
 
 /**

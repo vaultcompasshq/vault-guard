@@ -257,6 +257,7 @@ export async function getAllFilesAsync(
   visited = new Set<string>(),
   verbose = false,
   bus?: DiagnosticBus,
+  counts?: ScanSkipCounts,
 ): Promise<string[]> {
   const files: string[] = [];
 
@@ -292,10 +293,14 @@ export async function getAllFilesAsync(
         }
 
         if (lstat.isDirectory() && !shouldIgnoreDirectory(item)) {
-          const subFiles = await getAllFilesAsync(fullPath, visited, verbose, bus);
+          const subFiles = await getAllFilesAsync(fullPath, visited, verbose, bus, counts);
           files.push(...subFiles);
-        } else if (lstat.isFile() && !shouldIgnoreFile(fullPath)) {
-          files.push(fullPath);
+        } else if (lstat.isFile()) {
+          if (shouldIgnoreFile(fullPath)) {
+            if (counts) counts.typeFiltered++;
+          } else {
+            files.push(fullPath);
+          }
         }
       } catch (error) {
         if (bus) {
@@ -411,13 +416,33 @@ export async function getFilesToScanAsync(
   verbose = false,
   bus?: DiagnosticBus,
   configIgnorePatterns: string[] = [],
+  counts?: ScanSkipCounts,
 ): Promise<string[]> {
-  const allFiles = await getAllFilesAsync(targetPath, new Set(), verbose, bus);
+  const allFiles = await getAllFilesAsync(targetPath, new Set(), verbose, bus, counts);
   const gitignoreTester = getGitignoreTester(targetPath);
   const configIgnoreTester = buildConfigIgnoreFilter(configIgnorePatterns, targetPath);
-  return allFiles.filter(
-    file => !shouldIgnoreFile(file, gitignoreTester) && !configIgnoreTester(file),
-  );
+  const out: string[] = [];
+  for (const file of allFiles) {
+    if (shouldIgnoreFile(file, gitignoreTester)) continue;
+    if (configIgnoreTester(file)) {
+      if (counts) counts.configIgnored++;
+      continue;
+    }
+    out.push(file);
+  }
+  return out;
+}
+
+/**
+ * Tallies of what a walk declined to look at, filled by the file-set builders.
+ * Reported rather than silent: a file the run did not open is a decision made
+ * on the user's behalf.
+ */
+export interface ScanSkipCounts {
+  /** Files dropped by the extension, lockfile-name and generated-artifact filters. */
+  typeFiltered: number;
+  /** Files dropped by the config's own `ignore` list: a declared skip. */
+  configIgnored: number;
 }
 
 /**
@@ -464,6 +489,18 @@ export interface PullRequestSkips {
    * was is now visible.
    */
   typeFilteredFiles: number;
+  /**
+   * Files dropped by the config's `ignore` list, which in this mode is the BASE
+   * ref's. A declared skip, counted so a reader sees how much the written
+   * decision covered.
+   */
+  configIgnoredFiles?: number;
+  /**
+   * Files in the head tree that could not be examined on disk (a directory that
+   * cannot be entered, a file missing from the checkout). Each is a file the run
+   * did not check, so the caller must fail closed on them.
+   */
+  unreadable?: Array<{ file: string; reason: string }>;
 }
 
 /**
@@ -517,6 +554,8 @@ export function getPullRequestFilesToScan(
   const configIgnoreTester = buildConfigIgnoreFilter(configIgnorePatterns, target);
   const skippedNames = new Set<string>();
   let typeFiltered = 0;
+  let configIgnored = 0;
+  const unreadable: Array<{ file: string; reason: string }> = [];
   const out: string[] = [];
 
   for (const file of headTreeFiles) {
@@ -541,18 +580,24 @@ export function getPullRequestFilesToScan(
       typeFiltered++;
       continue;
     }
-    // A config `ignore` pattern is not counted here: it is the project's own
-    // written decision, it comes from the BASE ref in this mode, and a head
-    // that changed it is already reported as a proposal. The counts above are
+    // A config `ignore` pattern is the project's own written decision, and it
+    // comes from the BASE ref in this mode (a head that changed it is reported
+    // as a proposal). It is counted apart from the type filter above, which is
     // for the skips nobody wrote down.
-    if (configIgnoreTester(abs)) continue;
+    if (configIgnoreTester(abs)) {
+      configIgnored++;
+      continue;
+    }
 
     let stat: fs.Stats;
     try {
       stat = fs.lstatSync(abs);
-    } catch {
-      // In the head tree but not on disk. There is nothing to read, and the
-      // walk would never have produced it either.
+    } catch (error) {
+      // In the head tree but not examinable on disk: a directory above it that
+      // cannot be entered, or a file missing from the checkout. A tracked file
+      // nobody could look at is exactly the file nobody checked, so it is
+      // reported to the caller, which exits 2 over it.
+      unreadable.push({ file: abs, reason: String(error) });
       continue;
     }
     if (!stat.isFile()) continue;
@@ -563,6 +608,8 @@ export function getPullRequestFilesToScan(
   skipped.dirNames = [...skippedNames].sort();
   skipped.dirCount = skipped.dirNames.length;
   skipped.typeFilteredFiles = typeFiltered;
+  skipped.configIgnoredFiles = configIgnored;
+  skipped.unreadable = unreadable;
   return out;
 }
 

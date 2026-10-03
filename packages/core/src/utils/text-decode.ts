@@ -1,6 +1,3 @@
-import { createReadStream } from 'fs';
-import { StringDecoder } from 'string_decoder';
-
 /**
  * The one place file and blob bytes become text for scanning.
  *
@@ -58,33 +55,3 @@ export function decodeTextBuffer(buf: Buffer): string {
   return body.toString('utf8');
 }
 
-/**
- * Decode a file to text incrementally, for the streaming (large file) path.
- * Yields string chunks; multi-byte and surrogate sequences split across chunk
- * boundaries are carried, not corrupted.
- */
-export async function* decodeFileChunks(filePath: string): AsyncGenerator<string> {
-  let sniffed: Sniffed | undefined;
-  let decoder = new StringDecoder('utf8');
-  // A UTF-16BE chunk can end mid code unit; keep the odd byte for the next one.
-  let carry: Buffer = Buffer.alloc(0);
-
-  for await (const raw of createReadStream(filePath)) {
-    let chunk = raw as Buffer;
-    if (sniffed === undefined) {
-      sniffed = sniffBom(chunk);
-      decoder = new StringDecoder(sniffed.encoding === 'utf8' ? 'utf8' : 'utf16le');
-      chunk = chunk.subarray(sniffed.bomBytes);
-    }
-    if (sniffed.encoding === 'utf16be') {
-      const joined = Buffer.concat([carry, chunk]);
-      const even = joined.length - (joined.length % 2);
-      carry = Buffer.from(joined.subarray(even));
-      chunk = Buffer.from(joined.subarray(0, even)).swap16();
-    }
-    const text = decoder.write(chunk);
-    if (text.length > 0) yield text;
-  }
-  const tail = decoder.end();
-  if (tail) yield tail;
-}

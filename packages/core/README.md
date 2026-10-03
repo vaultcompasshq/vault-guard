@@ -66,7 +66,7 @@ Full rule reference: [docs/RULES.md](https://github.com/vaultcompasshq/vault-gua
 | `loadConfig` / `validateVaultGuardConfig` | `.vault-guard.json` loading and validation |
 | `formatJson` / `formatSarif` | Structured output for CI and GitHub Code Scanning |
 | `fingerprintForMatch` | Baseline fingerprinting (no raw secrets stored) |
-| `scanTextFileAsync` / `scanTextFileSync` | Stream-aware file scanning |
+| `scanTextFileAsync` / `scanTextFileSync` | Whole-file scanning up to 32 MiB (`MAX_SCAN_FILE_BYTES`); throws `FileTooLargeError` above it |
 | `getGitStagedFilePaths` | Staged-file enumeration for hooks |
 | `getGitWorkTreeRoot` | Repository root for a directory, the base every staged path resolves against |
 

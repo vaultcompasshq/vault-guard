@@ -496,11 +496,18 @@ fi
 # is trusted to render a verdict. Both are checked here as well as in the jest
 # suites because those run against a STUBBED npm: they prove the action asks,
 # and this proves the ask is still written down.
-if grep -nE '^[[:space:]]*npm install' "${ACTION_YML}" | grep -v -- '--ignore-scripts' >/dev/null; then
+# Judged PER LINE, over executable lines only (the comments name npm install to
+# explain the flag), and over every spelling of an install (install, i, add, ci)
+# wherever it sits on the line. The old form matched only a line that BEGAN with
+# the word install, so a second install spelled "npm i -g ..." stayed green.
+if grep -vE '^[[:space:]]*#' "${ACTION_YML}" | grep -E '\bnpm[[:space:]]+(install|i|add|ci)\b' | grep -v -- '--ignore-scripts' >/dev/null; then
   printf 'action.yml has an npm install without --ignore-scripts; the scanner is a control input and this step holds the job token\n' >&2
   exit 1
 fi
-if ! grep -n 'npm audit signatures' "${ACTION_YML}" >/dev/null; then
+# The verification must be a statement of its own, as the drift suite also
+# requires: the bare phrase appears in comments, so a whole-file grep is
+# satisfied by the explanation after the command itself is gone.
+if ! grep -nE '^[[:space:]]*npm audit signatures[[:space:]]*$' "${ACTION_YML}" >/dev/null; then
   printf 'action.yml no longer verifies the provenance of what it installed\n' >&2
   exit 1
 fi

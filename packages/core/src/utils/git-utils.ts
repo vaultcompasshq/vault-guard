@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { GitError } from '../errors';
 import { decodeTextBuffer } from './text-decode';
+import { MAX_SCAN_FILE_BYTES } from './scan-file';
 
 /**
  * Repository config that must never be allowed to decide what vault-guard
@@ -247,7 +248,7 @@ export function readGitIndexFile(cwd: string, filePath: string): string {
       cwd: root,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      maxBuffer: 32 * 1024 * 1024,
+      maxBuffer: MAX_SCAN_FILE_BYTES,
     });
   } catch (err) {
     throw new GitError(
@@ -274,7 +275,10 @@ export function readGitIndexFile(cwd: string, filePath: string): string {
       execFileSync('git', catArgs, {
         cwd: root,
         stdio: ['ignore', 'pipe', 'pipe'],
-        maxBuffer: 32 * 1024 * 1024,
+        // The raw blob size, the same limit directory mode applies to bytes on
+        // disk: git's output exceeding it fails the read, and the file is then
+        // recorded as unscannable.
+        maxBuffer: MAX_SCAN_FILE_BYTES,
       }),
     );
   } catch (err) {

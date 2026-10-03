@@ -64,10 +64,10 @@ describe('CRLF line endings after BOM decoding (a Windows-authored UTF-16 file)'
     },
   );
 
-  it('the streaming path agrees on the line number with CRLF', async () => {
+  it('scanTextFileAsync agrees on the line number with CRLF', async () => {
     const f = path.join(dir, 'w-big.txt');
     fs.writeFileSync(f, utf16le(crlf));
-    const [m] = await scanTextFileAsync(new SecretScanner(), f, { maxFileBytes: 16 });
+    const [m] = await scanTextFileAsync(new SecretScanner(), f);
     expect(m.line).toBe(3);
   });
 });
@@ -102,10 +102,10 @@ describe('a key in a BOM-marked UTF-16 file is found, with sensible positions', 
     expect(matches.length).toBeGreaterThan(0);
   });
 
-  it.each(cases)('the streaming path (over maxFileBytes) finds it in %s at line 2', async (_n, enc) => {
+  it.each(cases)('scanTextFileAsync finds it in %s at line 2', async (_n, enc) => {
     const f = path.join(dir, 'big.txt');
     fs.writeFileSync(f, enc(TEXT));
-    const matches = await scanTextFileAsync(new SecretScanner(), f, { maxFileBytes: 16 });
+    const matches = await scanTextFileAsync(new SecretScanner(), f);
     expect(matches.length).toBeGreaterThan(0);
     expect(matches[0].line).toBe(2);
   });
