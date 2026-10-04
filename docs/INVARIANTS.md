@@ -7,7 +7,7 @@ to it.
 
 **This file is a claim, not a fact.** It was started during the 1.7.1
 action-only release and covers the composite Action, the two version numbers
-around it, and (in the final section) four scanner-core properties; it is not
+around it, and (in the final section) a set of scanner-core properties; it is not
 yet a complete list of this repository's invariants, and saying so is more useful than implying coverage it does not
 have. Every entry below names what enforces it, so a reader can check the claim
 against the code rather than trusting the prose. An entry written in the same
@@ -647,11 +647,10 @@ decides a hit is a key rather than prose naming the header
 (`isPemHeaderWithoutBody`, `packages/core/src/utils/placeholder.ts`). The rule
 reports a hit only when, in the text between the header and the END marker that
 closes it (or the next BEGIN, or 8192 characters when neither exists), some line
-qualifies. A line qualifies when, after each whitespace-separated token has its
-comment leader (`#`, `//`, `*`, `>`, `--`, `;`), Python string prefix (`b"`,
-`r'`), quotes, brackets, a trailing comma, plus, semicolon, dot, ampersand or
-pipe, and a lone list marker or line-continuation token (`-`, `_`) peeled off,
-EVERY token is base64 characters (with optional `=` padding), at least one token is 40
+qualifies. A line qualifies when, after each whitespace-separated token has the
+surrounding comment, string-literal and list syntax peeled off by
+`cleanPemToken` (same file; that function is the complete list), EVERY token
+is base64 characters (with optional `=` padding), at least one token is 40
 or more characters with a lowercase letter, an uppercase letter and a digit or
 `+` or `/`, and those qualifying tokens are at least 85 percent of the line's
 characters. Newlines written as `\n`, `\r\n`, XML character references
@@ -744,7 +743,11 @@ file named explicitly on the command line, which the ignore list never filters,
 it says to check the path or stop passing it. The same holds when nothing else
 was scanned: the run still prints this message and a valid JSON or SARIF
 document. The JSON run object carries the same facts in `run.unscannable` (file,
-kind, and the exclude when there is one). A file excluded through the config's `ignore` list is a DECLARED skip:
+kind, and the exclude when there is one). In SARIF the run's invocation has
+`executionSuccessful: false` and one error-level tool execution notification per
+file; a complete run never carries a failed invocation. The MCP `scan_workspace`
+tool puts the same `unscannable_files` and `unscannable` into the JSON and SARIF
+documents it returns. A file excluded through the config's `ignore` list is a DECLARED skip:
 it is never opened, the run exits on the findings alone, and the number is
 stated (`run.config_ignored_files` in JSON and SARIF; `Excluded by config
 ignore: N` in text when N is not zero).
@@ -752,8 +755,10 @@ ignore: N` in text when N is not zero).
 **The limits.** A file is read and scanned whole up to 32 MiB
 (`MAX_SCAN_FILE_BYTES` in core, the one constant shared by directory mode, the
 MCP scan and `--staged`, where it is applied to the raw blob size in the index
-through the `git cat-file` output limit). Above it the file is unscannable: exit
-2 with the exclude entry, never partly scanned. `scanTextFileAsync` and
+through the `git cat-file` output limit, which `readGitIndexFile` turns into the
+same `FileTooLargeError` a file on disk produces). Above it the file is
+unscannable: exit 2 with the same wording and exclude entry in every mode, never
+partly scanned. `scanTextFileAsync` and
 `scanTextFileSync` throw above it. `DEFAULT_SCAN_BUDGET_MS` is 5000 ms per file, checked after
 the scan returns (the regex engine cannot be interrupted), so it refuses to TRUST
 a slow result rather than bounding time. There is no total-run budget. Binary
@@ -775,15 +780,21 @@ in `scanCommand`, `recordUnusableTarget` and `recordTooLarge` in
 pull-request mode, a tracked file under a directory that cannot be entered, a
 head-tree file missing on disk, a scan that blows the budget through a mocked
 clock, the declared exclude as a counted exit-0 skip, stderr in JSON and SARIF,
-`run.unscannable`); `oversized-files.test.ts` (a key at the top of an 11 MiB file,
+`run.unscannable`, SARIF `executionSuccessful` false in directory and
+pull-request mode and absent on a complete run, a file target after a directory
+target not recording the directory's missing file twice);
+`oversized-files.test.ts` (a key at the top of an 11 MiB file,
 a secret on a line over 1 MiB, a 33 MiB file refused with the hint, the same
 file declared, an oversized file as the only candidate in text, JSON and SARIF,
-and a UTF-16 blob under the limit scanned when staged); `exclude-hint.test.ts`
+a UTF-16 blob under the limit scanned when staged, and a staged 33 MiB blob
+reported as too large with the exclude, in JSON and SARIF); `exclude-hint.test.ts`
 (the printed entry, pasted as written, excludes the named file and not an
 unrelated sibling for names with spaces, brackets, star, backslash, hash and
-bang; for a question mark the test states that a decoy differing at that
+bang; a star entry does not exclude a sibling an unescaped star would match;
+for a question mark the test states that a decoy differing at that
 position is excluded too, and that the note says so); `directory-scan-unreadable.test.ts` (flipped from
-exit 0 to exit 2).
+exit 0 to exit 2); the MCP `server.test.ts` (`scan_workspace carries files it
+did not scan into the embedded json and sarif documents`).
 
 ## JSON and SARIF file paths use forward slashes on every OS
 

@@ -297,17 +297,35 @@ Use `format: sarif` and pipe output is already written to disk by the action
 step (`tee`). Chain `github/codeql-action/upload-sarif` as in the root
 `README.md` example.
 
-### Exit 2 leaves the SARIF file empty, and `results-file` empty with it
+### Exit 2, the SARIF file and the upload guard
 
-Exit 2 means the run could not establish something it needed and scanned
-nothing: a base ref it cannot read, a base config that fails validation, a
-staged file it cannot read. There is deliberately no SARIF document in that
-case, because a document reporting zero results would be a claim the run did
-not earn. The action still `tee`s stdout, so the file exists and is **empty**.
+Exit 2 means vault-guard cannot vouch for the result. It comes in two shapes,
+and they leave different things on disk.
 
-An `upload-sarif` step with a bare `if: always()` then fails on that empty file,
-and its error is the one people read first, sitting on top of the real message
-further up the log. Since `@v1.7.1` the action publishes `results-file` **only
+**The run could not start.** A base ref it cannot read, a base config that
+fails validation, a scan target outside the base repository, a target that
+resolved to no files. There is deliberately no SARIF document in that case,
+because a document reporting zero results would be a claim the run did not
+earn. The action still `tee`s stdout, so the file exists and is **empty**, and
+`results-file` is empty with it.
+
+**The scan was incomplete.** A file it should have scanned was not: unreadable,
+over the 32 MiB limit, over the per-file time budget, a tracked file missing on
+disk (a sparse checkout), or a named target that does not exist. Pull-request,
+directory and staged runs all exit 2 here **with** a SARIF document. That
+document covers only the files that were scanned. Its invocation has
+`executionSuccessful: false`, each unscanned file is an error-level tool
+execution notification, and `runs[0].properties.vault_guard_run.unscannable_files`
+counts them. The log names each file and the `ignore.paths` entry that would
+declare it; on a pull request that entry is read from the base ref, so it has to
+land there first.
+
+Uploading the incomplete document would tell Code Scanning that the files it
+does not mention are clean: an alert an earlier analysis raised in a file this
+run did not scan is absent from it, and Code Scanning treats an alert missing
+from the latest analysis as fixed. So the recommended guard uploads only a
+verdict (exit 0 or 1) with a document behind it. The job still fails on exit 2,
+and the log says why. Since `@v1.7.1` the action publishes `results-file` **only
 when the file has content**, so the guard is one expression rather than a step
 of its own:
 
@@ -325,10 +343,14 @@ of its own:
       # Pinned to a commit, not to `v3`: this runs in your repository with the
       # permission above. Same SHA `vault-guard init` scaffolds.
       - uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
-        if: always() && steps.vg.outputs.results-file != ''
+        if: always() && steps.vg.outputs.results-file != '' && steps.vg.outputs.exit-code != '2'
         with:
           sarif_file: ${{ steps.vg.outputs.results-file }}
 ```
+
+If you would rather see the partial results in Code Scanning anyway, drop the
+`exit-code` clause, knowing that the upload then speaks only for the files that
+were scanned.
 
 On `@v1.7.0` and earlier the output always named the file, empty or not, and the
 check had to be a shell step of its own reading `-s "${SARIF_FILE}"` -- with the
