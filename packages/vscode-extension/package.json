@@ -42,7 +42,7 @@
     "publish": "npm pkg delete private && npx --yes @vscode/vsce publish --no-dependencies"
   },
   "devDependencies": {
-    "@types/node": "^26.6.2",
+    "@types/node": "^26.6.3",
     "@types/vscode": "^1.138.0",
     "@vaultcompass/vault-guard-core": "workspace:*",
     "esbuild": "^0.28.1",
