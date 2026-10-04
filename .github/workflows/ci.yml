@@ -242,7 +242,7 @@ jobs:
 
     - name: Run the guardrail gates
       id: conductor
-      uses: vaultcompasshq/conductor@45d2ecc2213244408495c22d0b8da1dc0f1ed288 # v0.4.0
+      uses: vaultcompasshq/conductor@566c7604b60137a7370a42a161f59b934aa1ad6d # v0.8.0
       with:
         output: conductor.sarif
 
