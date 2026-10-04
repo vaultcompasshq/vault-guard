@@ -104,8 +104,8 @@ A staged, directory or pull-request scan that did not scan a file it should
 have is **incomplete**, not clean. The causes are a file that could not be
 read, a file over the 32 MiB whole-file limit, a file whose scan exceeded the
 per-file time budget, a tracked file missing on disk (pull-request mode, as a
-sparse checkout produces), and a target named on the command line that does
-not exist. An incomplete run has:
+sparse checkout produces), and a path named to the `check` command (which
+takes several) that does not exist. An incomplete run has:
 
 - exit code **2** (the same "cannot vouch for this result" code used when
   `git diff --cached` itself fails), never 0, and in preference to the

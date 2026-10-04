@@ -177,11 +177,11 @@ directory, pull-request and `--staged` scans alike:
 
 | Cause | How to clear it |
 |-------|-----------------|
-| The file could not be read (permissions, a directory that cannot be entered) | Fix the file, or declare it in `ignore.paths` |
+| A file could not be read (permissions). In pull-request mode this includes a tracked file under a directory that cannot be entered | Fix the file, or declare it in `ignore.paths` |
 | The file is over the 32 MiB whole-file limit (judged on the raw bytes on disk or in the index) | Declare it in `ignore.paths` |
 | The file's scan took longer than the per-file time budget (5000 ms), so its result is not trusted | Fix the file, or declare it in `ignore.paths` |
 | A tracked file is missing on disk, as a sparse checkout produces (pull-request mode) | Check out the file, or declare it in `ignore.paths` |
-| A target named on the command line does not exist (`check a.ts missing.ts`) | Check the path, or stop passing it |
+| A path named to the `check` command, which takes several, does not exist (`check a.ts missing.ts`) | Check the path, or stop passing it |
 
 Here the JSON or SARIF document **is** written, and the exit is still 2. stderr
 names each file, the reason, and the exact entry to add, printed as a JSON
@@ -640,7 +640,7 @@ considers passing.
 
 **Also check `run.unscannable_files`.** It is the number of files the run should have scanned
 and did not vouch for: unreadable, over the 32 MiB limit, over the per-file time budget, a
-tracked file missing on disk, or a named target that does not exist. `run.unscannable` lists
+tracked file missing on disk, or a path named to `check` that does not exist. `run.unscannable` lists
 each one with its `kind` and, where possible, the `ignore.paths` entry that would declare it.
 When it is present the process exits 2, and a `blocking_matches` of 0 means "nothing found in
 what was scanned", not "nothing there".

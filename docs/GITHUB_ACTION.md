@@ -311,8 +311,9 @@ earn. The action still `tee`s stdout, so the file exists and is **empty**, and
 
 **The scan was incomplete.** A file it should have scanned was not: unreadable,
 over the 32 MiB limit, over the per-file time budget, a tracked file missing on
-disk (a sparse checkout), or a named target that does not exist. Pull-request,
-directory and staged runs all exit 2 here **with** a SARIF document. That
+disk (a sparse checkout), or a path named to the `check` command that does not
+exist. Pull-request, directory and staged runs all exit 2 here **with** a SARIF
+document. That
 document covers only the files that were scanned. Its invocation has
 `executionSuccessful: false`, each unscanned file is an error-level tool
 execution notification, and `runs[0].properties.vault_guard_run.unscannable_files`
@@ -351,6 +352,12 @@ of its own:
 If you would rather see the partial results in Code Scanning anyway, drop the
 `exit-code` clause, knowing that the upload then speaks only for the files that
 were scanned.
+
+**If you wrote your workflow before 1.9.1, update the upload step.** Newly
+generated workflows skip the upload when the scan step's exit code is 2. A
+workflow that only checks that the results file is set uploads the partial
+document on an incomplete run. Use the condition shown above:
+`if: always() && steps.vg.outputs.results-file != '' && steps.vg.outputs.exit-code != '2'`.
 
 On `@v1.7.0` and earlier the output always named the file, empty or not, and the
 check had to be a shell step of its own reading `-s "${SARIF_FILE}"` -- with the

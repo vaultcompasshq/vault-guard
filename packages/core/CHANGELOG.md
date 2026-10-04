@@ -52,7 +52,8 @@
   also fixes a regression introduced in 1.9.0 for Python bytes literals. Prose and
   public keys beside a mention of the header are still not reported.
   
-  Also: `scanFileListAsync` no longer defaults its context root to the process
+  Also: the CLI's internal `scanFileListAsync` (not exported from any package
+  index) no longer defaults its context root to the process
   working directory; a short `dckr_pat_` example value in API reference docs is no
   longer reported by the generic secret rule; the Action's install and audit text
   checks are judged per line; docs/INVARIANTS.md corrected where an audit found
@@ -61,10 +62,10 @@
   Also in this release: SARIF from an incomplete run marks its invocation
   `executionSuccessful: false` and lists each unscanned file as an error-level
   notification; the MCP `scan_workspace` tool carries `unscannable_files` and
-  `unscannable` into the JSON and SARIF documents it returns; a staged blob over
+  `unscannable` into the JSON document it returns, and `unscannable_files` plus
+  one notification per file into the SARIF; a staged blob over
   32 MiB is reported with the same too-large message and exclude as a file on
-  disk; pull-request mode with a file target after a directory target no longer
-  reports the directory's unreadable files twice; the init scaffold's SARIF
+  disk; the init scaffold's SARIF
   upload step is skipped on exit 2.
 
 ## 1.9.0

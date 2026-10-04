@@ -730,7 +730,8 @@ of the one file that existed (only the all-missing case exited 2).
 selected for scanning and could not be read or examined on disk (in pull-request
 mode that includes a tracked file under a directory that cannot be entered, or
 missing from the checkout), a file over the size limit, a scan that exceeded the
-per-file budget, and a named target that does not exist each make the run exit 2,
+per-file budget, and (for the `check` command, which takes several paths) a
+named path that does not exist each make the run exit 2,
 with the output still emitted. In every output format (text, JSON, SARIF) the
 message goes to stderr and names the file or target and the reason. For a file
 selected from a directory or pull-request scan it also gives the `ignore.paths`
@@ -745,9 +746,11 @@ was scanned: the run still prints this message and a valid JSON or SARIF
 document. The JSON run object carries the same facts in `run.unscannable` (file,
 kind, and the exclude when there is one). In SARIF the run's invocation has
 `executionSuccessful: false` and one error-level tool execution notification per
-file; a complete run never carries a failed invocation. The MCP `scan_workspace`
-tool puts the same `unscannable_files` and `unscannable` into the JSON and SARIF
-documents it returns. A file excluded through the config's `ignore` list is a DECLARED skip:
+file, and the run properties carry the count as `unscannable_files` (the
+per-file detail is in the notifications); a complete run never carries a failed
+invocation. The MCP `scan_workspace` tool returns the same: JSON with
+`unscannable_files` and `unscannable`, SARIF with `unscannable_files` and the
+notifications. A file excluded through the config's `ignore` list is a DECLARED skip:
 it is never opened, the run exits on the findings alone, and the number is
 stated (`run.config_ignored_files` in JSON and SARIF; `Excluded by config
 ignore: N` in text when N is not zero).

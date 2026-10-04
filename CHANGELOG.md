@@ -25,7 +25,8 @@ What can newly turn a green run red, and how to clear each:
 - **Unscanned files exit 2 in directory and pull-request mode**, as they
   already did for `--staged`. A file that could not be read, a file whose scan
   took longer than the per-file time budget (5000 ms), and a target named on
-  the command line that does not exist (`check a.ts missing.ts`) used to leave
+  the command line that does not exist (the `check` command takes several
+  paths, as in `check a.ts missing.ts`) used to leave
   the run at exit 0 with "No secrets found". Clear it by fixing the file, by
   declaring it in `ignore.paths`, or, for a missing target, by checking the path.
 - **Files over 32 MiB exit 2.** Files are now scanned whole up to 32 MiB, in
@@ -33,7 +34,9 @@ What can newly turn a green run red, and how to clear each:
   `ignore.paths`.
 - **A tracked file missing on disk exits 2 in pull-request mode**, as a sparse
   checkout produces, and so does a tracked file under a directory that cannot
-  be entered. Check out the file, or declare it in `ignore.paths`.
+  be entered (in a plain directory scan, a directory that cannot be entered is
+  reported as a diagnostic and does not exit 2). Check out the file, or declare
+  it in `ignore.paths`.
 - **Declaring a skip.** stderr names each file, the reason and the exact entry
   to add, as a JSON string ready to paste into `.vault-guard.json`, for example
   `{ "ignore": { "paths": ["/data/large-export.json"] } }`. The entry is
@@ -41,6 +44,17 @@ What can newly turn a green run red, and how to clear each:
   pull-request run the config is read from the base ref, so land the entry on
   the base branch first; a pull request that adds its own exclude only proposes
   it. A declared file is never opened and is counted, not hidden.
+- **On a pull request the Action refuses a `version` input older than the
+  scanner its own tag ships.** A workflow that moves to the `v1.9.1` tag while
+  keeping `version: 1.9.0` is refused before any scan. Remove the `version`
+  input (or set it to `1.9.1`). Workflows still on the `v1.9.0` tag, and push
+  runs, are unaffected.
+- **Update an existing SARIF upload step.** Newly generated workflows skip the
+  upload when the scan step's exit code is 2. A workflow written earlier that
+  only checks that the results file is set uploads the partial document on an
+  incomplete run. Add the clause the docs recommend:
+  `if: always() && steps.vg.outputs.results-file != '' && steps.vg.outputs.exit-code != '2'`
+  (see docs/GITHUB_ACTION.md).
 
 Also changed:
 
@@ -60,8 +74,8 @@ Also changed:
   `scanTextFileAsync` and `scanTextFileSync` is removed, and both functions now
   throw `FileTooLargeError` above 32 MiB instead of scanning part of the file.
   `MAX_SCAN_FILE_BYTES` and `FileTooLargeError` are exported.
-  `scanFileListAsync` no longer defaults its context root to the process
-  working directory.
+- The CLI's internal `scanFileListAsync` (not exported from any package index)
+  no longer defaults its context root to the process working directory.
 - A short `dckr_pat_` example value in API reference docs is no longer reported
   by the generic secret rule. The Action's install and audit text checks are
   judged per line.
@@ -72,11 +86,10 @@ Fixed in the release branch:
   and lists each unscanned file as an error-level tool execution notification,
   in every mode that writes SARIF. It used to say the execution succeeded.
 - The MCP `scan_workspace` tool carries `unscannable_files` and `unscannable`
-  into the JSON and SARIF documents it returns, not only into its summary.
+  into the JSON document it returns, and `unscannable_files` plus one
+  notification per file into the SARIF, not only into its summary.
 - A staged blob over 32 MiB is reported with the same too-large message and
   exclude entry as a file on disk (still exit 2), not as a raw git buffer error.
-- Pull-request mode with a file target after a directory target no longer
-  reports the directory's unreadable files a second time.
 - The init scaffold's SARIF upload step, and the documented upload guard, skip
   exit 2: an incomplete run's document covers only the files it scanned.
 - README, THREAT_MODEL, PRODUCT_SCOPE, GITHUB_ACTION, action.yml and

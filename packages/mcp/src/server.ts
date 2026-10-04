@@ -187,7 +187,7 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
     {
       title: 'Scan workspace directory',
       description:
-        'Run the Vault Guard secret scanner on a directory (respects .gitignore). Returns JSON, SARIF string, and summary. Files not scanned (over the size limit or unreadable) and files whose scan exceeded the time budget are listed in the summary (files_not_scanned, not_scanned, files_over_scan_budget, over_budget) and in the JSON and SARIF run data (unscannable_files, unscannable).',
+        'Run the Vault Guard secret scanner on a directory (respects .gitignore). Returns JSON, SARIF string, and summary. Files not scanned (over the size limit or unreadable) and files whose scan exceeded the time budget are listed in the summary (files_not_scanned, not_scanned, files_over_scan_budget, over_budget) and in the JSON run data (unscannable_files, unscannable). The SARIF run data carries the count as unscannable_files, with one notification per file.',
       inputSchema: {
         root: z.string().optional().describe('Directory to scan (default: process.cwd())'),
       },
