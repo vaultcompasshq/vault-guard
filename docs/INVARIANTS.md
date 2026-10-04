@@ -312,7 +312,7 @@ accepted whatever its rules turn out to be.
 Four properties, each load-bearing:
 
 - `VG_TAG_SCANNER_*` is a SEPARATE constant from `VG_MIN_*`. They hold different
-  numbers (`VG_MIN` is 1.7.0 and `VG_TAG_SCANNER` is 1.9.0 in `action.yml`; they
+  numbers (`VG_MIN` is 1.7.0 and `VG_TAG_SCANNER` is 1.9.1 in `action.yml`; they
   were equal when this entry was written, and the claim that they stay equal is
   false) and mean different things: the floor is the oldest scanner that
   understands this tag's flags, this is the tested scanner the tag ships. One
@@ -365,8 +365,8 @@ else.
   safety: a push to an UNPROTECTED feature branch runs that branch's own
   workflow file, written by the same author, with `GITHUB_BASE_REF` empty, so it
   is as author-controlled as a pull request and the rule does not cover it.
-- It costs consumers something now. The tag scanner is 1.9.0 and older
-  versions are published, so a `version:` input of 1.7.x or 1.8.x is refused on
+- It costs consumers something now. The tag scanner is 1.9.1 and older
+  versions are published, so a `version:` input of 1.7.x, 1.8.x or 1.9.0 is refused on
   every pull request (and, per the fork bullet above, on forks too). The entry
   once said it cost nothing; that stopped being true when 1.8.0 shipped.
 

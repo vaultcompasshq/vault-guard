@@ -9,12 +9,12 @@ The composite action in the **repository root** installs the published
 1. **`actions/checkout`** of your repository **before** this action (the action
    does not check out your code; it only installs Node and the scanner).
 2. A **published** `@vaultcompass/vault-guard` at the exact version the
-   `version` input names (default `1.9.0`, the scanner this Action tag shipped
+   `version` input names (default `1.9.1`, the scanner this Action tag shipped
    with).
 
 ## The Action tag and the scanner version are two numbers
 
-`vaultcompasshq/vault-guard@v1.9.0` installs `@vaultcompass/vault-guard@1.9.0`:
+`vaultcompasshq/vault-guard@v1.9.1` installs `@vaultcompass/vault-guard@1.9.1`:
 this is a package release, so the tag and the scanner move together. They are
 still allowed to differ -- `vaultcompasshq/vault-guard@v1.7.4` installed
 `@vaultcompass/vault-guard@1.7.0`; 1.7.1 through 1.7.4 were all action-only
@@ -94,7 +94,7 @@ judge.
 
 | Input           | Default                     | Description |
 |----------------|-----------------------------|-------------|
-| `version`      | `1.9.0`                     | **Exact** version of `@vaultcompass/vault-guard`, validated against `^(0\|[1-9][0-9]*)\.(0\|[1-9][0-9]*)\.(0\|[1-9][0-9]*)$`. A dist-tag (`latest`, `next`, `beta`), a range, a prerelease, or a leading zero is refused, and so is anything below **1.7.0**, the oldest scanner this Action tag can drive. **On a pull request it may not go below the scanner this Action tag ships** (`1.9.0` today); pinning forward is still allowed there. The default is the scanner this Action tag shipped with; leaving the input out is the recommended shape. |
+| `version`      | `1.9.1`                     | **Exact** version of `@vaultcompass/vault-guard`, validated against `^(0\|[1-9][0-9]*)\.(0\|[1-9][0-9]*)\.(0\|[1-9][0-9]*)$`. A dist-tag (`latest`, `next`, `beta`), a range, a prerelease, or a leading zero is refused, and so is anything below **1.7.0**, the oldest scanner this Action tag can drive. **On a pull request it may not go below the scanner this Action tag ships** (`1.9.1` today); pinning forward is still allowed there. The default is the scanner this Action tag shipped with; leaving the input out is the recommended shape. |
 | `path`         | `.`                         | Subdirectory to scan, relative to workspace root. Must not begin with `-`, contain `..`, or resolve outside the workspace through a symlink. |
 | `format`       | `sarif`                     | `sarif`, `json`, or `text`. |
 | `sarif-output` | `vault-guard-results.sarif` | Output file path **under** `GITHUB_WORKSPACE`. May not resolve under `.github/`, and may not resolve through a symlink at the file or at any directory on the way to it. |
@@ -249,7 +249,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
-      - uses: vaultcompasshq/vault-guard@v1.9.0
+      - uses: vaultcompasshq/vault-guard@v1.9.1
         with:
           format: sarif
 ```
@@ -281,7 +281,7 @@ not a clean scan and must not be reported as findings either.
 
 ```yaml
 - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-- uses: vaultcompasshq/vault-guard@v1.9.0
+- uses: vaultcompasshq/vault-guard@v1.9.1
   id: vg
   with:
     format: text
@@ -336,7 +336,7 @@ of its own:
       # the step fails with a 403 that says nothing about the scan.
       security-events: write
     steps:
-      - uses: vaultcompasshq/vault-guard@v1.9.0
+      - uses: vaultcompasshq/vault-guard@v1.9.1
         id: vg
         with:
           format: sarif
