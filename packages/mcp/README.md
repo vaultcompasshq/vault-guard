@@ -34,7 +34,7 @@ that workspace are rejected.
 
 | Tool | Purpose |
 |------|---------|
-| `scan_workspace` | Scan a directory (`.gitignore`-aware). Returns JSON, SARIF, and summary. |
+| `scan_workspace` | Scan a directory (`.gitignore`-aware). Returns JSON, SARIF, and summary. Files it did not scan (over 32 MiB or unreadable) or whose scan exceeded the time budget are listed in the summary and in the JSON run data (`unscannable_files`, `unscannable`); the SARIF run data carries the count as `unscannable_files`, with one notification per file, and the SARIF run then has `executionSuccessful: false`. |
 | `scan_file` | Scan a single file on disk. |
 | `scan_text` | Scan arbitrary UTF-8 text (e.g. a proposed edit). Optional `virtual_path` for SARIF URIs. |
 | `report_token_usage` | Rough on-disk token estimate for paths (no network calls). |

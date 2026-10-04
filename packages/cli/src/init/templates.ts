@@ -18,7 +18,7 @@ export const INIT_TEMPLATE_VERSION = '4';
  * separation, and docs/INVARIANTS.md lists every other place either number
  * appears.
  */
-export const ACTION_TAG = 'v1.9.0';
+export const ACTION_TAG = 'v1.9.1';
 
 /**
  * `github/codeql-action/upload-sarif`, pinned to a full commit SHA rather than
@@ -122,8 +122,10 @@ jobs:
         # code scanning -- and guarded on the output being non-empty, because a
         # run that could not scan at all writes no document. Handing that empty
         # file to the uploader fails the job with a SARIF parse error sitting on
-        # top of the real message.
-        if: always() && steps.vault-guard.outputs.results-file != ''
+        # top of the real message. Not on exit 2 either: an incomplete scan's
+        # document covers only the files it scanned, and uploading it would
+        # close alerts in the files it did not.
+        if: always() && steps.vault-guard.outputs.results-file != '' && steps.vault-guard.outputs.exit-code != '2'
         with:
           sarif_file: \${{ steps.vault-guard.outputs.results-file }}
 `;

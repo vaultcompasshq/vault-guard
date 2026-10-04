@@ -223,6 +223,32 @@ describe('createMcpServer', () => {
     }
   });
 
+  it('scan_workspace carries files it did not scan into the embedded json and sarif documents', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-root-'));
+    try {
+      fs.writeFileSync(path.join(root, 'ok.ts'), 'const a = 1;\n', 'utf8');
+      fs.writeFileSync(path.join(root, 'huge.txt'), Buffer.alloc(33 * 1024 * 1024, 0x61));
+      const client = await connect(createMcpServer({ telemetryFactory: fakeStore, workspaceRoot: root }));
+      const res = await client.callTool({ name: 'scan_workspace', arguments: { root: '.' } });
+      const payload = parse(res);
+      expect((payload.summary as { files_not_scanned?: number }).files_not_scanned).toBe(1);
+      const run = (payload.json as { run: { unscannable_files?: number; unscannable?: unknown } }).run;
+      expect(run.unscannable_files).toBe(1);
+      expect(run.unscannable).toEqual([{ file: 'huge.txt', kind: 'too_large' }]);
+      const sarif = JSON.parse(payload.sarif as string) as {
+        runs: Array<{
+          properties?: { vault_guard_run?: { unscannable_files?: number } };
+          invocations?: Array<{ executionSuccessful: boolean }>;
+        }>;
+      };
+      expect(sarif.runs[0].properties?.vault_guard_run?.unscannable_files).toBe(1);
+      expect(sarif.runs[0].invocations?.[0].executionSuccessful).toBe(false);
+      await client.close();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // Regression: a missing/incompatible better-sqlite3 binding must NOT crash the
   // server or disable scanning. Telemetry is optional; scanning is the product.
   it('still constructs and scans when telemetry is unavailable', async () => {
@@ -329,7 +355,7 @@ describe('served MCP surface is data, not agent instructions', () => {
 
   const EXPECTED_TOOL_DESCRIPTIONS: Record<string, string> = {
     scan_workspace:
-      'Run the Vault Guard secret scanner on a directory (respects .gitignore). Returns JSON, SARIF string, and summary.',
+      'Run the Vault Guard secret scanner on a directory (respects .gitignore). Returns JSON, SARIF string, and summary. Files not scanned (over the size limit or unreadable) and files whose scan exceeded the time budget are listed in the summary (files_not_scanned, not_scanned, files_over_scan_budget, over_budget) and in the JSON run data (unscannable_files, unscannable). The SARIF run data carries the count as unscannable_files, with one notification per file.',
     scan_file: 'Scan one file on disk for secrets. Returns JSON + SARIF.',
     scan_text:
       'Scan arbitrary UTF-8 text (e.g. proposed AI edit). Optional virtual_path for SARIF artifact URI only.',

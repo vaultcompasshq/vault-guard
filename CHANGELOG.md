@@ -7,6 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-10-03
+
+**Patch bump on all four packages.** `@vaultcompass/vault-guard`,
+`@vaultcompass/vault-guard-core`, `@vaultcompass/vault-guard-mcp` and
+`@vaultcompass/vault-guard-telemetry` move from 1.9.0 to 1.9.1 on npm. The
+Action's `version` default moves with them, to `1.9.1`, and the tag this
+release creates is `v1.9.1`. The telemetry package has no change of its own; it
+moves with the fixed group.
+
+**This patch release contains breaking changes.** They close ways a run could
+pass without having scanned everything, so they ship now rather than wait for
+a minor version. A run that was green on 1.9.0 can be red on 1.9.1.
+
+What can newly turn a green run red, and how to clear each:
+
+- **Unscanned files exit 2 in directory and pull-request mode**, as they
+  already did for `--staged`. A file that could not be read, a file whose scan
+  took longer than the per-file time budget (5000 ms), and a target named on
+  the command line that does not exist (the `check` command takes several
+  paths, as in `check a.ts missing.ts`) used to leave
+  the run at exit 0 with "No secrets found". Clear it by fixing the file, by
+  declaring it in `ignore.paths`, or, for a missing target, by checking the path.
+- **Files over 32 MiB exit 2.** Files are now scanned whole up to 32 MiB, in
+  every mode; a larger file is not scanned and the run exits 2. Declare it in
+  `ignore.paths`.
+- **A tracked file missing on disk exits 2 in pull-request mode**, as a sparse
+  checkout produces, and so does a tracked file under a directory that cannot
+  be entered (in a plain directory scan, a directory that cannot be entered is
+  reported as a diagnostic and does not exit 2). Check out the file, or declare
+  it in `ignore.paths`.
+- **Declaring a skip.** stderr names each file, the reason and the exact entry
+  to add, as a JSON string ready to paste into `.vault-guard.json`, for example
+  `{ "ignore": { "paths": ["/data/large-export.json"] } }`. The entry is
+  relative to the scanned directory and anchored with a leading slash. On a
+  pull-request run the config is read from the base ref, so land the entry on
+  the base branch first; a pull request that adds its own exclude only proposes
+  it. A declared file is never opened and is counted, not hidden.
+- **On a pull request the Action refuses a `version` input older than the
+  scanner its own tag ships.** A workflow that moves to the `v1.9.1` tag while
+  keeping `version: 1.9.0` is refused before any scan. Remove the `version`
+  input (or set it to `1.9.1`). Workflows still on the `v1.9.0` tag, and push
+  runs, are unaffected.
+- **Update an existing SARIF upload step.** Newly generated workflows skip the
+  upload when the scan step's exit code is 2. A workflow written earlier that
+  only checks that the results file is set uploads the partial document on an
+  incomplete run. Add the clause the docs recommend:
+  `if: always() && steps.vg.outputs.results-file != '' && steps.vg.outputs.exit-code != '2'`
+  (see docs/GITHUB_ACTION.md).
+
+Also changed:
+
+- **PEM private key detection is broader.** The check that a `-----BEGIN ...
+  PRIVATE KEY-----` header is followed by key material now judges the text
+  between the header and its END marker, and finds keys pasted commented out,
+  quoted and concatenated across lines, as a YAML or TOML list, flattened onto
+  one line, with markup or escaped line breaks, and behind long armor headers.
+  This also fixes a 1.9.0 regression for Python bytes literals. Prose and public
+  keys beside a mention of the header are still not reported.
+- **New run counts.** JSON and SARIF state `config_ignored_files` and
+  `binary_files_skipped` on every run, and `type_filtered_files` on a plain
+  directory run as well as in pull-request mode, even at zero. When a file was
+  not scanned, JSON carries `run.unscannable_files` and `run.unscannable` (file,
+  kind, and the exclude when there is one). Text mode prints the non-zero counts.
+- **Library API (core), breaking.** The `maxLineUtf16Units` option of
+  `scanTextFileAsync` and `scanTextFileSync` is removed, and both functions now
+  throw `FileTooLargeError` above 32 MiB instead of scanning part of the file.
+  `MAX_SCAN_FILE_BYTES` and `FileTooLargeError` are exported.
+- The CLI's internal `scanFileListAsync` (not exported from any package index)
+  no longer defaults its context root to the process working directory.
+- A short `dckr_pat_` example value in API reference docs is no longer reported
+  by the generic secret rule. The Action's install and audit text checks are
+  judged per line.
+
+Fixed in the release branch:
+
+- SARIF from an incomplete run marks its invocation `executionSuccessful: false`
+  and lists each unscanned file as an error-level tool execution notification,
+  in every mode that writes SARIF. It used to say the execution succeeded.
+- The MCP `scan_workspace` tool carries `unscannable_files` and `unscannable`
+  into the JSON document it returns, and `unscannable_files` plus one
+  notification per file into the SARIF, not only into its summary.
+- A staged blob over 32 MiB is reported with the same too-large message and
+  exclude entry as a file on disk (still exit 2), not as a raw git buffer error.
+- The init scaffold's SARIF upload step, and the documented upload guard, skip
+  exit 2: an incomplete run's document covers only the files it scanned.
+- README, THREAT_MODEL, PRODUCT_SCOPE, GITHUB_ACTION, action.yml and
+  INVARIANTS describe the rule above; they still described the old one.
+
 ## [1.9.0] - 2026-09-30
 
 **Minor bump on all four packages.** `@vaultcompass/vault-guard`,

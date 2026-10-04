@@ -14,7 +14,7 @@ export interface JsonRunMetadata {
   duration_ms: number;
   /** Files opened and scanned for secrets (excludes skipped binaries). */
   files_scanned: number;
-  /** Total bytes read from disk for those scans (capped at per-file read limit when streaming). */
+  /** Total bytes of the files counted in {@link files_scanned}; each is read whole. */
   bytes_scanned: number;
   /** Active regex rules after config (built-ins minus "off", plus accepted extra_patterns). */
   patterns_active: number;
@@ -73,17 +73,17 @@ export interface JsonRunMetadata {
    */
   blocking_matches?: number;
   /**
-   * Files the scan opened but could not read, so their contents were never
-   * examined. Omitted when zero.
+   * Files the run should have scanned and did not vouch for: unreadable, over
+   * the 32 MiB scan limit, over the per-file scan budget, a tracked file
+   * missing on disk, or a named target that does not exist. Omitted when zero.
    *
    * A non-zero value means the run is INCOMPLETE: `blocking_matches` counts
    * only what the scanner actually looked at, so a clean gate result sits on
    * top of files nobody checked. The run exits 2 on every path (staged,
    * directory, pull-request), with the output still emitted. The way out is to
    * fix the file or to exclude it through the config's `ignore` list, which is
-   * then counted in {@link config_ignored_files}. Counts a scan that blew its
-   * per-file budget, a file over the 32 MiB scan limit, and a named target that
-   * does not exist.
+   * then counted in {@link config_ignored_files}. In SARIF the same run has
+   * `invocations[0].executionSuccessful: false`.
    */
   unscannable_files?: number;
   /**
@@ -368,6 +368,13 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
   return JSON.stringify(output, null, 2);
 }
 
+/** Plain wording for each `unscannable` kind, used in SARIF notifications. */
+const UNSCANNABLE_KIND_TEXT: Record<string, string> = {
+  read_error: 'could not be read, so it was not scanned',
+  too_large: 'over the scan size limit, so it was not scanned',
+  scan_budget: 'its scan exceeded the per-file time budget, so the result is not trusted',
+};
+
 /** SARIF 2.1.0 -- compatible with GitHub Code Scanning (upload-sarif action). */
 export function formatSarif(results: FileScanResult[], opts: FormatOptions = {}): string {
   const fpCwd = opts.cwd === undefined ? process.cwd() : opts.cwd;
@@ -476,16 +483,36 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
   // `invocations[].toolExecutionNotifications`. Putting it in `results` would
   // make it a code-scanning alert with no file to point at, and a triager would
   // have to dismiss it.
+  //
+  // A run that could not scan every file it was asked to (the run exits 2) is
+  // not a successful execution, whatever its results say: `executionSuccessful`
+  // is false and each unscanned file is an error-level notification in the same
+  // place, naming the file and the cause. The results then cover only the files
+  // that were scanned.
+  const unscannable = opts.run?.unscannable ?? [];
+  const incomplete = (opts.run?.unscannable_files ?? 0) > 0 || unscannable.length > 0;
+  const unscannableNotifications = unscannable.map(u => ({
+    descriptor: { id: `vault-guard/unscannable/${u.kind}` },
+    level: 'error',
+    message: {
+      text:
+        `${toSarifArtifactUri(u.file, opts.cwd, opts.scanRoot)}: ${UNSCANNABLE_KIND_TEXT[u.kind] ?? 'not scanned'}` +
+        (u.exclude ? `; to exclude it on purpose, add ${JSON.stringify(u.exclude)} to "ignore.paths"` : ''),
+    },
+  }));
   const invocations =
-    opts.trustBase !== undefined
+    opts.trustBase !== undefined || incomplete
       ? [
           {
-            executionSuccessful: true,
-            toolExecutionNotifications: opts.trustBase.proposals.map(text => ({
-              descriptor: { id: 'vault-guard/trust-base/proposal' },
-              level: 'warning',
-              message: { text },
-            })),
+            executionSuccessful: !incomplete,
+            toolExecutionNotifications: [
+              ...unscannableNotifications,
+              ...(opts.trustBase?.proposals ?? []).map(text => ({
+                descriptor: { id: 'vault-guard/trust-base/proposal' },
+                level: 'warning',
+                message: { text },
+              })),
+            ],
           },
         ]
       : undefined;

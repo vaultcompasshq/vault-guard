@@ -68,6 +68,15 @@ interface RunJson {
   run: Record<string, number | string | undefined>;
 }
 
+interface SarifDoc {
+  runs: Array<{
+    invocations?: Array<{
+      executionSuccessful: boolean;
+      toolExecutionNotifications?: Array<{ level: string; message: { text: string } }>;
+    }>;
+  }>;
+}
+
 describe('directory and pull-request mode fail closed', () => {
   const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
   const originalCwd = process.cwd();
@@ -216,6 +225,29 @@ describe('directory and pull-request mode fail closed', () => {
       expect(r.err).toContain('creds.txt');
     });
 
+    it('a later file target does not record the directory target\'s missing file a second time', async () => {
+      seedPr();
+      fs.rmSync(path.join(dir, 'src', 'locked', 'creds.txt'));
+      const r = await capture(() =>
+        scanCommand(['.', 'src/app.ts'], 'json', false, undefined, 'base-snapshot'),
+      );
+      expect(r.code).toBe(2);
+      const run = (JSON.parse(r.stdout) as { run: { unscannable_files?: number; unscannable?: Array<{ file: string }> } }).run;
+      expect(run.unscannable_files).toBe(1);
+      expect(run.unscannable?.map(u => u.file)).toEqual([path.join('src', 'locked', 'creds.txt')]);
+    });
+
+    it('sarif: an incomplete run is not reported as a successful execution, and says why', async () => {
+      seedPr();
+      fs.rmSync(path.join(dir, 'src', 'locked', 'creds.txt'));
+      const r = await capture(() => scanCommand('.', 'sarif', false, undefined, 'base-snapshot'));
+      expect(r.code).toBe(2);
+      const inv = (JSON.parse(r.stdout) as SarifDoc).runs[0].invocations?.[0];
+      expect(inv?.executionSuccessful).toBe(false);
+      const texts = (inv?.toolExecutionNotifications ?? []).map(n => n.message.text);
+      expect(texts.some(t => t.includes('creds.txt'))).toBe(true);
+    });
+
     it('the same file declared in the base ignore list is a counted skip', async () => {
       seedPr();
       git(dir, ['checkout', '-q', 'main']);
@@ -285,6 +317,26 @@ describe('directory and pull-request mode fail closed', () => {
         expect(() => JSON.parse(r.stdout)).not.toThrow();
       });
     }
+
+    it('sarif in directory mode: executionSuccessful is false and each unscanned file is a notification', async () => {
+      write('a.ts', 'export const a = 1;\n');
+      const r = await capture(() => scanCommand(['a.ts', 'missing.ts'], 'sarif', false));
+      expect(r.code).toBe(2);
+      const inv = (JSON.parse(r.stdout) as SarifDoc).runs[0].invocations?.[0];
+      expect(inv?.executionSuccessful).toBe(false);
+      const notes = inv?.toolExecutionNotifications ?? [];
+      expect(notes).toHaveLength(1);
+      expect(notes[0].level).toBe('error');
+      expect(notes[0].message.text).toContain('missing.ts');
+    });
+
+    it('sarif on a complete directory run carries no failed invocation', async () => {
+      write('a.ts', 'export const a = 1;\n');
+      const r = await capture(() => scanCommand('.', 'sarif', false));
+      expect(r.code).toBe(0);
+      const inv = (JSON.parse(r.stdout) as SarifDoc).runs[0].invocations?.[0];
+      expect(inv?.executionSuccessful ?? true).toBe(true);
+    });
 
     it('json: run.unscannable lists file, kind and exclude', async () => {
       write('a.txt', 'hello\n');

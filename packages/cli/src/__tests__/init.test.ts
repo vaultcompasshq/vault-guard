@@ -354,7 +354,9 @@ describe('vault-guard init', () => {
     // output was added to remove.
     const yaml = githubWorkflowYaml();
     expect(yaml).toContain('id: vault-guard');
-    expect(yaml).toContain("if: always() && steps.vault-guard.outputs.results-file != ''");
+    expect(yaml).toContain(
+      "if: always() && steps.vault-guard.outputs.results-file != '' && steps.vault-guard.outputs.exit-code != '2'",
+    );
     expect(yaml).toContain('sarif_file: ${{ steps.vault-guard.outputs.results-file }}');
 
     // And the uploader is pinned to a commit, not to `v3`. It runs in the

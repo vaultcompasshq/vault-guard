@@ -88,29 +88,35 @@ Vault Guard does not, and will not, claim to defend against:
 |-------------------------|-----------------------------------------------------|------------------------------------------------------------------------------|
 | Files on disk           | Pathological filenames, symlink loops               | `realpathSync` for symlink resolution; `seen` set; binary-file skip.          |
 | `.vault-guard.json`     | ReDoS via `extra_patterns`                          | `validateRegexSafety` (length cap 256, quantifier-density cap, shape check). |
-| File contents (built-in)| ReDoS via a catastrophic built-in pattern shape     | Every built-in repeat is bounded; all 59 rules measured linear on adversarial input (1.6.0 sweep), each bound guarded by a timing test. The per-file budget does **not** bound time: Node regexes are synchronous, so it is a **post-hoc** check that turns an over-budget file into a fail-closed verdict (staged) or a diagnostic (directory scan). |
+| File contents (built-in)| ReDoS via a catastrophic built-in pattern shape     | Every built-in repeat is bounded; all 59 rules measured linear on adversarial input (1.6.0 sweep), each bound guarded by a timing test. The per-file budget does **not** bound time: Node regexes are synchronous, so it is a **post-hoc** check that turns an over-budget file into a fail-closed verdict (exit 2) on every scan: staged, directory and pull-request. |
 | `.vault-guard.json`     | Cross-trust load from a parent directory            | `loadConfig` walks only between `startDir` and the nearest `.git` root.       |
 | `.vault-guard.json`     | Silent default fallback on parse error              | `loadConfig` throws `ConfigError`; CLI exits non-zero with the parser message. |
 | `.vault-guard.json`     | A schema-invalid key silently dropped               | The schema check that used to run only in `config validate` runs on every load, on every path (CLI, MCP, editor extension). |
 | Control inputs, on a pull request | A pull request mutes the scanner in the same commit that carries the secret: `ignore: ["**"]`, `severity_overrides` off, `fail_on: none`, a head-added `.vault-guard.local.json`, a rewritten baseline, a `.gitignore` over the committed file, or the key under a `vendor/` directory | `--trust-base <ref>`: config and baseline read from the base ref, head tree scanned, tracked-file set instead of the gitignore tester, vendored names anchored to the scan root. A changed control input is reported and not applied. Unresolvable ref, a ref equal to HEAD's commit, and a ref carrying HEAD's tree are all exit 2. |
 | The workflow file itself | A pull request edits or deletes the job that runs the gate | Not solvable inside the tool: on a same-repo `pull_request` event GitHub runs the workflow from the head. Required-check branch protection, or a reusable workflow on a protected ref. Documented in the README and `GITHUB_ACTION.md`. |
 | Repository git config   | `diff.relative` shrinks the staged file list        | Config forced off per invocation (`git -c diff.relative=false ...`); staged paths resolved against the worktree root, never the caller's cwd. |
-| Git index               | A staged blob the scanner cannot read               | Counted in `run.unscannable_files`; `--staged` exits **2** and prints no success line (see "Fail-closed behaviour"). |
+| Git index, files on disk | A file the scanner cannot read, one over the 32 MiB limit, a tracked file missing on disk | Counted in `run.unscannable_files`; staged, directory and pull-request scans exit **2** and print no success line (see "Fail-closed behaviour"). |
 | File contents (matched) | Token-leak surface on output                        | `maskValue` reduces to 4-char prefix + length tag; SARIF message omits value. |
 
 #### Fail-closed behaviour
 
-`vault-guard scan --staged` is the pre-commit gate, and its file list is a
-closed enumeration of exactly what is about to be committed. If any staged
-file cannot be examined, the run is **incomplete**, not clean:
+A staged, directory or pull-request scan that did not scan a file it should
+have is **incomplete**, not clean. The causes are a file that could not be
+read, a file over the 32 MiB whole-file limit, a file whose scan exceeded the
+per-file time budget, a tracked file missing on disk (pull-request mode, as a
+sparse checkout produces), and a path named to the `check` command (which
+takes several) that does not exist. An incomplete run has:
 
 - exit code **2** (the same "cannot vouch for this result" code used when
   `git diff --cached` itself fails), never 0, and in preference to the
   exit 1 that findings alone would have produced;
 - no `✅ SUCCESS` line in text output;
-- `run.unscannable_files` in JSON and in the SARIF run properties, alongside
-  an error-severity `file.read_error` diagnostic (a SARIF driver
-  notification at level `error`) naming the file and the reason;
+- `run.unscannable_files` and `run.unscannable` in JSON, `unscannable_files`
+  in the SARIF run properties with the invocation marked
+  `executionSuccessful: false` and one error-level notification per file, and
+  an error-severity diagnostic naming the file and the reason;
+- on stderr, in every output format, each file, the reason, and the exact
+  `ignore.paths` entry that would declare it;
 - the installed pre-commit hooks report exit 2 as an incomplete scan rather
   than a detection, and deliberately omit the `--no-verify` hint they give
   for a real finding: the check did not run, so bypassing it is not the
@@ -145,15 +151,15 @@ consequences follow, and both are intended:
 A **directory** scan is unaffected and still loads its config from the
 directory it was pointed at, which is also the tree it walks.
 
-A **directory** scan deliberately does not fail on the same condition. Its
-file set is discovered by walking a tree rather than declared by git, and
-unreadable entries in it are ordinary on a real machine (root-owned caches,
-sockets, other users' files). It reports them the same way (the diagnostic
-and the `unscannable_files` count are emitted identically) but the exit code
-still reflects findings only. Making a directory walk unrunnable for reasons
-the user cannot fix would push people to stop running it, which protects
-nothing. Integrators who want the stricter rule on a directory scan can gate
-on `run.unscannable_files` themselves.
+A **directory** scan fails closed on the same conditions. Until 1.9.1 it did
+not, on the theory that unreadable entries in a walked tree are ordinary on a
+developer's machine; that is false of the tree a CI gate is judging, where a
+tracked file nobody could read is exactly the file nobody checked. The way out
+is deliberate, never silent: fix the file, or declare it in `ignore.paths` in
+`.vault-guard.json`. A declared file is never opened, the run exits on its
+findings alone, and the number is reported as `config_ignored_files`. On a
+pull-request run the config, and so the entry, is read from the base ref; a
+pull request that adds its own exclude only proposes it.
 
 ### `vault-guard install-hook`
 

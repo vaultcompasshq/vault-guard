@@ -5,8 +5,11 @@
  * For a security tool, every silent fallback is an undetected miss:
  *   - A corrupt `.vault-guard.json` silently reverts to defaults
  *   - `git diff --cached` failing produces a false ✅ on pre-commit
- *   - A `>10 MB` file is skipped without any output
+ *   - A large file was skipped without any output
  *   - A ReDoS-unsafe `extra_pattern` is dropped with no feedback
+ *
+ * (Those were the motivating cases. Today a file over the 32 MiB scan limit is
+ * not skipped quietly: it is recorded as unscannable and the CLI run exits 2.)
  *
  * Instead of adding a third-party logging dep, we funnel every "would have
  * been silently swallowed" event through this typed channel, emit it in

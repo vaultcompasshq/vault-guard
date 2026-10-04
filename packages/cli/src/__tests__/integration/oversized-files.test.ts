@@ -151,6 +151,34 @@ describe('large files are scanned whole, and the limit is a refusal', () => {
     expect(r.code).toBe(0);
   }, 120000);
 
+  describe('staged: a blob above 32 MiB', () => {
+    function stageHuge(): void {
+      execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+      fs.writeFileSync(path.join(dir, 'huge.json'), Buffer.alloc(33 * MIB, 0x61));
+      execFileSync('git', ['add', 'huge.json'], { cwd: dir });
+    }
+
+    it('exits 2 with the too-large wording and the exclude, not a raw git error', async () => {
+      stageHuge();
+      const r = await capture(() => scanCommand('.', 'json', true));
+      expect(r.code).toBe(2);
+      expect(r.err).toContain('huge.json');
+      expect(r.err).toMatch(/over the 32 MiB scan limit/);
+      expect(r.err).toContain('"/huge.json"');
+      expect(r.err).not.toMatch(/ENOBUFS|Failed to read staged blob/);
+      const run = (JSON.parse(r.stdout) as { run: { unscannable?: unknown } }).run;
+      expect(run.unscannable).toEqual([{ file: 'huge.json', kind: 'too_large', exclude: '/huge.json' }]);
+    }, 120000);
+
+    it('sarif: the incomplete staged run is not a successful execution', async () => {
+      stageHuge();
+      const r = await capture(() => scanCommand('.', 'sarif', true));
+      expect(r.code).toBe(2);
+      const doc = JSON.parse(r.stdout) as { runs: Array<{ invocations?: Array<{ executionSuccessful: boolean }> }> };
+      expect(doc.runs[0].invocations?.[0].executionSuccessful).toBe(false);
+    }, 120000);
+  });
+
   describe('above 32 MiB', () => {
     function writeHuge(): void {
       fs.writeFileSync(path.join(dir, 'huge.json'), Buffer.alloc(33 * MIB, 0x61));

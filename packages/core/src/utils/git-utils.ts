@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { GitError } from '../errors';
 import { decodeTextBuffer } from './text-decode';
-import { MAX_SCAN_FILE_BYTES } from './scan-file';
+import { FileTooLargeError, MAX_SCAN_FILE_BYTES } from './scan-file';
 
 /**
  * Repository config that must never be allowed to decide what vault-guard
@@ -276,17 +276,42 @@ export function readGitIndexFile(cwd: string, filePath: string): string {
         cwd: root,
         stdio: ['ignore', 'pipe', 'pipe'],
         // The raw blob size, the same limit directory mode applies to bytes on
-        // disk: git's output exceeding it fails the read, and the file is then
-        // recorded as unscannable.
+        // disk: git's output exceeding it fails the read with ENOBUFS, which
+        // the catch below turns into FileTooLargeError.
         maxBuffer: MAX_SCAN_FILE_BYTES,
       }),
     );
   } catch (err) {
+    // Output over maxBuffer means the blob is over the limit. Thrown as the same
+    // FileTooLargeError a file on disk produces, so the caller reports it with
+    // the same wording and exclude rather than as a raw buffer error.
+    if ((err as NodeJS.ErrnoException | undefined)?.code === 'ENOBUFS') {
+      throw new FileTooLargeError(stagedBlobSize(root, blobId), MAX_SCAN_FILE_BYTES);
+    }
     throw new GitError(
       `Failed to read staged blob for ${rootRelative}\nUnderlying error: ${String(err)}`,
       `git ${catArgs.join(' ')}`,
       err,
     );
+  }
+}
+
+/**
+ * Size in bytes of a blob, for the too-large message. Falls back to one byte
+ * over the limit when git cannot say, which is still true: the read already
+ * overflowed it.
+ */
+function stagedBlobSize(root: string, blobId: string): number {
+  try {
+    const out = execFileSync('git', [...FORCED_GIT_CONFIG, 'cat-file', '-s', blobId], {
+      cwd: root,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const n = Number.parseInt(out.trim(), 10);
+    return Number.isFinite(n) ? n : MAX_SCAN_FILE_BYTES + 1;
+  } catch {
+    return MAX_SCAN_FILE_BYTES + 1;
   }
 }
 

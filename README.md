@@ -161,26 +161,62 @@ JSON, SARIF) but does not break the gate. Tools that wrap vault-guard read
 exit 1 as "secrets found".
 
 Exit code **2** means vault-guard could not complete the scan and is refusing to
-call the result clean: an invalid `.vault-guard.json`, an invalid `--fail-on`
-or `--format` value, a usage error such as an unknown option, `--staged` outside
-a git repository, `git diff --cached` failed, `--staged` reached a staged file it
-could not read, `--trust-base` named a ref whose control inputs it could not
-read, or the run hit an unexpected fatal error (`--help` and `--version` still
-exit 0). A staged blob containing a NUL byte is scanned as text, like any file;
-UTF-16 files that carry a byte order mark are decoded and scanned, while UTF-16
-without a BOM is not detected. When the run
-stops before or outside the scan itself (config, flag, git, fatal error, trust
-base), no JSON or SARIF document is written, because a document reporting zero
-findings would be a claim the run did not earn. When the scan ran but some staged
-files went unexamined, the JSON or SARIF document **is** written, with
-`run.unscannable_files` counting them and error-severity diagnostics naming them,
-and the exit is still 2. If you pipe SARIF to `upload-sarif`, guard that step on
-the file being non-empty (see **[docs/GITHUB_ACTION.md](./docs/GITHUB_ACTION.md)**).
-Either way there is no `✅ SUCCESS` line. Exit 2
-takes precedence over exit 1, so gate on **any** non-zero exit rather than on
-1 alone: a run that skipped files cannot report a complete finding set. See
-**[docs/THREAT_MODEL.md](./docs/THREAT_MODEL.md)** for why a directory scan
-reports the same condition without failing on it.
+call the result clean. It is raised in two ways.
+
+The run could not start, or stopped outside the scan itself: an invalid
+`.vault-guard.json`, an invalid `--fail-on` or `--format` value, a usage error
+such as an unknown option, `--staged` outside a git repository, `git diff
+--cached` failed, `--trust-base` named a ref whose control inputs it could not
+read, a directory or pull-request scan whose target resolved to no files at
+all, or an unexpected fatal error (`--help` and `--version` still exit 0). No
+JSON or SARIF document is written in these cases, because a document reporting
+zero findings would be a claim the run did not earn.
+
+The scan ran, but a file it should have scanned was not. This applies to
+directory, pull-request and `--staged` scans alike:
+
+| Cause | How to clear it |
+|-------|-----------------|
+| A file could not be read (permissions). In pull-request mode this includes a tracked file under a directory that cannot be entered | Fix the file, or declare it in `ignore.paths` |
+| The file is over the 32 MiB whole-file limit (judged on the raw bytes on disk or in the index) | Declare it in `ignore.paths` |
+| The file's scan took longer than the per-file time budget (5000 ms), so its result is not trusted | Fix the file, or declare it in `ignore.paths` |
+| A tracked file is missing on disk, as a sparse checkout produces (pull-request mode) | Check out the file, or declare it in `ignore.paths` |
+| A path named to the `check` command, which takes several, does not exist (`check a.ts missing.ts`) | Check the path, or stop passing it |
+
+Here the JSON or SARIF document **is** written, and the exit is still 2. stderr
+names each file, the reason, and the exact entry to add, printed as a JSON
+string ready to paste:
+
+```json
+{ "ignore": { "paths": ["/data/large-export.json"] } }
+```
+
+The entry is relative to the scanned directory (the repository root for
+`--staged`) and anchored with a leading slash. On a pull-request run
+(`--trust-base`) the config is read from the base ref, so the entry has to land
+there first; a pull request that adds its own exclude only proposes it. A file
+excluded this way is never opened and is counted, not hidden.
+
+A staged blob containing a NUL byte is scanned as text, like any file; UTF-16
+files that carry a byte order mark are decoded and scanned, while UTF-16
+without a BOM is not detected.
+
+Every JSON and SARIF run states what it declined to open, even at zero:
+`config_ignored_files` (excluded by the config's `ignore` list),
+`binary_files_skipped` (skipped by a binary extension) and, on a directory or
+pull-request scan, `type_filtered_files` (dropped by the walk's extension,
+lockfile and generated-file filters). Text mode prints each of these lines when
+it is non-zero. When a file was not scanned, JSON adds `run.unscannable_files`
+and `run.unscannable` (each entry has `file`, `kind` of `read_error`,
+`too_large` or `scan_budget`, and `exclude` when a config entry can name the
+file); SARIF adds `unscannable_files` and marks the invocation
+`executionSuccessful: false` with one notification per file. If you pipe SARIF
+to `upload-sarif`, see **[docs/GITHUB_ACTION.md](./docs/GITHUB_ACTION.md)** for
+how to guard that step.
+
+Either way there is no `✅ SUCCESS` line. Exit 2 takes precedence over exit 1,
+so gate on **any** non-zero exit rather than on 1 alone: a run that did not scan
+every file cannot report a complete finding set.
 
 ```bash
 vault-guard scan .                      # default: fail on medium and above
@@ -282,7 +318,7 @@ jobs:
           # Required on pull requests: pull-request mode reads the config and
           # the baseline from the base branch, which a shallow clone does not have.
           fetch-depth: 0
-      - uses: vaultcompasshq/vault-guard@v1.9.0
+      - uses: vaultcompasshq/vault-guard@v1.9.1
         id: vault-guard
         with:
           path: .
@@ -291,8 +327,10 @@ jobs:
       - uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
         # Guarded on the output being non-empty: a run that could not scan at
         # all writes no document, and handing that empty file to the uploader
-        # fails the job with a parse error on top of the real message.
-        if: always() && steps.vault-guard.outputs.results-file != ''
+        # fails the job with a parse error on top of the real message. And not
+        # on exit 2: an incomplete scan's document covers only the files it
+        # scanned, and uploading it would close alerts in the files it did not.
+        if: always() && steps.vault-guard.outputs.results-file != '' && steps.vault-guard.outputs.exit-code != '2'
         with:
           sarif_file: ${{ steps.vault-guard.outputs.results-file }}
 ```
@@ -307,8 +345,8 @@ then decides the scanner, and there is one pin to bump instead of two that can
 disagree.
 
 **The Action tag and the scanner version are separate numbers, and they do not
-have to match.** `vaultcompasshq/vault-guard@v1.9.0` installs
-`@vaultcompass/vault-guard@1.9.0` -- this is a package release, so the two move
+have to match.** `vaultcompasshq/vault-guard@v1.9.1` installs
+`@vaultcompass/vault-guard@1.9.1` -- this is a package release, so the two move
 together. They are still allowed to come apart: `vaultcompasshq/vault-guard@v1.7.4`
 installed `@vaultcompass/vault-guard@1.7.0`, because that release changed the
 Action and nothing in the scanner, so there was no new scanner to publish. Read
@@ -600,9 +638,12 @@ findings at or above the effective `fail_on` threshold and is exactly what drive
 own exit code. An integrator gating on `summary.secrets` will fail builds that vault-guard itself
 considers passing.
 
-**Also check `run.unscannable_files`.** It is the number of files vault-guard reached but could
-not read, so their contents were never examined. When it is present and non-zero, a
-`blocking_matches` of 0 means "nothing found in what was scanned", not "nothing there".
+**Also check `run.unscannable_files`.** It is the number of files the run should have scanned
+and did not vouch for: unreadable, over the 32 MiB limit, over the per-file time budget, a
+tracked file missing on disk, or a path named to `check` that does not exist. `run.unscannable` lists
+each one with its `kind` and, where possible, the `ignore.paths` entry that would declare it.
+When it is present the process exits 2, and a `blocking_matches` of 0 means "nothing found in
+what was scanned", not "nothing there".
 
 ---
 

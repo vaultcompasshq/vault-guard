@@ -9,7 +9,7 @@ inputs:
   version:
     description: |
       The exact version of `@vaultcompass/vault-guard` to install, such as
-      `1.9.0`. Validated against
+      `1.9.1`. Validated against
       `^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`, and the default is
       the SCANNER version this action tag shipped with, which is not always the
       same number as the tag: an action-only release moves the tag and leaves
@@ -40,7 +40,7 @@ inputs:
       request is not the place to widen a pattern for the convenience of
       testing one.
     required: false
-    default: 1.9.0
+    default: 1.9.1
   path:
     description: |
       Path to scan, relative to the workspace root. Must be 1..256 characters
@@ -114,10 +114,14 @@ outputs:
   results-file:
     description: |
       Absolute path to the written results file, or empty when the scan wrote
-      nothing at all. Exit 2 means vault-guard could not establish something it
-      needed and never produced a document, and handing that empty file to
+      nothing at all. Some exit-2 runs (a trust base or config that could not be
+      read) never produce a document, and handing that empty file to
       `upload-sarif` fails the job with a parse error that buries the real
-      cause. Guard a chained upload on this output being non-empty.
+      cause. An incomplete scan (a file it did not scan) also exits 2 but does
+      write a document, covering only the files that were scanned, with the
+      SARIF invocation marked executionSuccessful false. Guard a chained upload
+      on this output being non-empty and on exit-code not being 2; see
+      docs/GITHUB_ACTION.md.
     value: ${{ steps.run.outputs.results_file }}
   exit-code:
     description: vault-guard's own exit code (0 clean, 1 findings at or above the gate, 2 could not run)
@@ -292,7 +296,7 @@ runs:
         # step.)
         VG_TAG_SCANNER_MAJOR=1
         VG_TAG_SCANNER_MINOR=9
-        VG_TAG_SCANNER_PATCH=0
+        VG_TAG_SCANNER_PATCH=1
         VG_TAG_SCANNER="${VG_TAG_SCANNER_MAJOR}.${VG_TAG_SCANNER_MINOR}.${VG_TAG_SCANNER_PATCH}"
 
         # GITHUB_BASE_REF being non-empty IS the pull-request test, and it is the
@@ -921,9 +925,11 @@ runs:
         echo "exit_code=${EXIT_CODE}" >> "${GITHUB_OUTPUT}"
 
         # Exit 2 is excluded here, and that exclusion is the whole point of the
-        # condition. The scanner's reachable exit-2 paths -- an unresolvable
+        # condition. Some of the scanner's exit-2 paths -- an unresolvable
         # trust base, a scan target outside the base repo -- write to stderr and
-        # no report, so they land in this branch too, and the generic message
+        # no report, so they land in this branch too. (An incomplete scan, one
+        # that did not scan every file, exits 2 WITH a report, which then covers
+        # only the files that were scanned.) For the no-report ones the generic message
         # below would tell someone whose real problem is a missing
         # `fetch-depth: 0` to go and check their `version` input. The scanner
         # already said what happened; the arm at the bottom of the case names
@@ -943,7 +949,7 @@ runs:
             exit 1
             ;;
           2)
-            printf '::error::vault-guard could not complete its checks (exit 2): an unresolvable trust base, a base config that fails validation, or a file it could not read. This is not a clean scan.\n'
+            printf '::error::vault-guard could not complete its checks (exit 2): an unresolvable trust base, a base config that fails validation, or a file it did not scan (unreadable, over the 32 MiB limit, over the per-file time budget, a tracked file missing on disk, or a named target that does not exist). The log above names each file and the ignore.paths entry that would declare it; on a pull request that entry is read from the base ref. This is not a clean scan.\n'
             exit 2
             ;;
           *)
