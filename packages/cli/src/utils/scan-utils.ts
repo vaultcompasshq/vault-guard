@@ -8,6 +8,7 @@ import {
   buildConfigIgnoreFilter,
   scanTextFileSync,
   MAX_SCAN_FILE_BYTES,
+  FileTooLargeError,
   readGitIndexFile,
   applyPathAwareSeverity,
   formatJson as formatJsonResults,
@@ -490,8 +491,9 @@ export async function scanFileListAsync(
         // silently; refusing on NUL broke ordinary commits of fonts and
         // lockfiles.
 
-        // The size limit is on the RAW blob (readGitIndexFile refuses one over
-        // MAX_SCAN_FILE_BYTES, and the catch below records it as unscannable),
+        // The size limit is on the RAW blob (readGitIndexFile throws
+        // FileTooLargeError over MAX_SCAN_FILE_BYTES, and the catch below
+        // records it as too large),
         // not on the decoded text: a UTF-16 blob under the limit decodes to a
         // different length and must not be refused for that.
         const byteLen = Buffer.byteLength(content, 'utf-8');
@@ -546,6 +548,12 @@ export async function scanFileListAsync(
         recordBudgetExceeded(path.relative(cwd, file), elapsed, scanBudgetMs, options, exclude);
       }
     } catch (error) {
+      // A staged blob over the limit: the same record, wording and exclude as a
+      // file over the limit on disk.
+      if (error instanceof FileTooLargeError) {
+        recordTooLarge(path.relative(cwd, file), error.bytes, error.maxBytes, options, exclude);
+        return;
+      }
       options.unreadable?.push({
         kind: 'read_error',
         file: path.relative(cwd, file),
@@ -662,9 +670,13 @@ export async function scanFilesAsync(
       continue;
     }
     // Tracked files the pull-request file set could not examine on disk are
-    // files the run did not check: record them so the run exits 2.
-    for (const u of options.pullRequest?.skipped.unreadable ?? []) {
-      const exclude = stat.isDirectory() ? excludePatternFor(u.file, targetPath) : undefined;
+    // files the run did not check: record them so the run exits 2. Only for a
+    // directory target: that is the only one getPullRequestFilesToScan just
+    // filled the list for, so a file target after a directory must not record
+    // the directory's entries a second time.
+    const prUnreadable = stat.isDirectory() ? (options.pullRequest?.skipped.unreadable ?? []) : [];
+    for (const u of prUnreadable) {
+      const exclude = excludePatternFor(u.file, targetPath);
       const display = path.relative(process.cwd(), u.file);
       options.unreadable?.push({
         kind: 'read_error',

@@ -52,6 +52,16 @@ describe('the exclude hint, pasted verbatim into ignore.paths', () => {
     expect(excludeEntryNote('/plain.ts')).toBe('');
   });
 
+  it('a star in the name is matched literally, so a sibling an unescaped star would match is not excluded', () => {
+    // The generic sibling above would not match even an unescaped star. This
+    // one would: "star*name.txt" read as a glob also covers "starXYZname.txt".
+    const file = path.join(root, 'src', 'star*name.txt');
+    const decoy = path.join(root, 'src', 'starXYZname.txt');
+    const entry = JSON.parse(formatExcludeEntry(excludePatternFor(file, root) as string)) as string;
+    expect(buildConfigIgnoreFilter([entry], root)(file)).toBe(true);
+    expect(buildConfigIgnoreFilter([entry], root)(decoy)).toBe(false);
+  });
+
   it('is valid JSON when the name needs escaping', () => {
     const pattern = excludePatternFor(path.join(root, 'sub dir', 'a b.txt'), root) as string;
     expect(() => JSON.parse(formatExcludeEntry(pattern))).not.toThrow();

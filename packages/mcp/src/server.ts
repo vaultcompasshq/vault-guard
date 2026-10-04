@@ -69,11 +69,11 @@ function makeScanner(config: VaultGuardConfig): SecretScanner {
 }
 
 /**
- * Largest input any single scan tool will read into memory. Matches the
- * per-file cap `scanWorkspaceDirectory` already enforces (see
- * `workspace-scan.ts`), so `scan_file` and `scan_text` cannot be pointed at an
- * arbitrarily large blob to exhaust the host process that `scan_workspace`
- * would have streamed within the same bound.
+ * Largest input `scan_file` and `scan_text` will read into memory: 10 MiB, so
+ * neither can be pointed at an arbitrarily large blob to exhaust the host
+ * process. This is NOT the same as `scan_workspace`, which reads each file
+ * whole up to the core scan limit of 32 MiB (`MAX_SCAN_FILE_BYTES`, see
+ * `workspace-scan.ts`) and lists a larger file as not scanned.
  */
 const MAX_SCAN_BYTES = 10 * 1024 * 1024;
 
@@ -187,7 +187,7 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
     {
       title: 'Scan workspace directory',
       description:
-        'Run the Vault Guard secret scanner on a directory (respects .gitignore). Returns JSON, SARIF string, and summary.',
+        'Run the Vault Guard secret scanner on a directory (respects .gitignore). Returns JSON, SARIF string, and summary. Files not scanned (over the size limit or unreadable) and files whose scan exceeded the time budget are listed in the summary (files_not_scanned, not_scanned, files_over_scan_budget, over_budget) and in the JSON and SARIF run data (unscannable_files, unscannable).',
       inputSchema: {
         root: z.string().optional().describe('Directory to scan (default: process.cwd())'),
       },
@@ -207,11 +207,22 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
         10,
         configIgnorePatterns(config),
       );
+      // What the embedded documents must also say: every file this run did not
+      // vouch for, with the same kinds the CLI uses (an over-budget file counts,
+      // as it does there). Paths are relative to the scanned directory.
+      const relToDir = (f: string): string => path.relative(dir, f).split(path.sep).join('/');
+      const notVouched = [
+        ...unscannable.map(u => ({ file: relToDir(u.file), kind: u.kind })),
+        ...overBudget.map(o => ({ file: relToDir(o.file), kind: 'scan_budget' })),
+      ];
       const run: JsonRunMetadata = {
         duration_ms: Date.now() - t0,
         files_scanned: filesScanned,
         bytes_scanned: bytesScanned,
         patterns_active: scanner.getActivePatternCount(),
+        ...(notVouched.length > 0
+          ? { unscannable_files: notVouched.length, unscannable: notVouched }
+          : {}),
       };
       return toolPayload({
         summary: {

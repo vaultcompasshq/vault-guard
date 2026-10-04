@@ -47,6 +47,8 @@ export interface WorkspaceScanOutcome {
 
 export interface UnscannableFile {
   file: string;
+  /** Over the size limit, or could not be read: the same kinds the CLI reports. */
+  kind: 'too_large' | 'read_error';
   reason: string;
 }
 
@@ -85,9 +87,11 @@ export async function scanWorkspaceDirectory(
     } catch (error) {
       // A file above the scan limit, or one that cannot be read, was NOT
       // scanned; say so instead of letting it pass as clean.
+      const tooLarge = error instanceof FileTooLargeError;
       unscannable.push({
         file,
-        reason: error instanceof FileTooLargeError ? error.message : String(error),
+        kind: tooLarge ? 'too_large' : 'read_error',
+        reason: tooLarge ? error.message : String(error),
       });
     }
   };
