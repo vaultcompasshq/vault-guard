@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Minor.** Plain scans inside git take their file set from git, and a new
+`vault-guard baseline` command writes the baseline. A plain run that was green
+on 1.9.1 can be red on this release.
+
+**A plain scan inside a git repository now scans tracked files that
+`.gitignore` matches, so a green run can turn red.** Until 1.9.1 a
+directory scan skipped any file `.gitignore` matched, even one already
+committed, while pull-request mode (`--trust-base`) scanned it. A committed
+`.env` was therefore clean on push and blocking on pull requests. Both modes
+now agree. Inside git the file set is the tracked files plus untracked files
+that are not ignored. Tracked files under a nested `vendor`, `build`, `dist`,
+`__pycache__` or similar directory are now scanned too, as pull-request mode
+already did. The run states how many of each it scanned. Outside git
+nothing changes. To clear a new finding, do one of three things:
+
+- rotate the secret and `git rm --cached` the file;
+- declare the path in `ignore.paths`, which is counted on every run;
+- accept the finding with the new `vault-guard baseline --write`. It prints
+  every finding it accepts and refuses critical findings unless
+  `--include-critical` is passed.
+
+Commit the baseline through review. Under `--trust-base` its own pull
+request stays red, because a pull request cannot accept its own findings.
+Land it while the gate is advisory, or merge it knowingly. Run
+`baseline --write` from the repository root; it refuses anywhere else.
+Baselines written by this release keep working on 1.9.x, which reads the
+positional list stored in the same file but applies neither the
+per-entry count nor the severity bound. Inline `ignore-line` directives
+are still honoured in pull requests; they are counted in every report.
+
+Also in this release:
+
+- A plain scan inside git exits 2, quoting git, when git fails after a `.git`
+  entry was found, and when a tracked file cannot be examined and is not
+  missing from the working tree. It never falls back to walking the directory.
+- Pull-request mode (`--trust-base`) gains one exit-2 route: to report
+  `tracked_ignored_files_scanned` it now reads the index with
+  `git ls-files --cached --ignored`, which 1.9.1 pull-request mode never did,
+  and a failure of that command is exit 2 rather than a count it did not
+  establish.
+- The MCP `scan_workspace` tool can now fail with a git error inside a git
+  repository (a missing git, a `safe.directory` refusal, a corrupt `.git`)
+  instead of quietly walking the directory, and reports a tracked file it
+  cannot examine as not scanned.
+- New JSON `run` fields: `file_set`, `tracked_ignored_files_scanned`,
+  `tracked_nested_vendored_scanned`, `tracked_files_missing` and
+  `baseline_entries`; `vendored_dirs_skipped` is now stated on plain runs inside
+  git. New `matches[].content_fingerprint`, and SARIF
+  `partialFingerprints["vault-guard/v2"]`. All additive.
+- The MCP `scan_workspace` tool uses the same file set as the CLI.
+
 ## [1.9.1] - 2026-10-03
 
 **Patch bump on all four packages.** `@vaultcompass/vault-guard`,

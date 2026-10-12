@@ -48,7 +48,7 @@ import path from 'path';
 
 import { ConfigError } from './errors';
 import { listConfigSearchDirs, parseConfigText, type VaultGuardConfig } from './config';
-import { BASELINE_FILENAME, parseBaselineText } from './baseline';
+import { BASELINE_FILENAME, parseBaselineText, type BaselineEntry } from './baseline';
 import { DEFAULT_FAIL_ON, isFailOnThreshold, type FailOnThreshold } from './utils/fail-on';
 
 /**
@@ -513,11 +513,21 @@ function summariseConfigChange(baseText: string | null, headText: string | null)
   return parts.length === 0 ? '' : ` (${parts.join(', ')})`;
 }
 
-/** The same, for the baseline: how many fingerprints the head added or dropped. */
+/**
+ * The same, for the baseline: how many keys the head added or dropped. When
+ * either side carries an `entries` list the entries are what is counted,
+ * since that is what a 1.10 reader matches on; otherwise the positional
+ * fingerprints.
+ */
 function summariseBaselineChange(baseText: string | null, headText: string | null): string {
   if (headText === null) return '';
-  const base = parseBaselineText(baseText ?? '{}').fingerprints;
-  const head = parseBaselineText(headText).fingerprints;
+  const baseDoc = parseBaselineText(baseText ?? '{}');
+  const headDoc = parseBaselineText(headText);
+  const useEntries = baseDoc.entries !== null || headDoc.entries !== null;
+  const keys = (d: typeof baseDoc): Set<string> =>
+    useEntries ? new Set((d.entries ?? []).map(e => e.fingerprint)) : d.fingerprints;
+  const base = keys(baseDoc);
+  const head = keys(headDoc);
   let added = 0;
   for (const fp of head) if (!base.has(fp)) added++;
   let removed = 0;
@@ -539,6 +549,12 @@ export interface TrustedControls {
   configPath: string | null;
   /** The base ref's baseline fingerprints. Empty when the base carries none. */
   baseline: Set<string>;
+  /**
+   * The base ref's baseline `entries` list, or null when it has none (then
+   * `baseline` is matched positionally). The reader must be handed this, not
+   * only the positional set: a 1.10 baseline is matched on its entries alone.
+   */
+  baselineEntries: BaselineEntry[] | null;
   /** Worktree-root-relative path the base baseline came from, or null. */
   baselinePath: string | null;
   /** Set when the BASE baseline exists but does not parse. Reported, not fatal. */
@@ -627,8 +643,10 @@ export function loadTrustedControls(startDir: string, ref: string): TrustedContr
   const config =
     baseConfig === null ? {} : parseConfigText(baseConfig.text, `${ref}:${baseConfig.path}`);
 
-  const baselineRead =
-    baseBaseline === null ? { fingerprints: new Set<string>() } : parseBaselineText(baseBaseline.text);
+  const baselineRead: { fingerprints: Set<string>; entries: BaselineEntry[] | null; parseError?: string } =
+    baseBaseline === null
+      ? { fingerprints: new Set<string>(), entries: null }
+      : parseBaselineText(baseBaseline.text);
 
   const configShapeChange = shapeChange(baseConfig, headConfig);
   const baselineShapeChange = shapeChange(baseBaseline, headBaseline);
@@ -673,6 +691,7 @@ export function loadTrustedControls(startDir: string, ref: string): TrustedContr
     config,
     configPath: baseConfig?.path ?? null,
     baseline: baselineRead.fingerprints,
+    baselineEntries: baselineRead.entries,
     baselinePath: baseBaseline?.path ?? null,
     baselineParseError: baselineRead.parseError ?? null,
     configChanged,

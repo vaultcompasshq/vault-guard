@@ -237,6 +237,17 @@ function parseStagedBlobId(lsFilesOutput: string, rootRelative: string): string 
  * than relying on one more corner of that grammar behaving as expected.
  */
 export function readGitIndexFile(cwd: string, filePath: string): string {
+  // Bytes, then decoded with the shared BOM sniff: a staged UTF-16 blob must
+  // reach the scanner as text, not as garbage with a NUL between characters.
+  return decodeTextBuffer(readGitIndexBytes(cwd, filePath));
+}
+
+/**
+ * The raw bytes of a staged blob, resolved exactly as {@link readGitIndexFile}
+ * does. A `--staged` run takes a baseline entry's file digest over these, the
+ * bytes that were scanned, never over the working tree.
+ */
+export function readGitIndexBytes(cwd: string, filePath: string): Buffer {
   const root = getGitWorkTreeRoot(cwd);
   const abs = path.resolve(canonicalDir(cwd), filePath);
   const rootRelative = path.relative(root, abs).split(path.sep).join('/');
@@ -269,18 +280,14 @@ export function readGitIndexFile(cwd: string, filePath: string): string {
 
   const catArgs = [...FORCED_GIT_CONFIG, 'cat-file', 'blob', blobId];
   try {
-    // Bytes, then decoded with the shared BOM sniff: a staged UTF-16 blob must
-    // reach the scanner as text, not as garbage with a NUL between characters.
-    return decodeTextBuffer(
-      execFileSync('git', catArgs, {
-        cwd: root,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        // The raw blob size, the same limit directory mode applies to bytes on
-        // disk: git's output exceeding it fails the read with ENOBUFS, which
-        // the catch below turns into FileTooLargeError.
-        maxBuffer: MAX_SCAN_FILE_BYTES,
-      }),
-    );
+    return execFileSync('git', catArgs, {
+      cwd: root,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // The raw blob size, the same limit directory mode applies to bytes on
+      // disk: git's output exceeding it fails the read with ENOBUFS, which
+      // the catch below turns into FileTooLargeError.
+      maxBuffer: MAX_SCAN_FILE_BYTES,
+    });
   } catch (err) {
     // Output over maxBuffer means the blob is over the limit. Thrown as the same
     // FileTooLargeError a file on disk produces, so the caller reports it with

@@ -12,6 +12,13 @@ export interface SecretMatch {
   /** UTF-16 code-unit length of the original match (used for SARIF region output). */
   matchLength: number;
   severity: 'critical' | 'high' | 'medium' | 'low';
+  /**
+   * SHA-256 hex of the raw matched text, present only for a value-bearing rule
+   * (one whose match contains the secret rather than a fixed marker). It keys
+   * the baseline's content fingerprint. The raw value itself never leaves the
+   * scanner; only this digest does.
+   */
+  valueDigest?: string;
 }
 
 export interface TokenReport {

@@ -1,7 +1,8 @@
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { SecretScanner } from '@vaultcompass/vault-guard-core';
+import { GitError, SecretScanner } from '@vaultcompass/vault-guard-core';
 import { scanWorkspaceDirectory } from '../workspace-scan';
 
 describe('scanWorkspaceDirectory', () => {
@@ -69,5 +70,66 @@ describe('scanWorkspaceDirectory', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  describe('inside a git repository: the same file set as the CLI', () => {
+    // Joined at runtime so no committed fragment matches a rule on its own.
+    const FAKE_KEY = ['sk-ant-', 'api03-', 'Kq7mZr2xVb9nTd4wHs6yLc3p', 'Jf8gRu5eNa1vBt0iOy7kPd2s', 'Xw4hEj6uCi3q'].join('');
+    const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+    const itPosix = process.platform === 'win32' ? it.skip : it;
+    let dir: string;
+
+    function git(args: string[]): void {
+      execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
+    }
+
+    beforeEach(() => {
+      dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-git-')));
+      git(['init', '-q', '-b', 'main']);
+      git(['config', 'user.email', 'test@example.invalid']);
+      git(['config', 'user.name', 'Test']);
+      git(['config', 'commit.gpgsign', 'false']);
+    });
+
+    afterEach(() => {
+      try {
+        fs.chmodSync(path.join(dir, 'locked'), 0o755);
+      } catch {
+        /* not created in every case */
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('scans a tracked file that .gitignore matches', async () => {
+      fs.writeFileSync(path.join(dir, '.gitignore'), '.env\n');
+      fs.writeFileSync(path.join(dir, '.env'), `ANTHROPIC_API_KEY=${FAKE_KEY}\n`);
+      git(['add', '-A', '-f']);
+      git(['commit', '-q', '-m', 'base']);
+      const { results } = await scanWorkspaceDirectory(dir, new SecretScanner());
+      expect(results.map(r => path.basename(r.file))).toEqual(['.env']);
+    });
+
+    itPosix('lists a tracked file it cannot examine as not scanned', async () => {
+      if (isRoot) return;
+      fs.writeFileSync(path.join(dir, 'ok.txt'), 'hello\n');
+      fs.mkdirSync(path.join(dir, 'locked'));
+      fs.writeFileSync(path.join(dir, 'locked', 'creds.txt'), 'hello\n');
+      git(['add', '-A']);
+      git(['commit', '-q', '-m', 'base']);
+      fs.chmodSync(path.join(dir, 'locked'), 0o000);
+      const { unscannable } = await scanWorkspaceDirectory(dir, new SecretScanner());
+      expect(unscannable).toHaveLength(1);
+      expect(unscannable[0].kind).toBe('read_error');
+      expect(unscannable[0].file).toContain('creds.txt');
+    });
+
+    it('fails with a git error, rather than walking, when git cannot read the repository', async () => {
+      fs.rmSync(path.join(dir, '.git'), { recursive: true, force: true });
+      // A .git file pointing nowhere: git refuses, and the file set must not
+      // quietly fall back to a walk that skips tracked files.
+      fs.writeFileSync(path.join(dir, '.git'), 'gitdir: ./no-such-git-dir\n');
+      fs.writeFileSync(path.join(dir, 'ok.txt'), 'hello\n');
+      await expect(scanWorkspaceDirectory(dir, new SecretScanner())).rejects.toThrow(GitError);
+    });
   });
 });

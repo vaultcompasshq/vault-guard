@@ -524,23 +524,27 @@ describe('pull-request mode (--trust-base)', () => {
       expect(r.log).toContain('No secrets found');
     });
 
-    it('without the flag a head-added .gitignore still mutes a tracked file', async () => {
+    // Flipped in 1.10.0 (design 2026-10-11, section 2): inside git a plain scan
+    // takes its file set from git, so neither of these mutes a tracked file
+    // without the flag any more. They stay here as the closure of the before
+    // state rather than being deleted.
+    it('without the flag a head-added .gitignore no longer mutes a tracked file', async () => {
       seedBase();
       addSecret();
       write('src/.gitignore', 'leak.ts\n');
       commit('feature');
       const r = await capture(() => scanCommand('.', 'text'));
-      expect(r.code).toBe(0);
-      expect(r.log).toContain('No secrets found');
+      expect(r.code).toBe(1);
+      expect(r.log).toContain('Tracked files that .gitignore would hide, scanned: 1');
     });
 
-    it('without the flag a committed src/vendor is still skipped', async () => {
+    it('without the flag a committed src/vendor is scanned', async () => {
       seedBase();
       addSecret('src/vendor/leak.ts');
       commit('feature');
       const r = await capture(() => scanCommand('.', 'text'));
-      expect(r.code).toBe(0);
-      expect(r.log).toContain('No secrets found');
+      expect(r.code).toBe(1);
+      expect(r.log).toContain('Tracked files under nested vendored directories, scanned: 1');
     });
 
     it('without the flag the head config decides, and no trust-base output appears', async () => {

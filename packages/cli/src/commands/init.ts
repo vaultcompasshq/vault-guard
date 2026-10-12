@@ -696,6 +696,13 @@ function printHuman(result: InitResult, options: InitOptions): void {
     ),
   );
 
+  // One line, and nothing more: init never writes the baseline.
+  console.log(
+    chalk.gray(
+      '\nFindings already in the tree: review them with "vault-guard baseline", then accept them with "vault-guard baseline --write" from the repository root and commit the file through review.',
+    ),
+  );
+
   console.log(chalk.gray(`\n${result.mcpMergeHint}`));
   console.log(chalk.gray(`Manifest: ${result.manifestPath}`));
 }

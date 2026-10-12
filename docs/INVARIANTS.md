@@ -811,3 +811,90 @@ is a known cost.
 from the path relativiser; `packages/core/src/scanners/__tests__/scan-output.test.ts`
 (the forward-slash cases; the comment beside them that says "platform-native" is
 stale). `silent-passes.test.ts` reads findings from JSON for the same reason.
+
+## Tracked files are scanned whatever `.gitignore` says, in every mode
+
+Through 1.9.1 a plain directory scan dropped any file `.gitignore` matched, even
+one already committed, while pull-request mode scanned it: a committed `.env`
+was clean on push and blocking on a pull request. `.gitignore` governs what git
+will add and says nothing about a file already committed.
+
+**The rule:** inside a git work tree a plain directory scan's file set is the
+tracked files plus untracked files that `.gitignore` does not exclude. The
+tracked half is built by `getPullRequestFilesToScan`, the same function
+pull-request mode uses, so vendored names are anchored to the scan root for
+tracked files in both modes. Whether the target is inside git is decided by a
+`.git` entry at or above it, never by asking git; once one is found, any git
+failure is exit 2 quoting git, never a fall back to the walk. A tracked path
+that `lstat` cannot examine is counted as missing only when git lists it as
+deleted or skip-worktree AND the errno is ENOENT or ENOTDIR; anything else is
+exit 2. `--staged` reads the index and pull-request mode the HEAD tree, and
+neither consults `.gitignore`. Outside git the walk and the gitignore tester run
+as before.
+
+**Enforced by:** `getFilesToScanAsync`, `getGitFilesToScan` and `collectGitPaths`
+in `packages/core/src/utils/file-utils.ts`; the `GitError` branch at the end of
+`scanCommand`; `packages/cli/src/__tests__/integration/plain-git-file-set.test.ts`
+(`T1: a tracked, gitignored .env is scanned and counted`, `T3: plain and
+--trust-base scan the same path set over one committed tree`, `T9a/b: a .git is
+present and git refuses: exit 2, git quoted`, `T18a: a tracked file under a
+directory that cannot be entered exits 2`, and the rest of that file); the two
+flipped before-state cases in `trust-base.test.ts` (`without the flag a
+head-added .gitignore no longer mutes a tracked file`, `without the flag a
+committed src/vendor is scanned`). Each named test was run against its
+mutation and went red (design doc, section 8).
+
+**Known gap:** the MCP `scan_workspace` tool gets the same file set, but no
+test drives it inside a git repository.
+
+## A pull-request run never takes its baseline from the head
+
+Under `--trust-base` the baseline, like the config, comes from the base ref,
+including its `entries` list. A head that adds an entry for its own new finding
+produces the proposal line `baseline changed in this pull request (1 baseline
+entry added)` and the finding still blocks.
+
+**Enforced by:** `loadTrustedControls` in `packages/core/src/trust-base.ts`
+(`baseline` and `baselineEntries` come from the base side only, and
+`summariseBaselineChange` counts entries when present); the `controls` branch of
+`baselineLoad` in `scanCommand`; `baseline-writer.test.ts` (`T11: a pull request
+cannot baseline its own new finding`, red when the head baseline is read);
+`baseline-entries.test.ts` (the `--trust-base` halves of T12 and T14, red when
+the base-ref path is left on the positional set).
+
+## Only `vault-guard baseline --write` writes the baseline
+
+`scan`, `check`, `init`, the pre-commit hook and the Action never write
+`.vault-guard.baseline.json`. The writer accepts only findings that would block,
+in files the OUTER repository's own index tracks (never a file of a submodule
+or of an untracked nested repository, which are scanned but are another
+repository's history), refuses critical findings without `--include-critical`,
+writes at the root of the repository the target is in and refuses from any
+other cwd, keeps entries outside a scoped path untouched, and writes nothing
+when the scan was incomplete.
+
+**Enforced by:** `baselineCommand` in `packages/cli/src/commands/baseline.ts`
+(the only `writeFileSync` of the baseline in the CLI); `outerTracked` in
+`collectGitPaths` (`packages/core/src/utils/file-utils.ts`), which is what
+fills `PlainFileSetInfo.trackedFiles`; `baseline-writer.test.ts` (`T10b: scan
+never creates the baseline file`, `T16`, `T20`, `T24: an untracked file is never
+written into the baseline`, `T24: files tracked only by an untracked nested
+repository are never written`, `N1`, `N2: a scoped --write keeps entries
+outside the scanned path`); `init.test.ts` (`prints a one-line baseline hint and
+never writes a baseline`). T10b is mutation-tested: an independent reviewer
+called the writer at the top of `scanCommand` and `T10b: scan never creates the
+baseline file` went red. The nested-repository T24 case went red when every
+listed tracked path was put back into `trackedFiles`.
+
+## Pull-request mode does not scan submodule contents
+
+A plain scan inside git recurses into a checked-out submodule and applies the
+same rule there. Pull-request mode scans the HEAD tree only, where a submodule is
+a gitlink with no content, so a key inside a submodule is not scanned under
+`--trust-base`. Left as is on purpose (design question 6): scanning a submodule
+in pull-request mode raises its own question of which base ref applies.
+
+**Enforced by:** `listHeadTreeFiles` in `packages/core/src/trust-base.ts`
+(gitlinks never enter the list); `plain-git-file-set.test.ts` (`T7a: a key
+inside a checked-out submodule is found`) for the plain side. No test pins the
+pull-request side.

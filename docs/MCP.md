@@ -12,7 +12,7 @@ not a file read.
 
 | Tool | Purpose |
 |------|---------|
-| `scan_workspace` | Scan a directory (`.gitignore`-aware). Returns `json`, `sarif`, and `summary`. |
+| `scan_workspace` | Scan a directory: inside git, tracked files (whatever `.gitignore` says) plus untracked files `.gitignore` does not exclude, the same set the CLI scans; outside git, a `.gitignore`-aware walk. Returns `json`, `sarif`, and `summary`. |
 | `scan_file` | Scan a single file path. |
 | `scan_text` | Scan arbitrary UTF-8 (e.g. a proposed edit). Optional `virtual_path` for SARIF URIs. |
 | `report_token_usage` | Rough on-disk token estimate for paths (no network calls). |
