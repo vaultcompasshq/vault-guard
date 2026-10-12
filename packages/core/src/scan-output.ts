@@ -1,7 +1,7 @@
 import path from 'path';
 import type { SecretMatch } from './types';
 import type { Diagnostic } from './diagnostics';
-import { fingerprintForMatch } from './match-fingerprint';
+import { fingerprintForMatch, contentFingerprintForMatch } from './match-fingerprint';
 
 /** One file's scan outcome -- shared by CLI, MCP, and SARIF/JSON formatters. */
 export interface FileScanResult {
@@ -92,6 +92,32 @@ export interface JsonRunMetadata {
    * name the file, the exact `ignore.paths` entry that would declare it.
    */
   unscannable?: Array<{ file: string; kind: string; exclude?: string }>;
+  /**
+   * Where the file set came from: `git` (a plain directory scan inside a git
+   * work tree: tracked files plus untracked files that are not ignored),
+   * `walk` (outside git: a filesystem walk filtered by `.gitignore`),
+   * `head-tree` (pull-request mode) or `index` (`--staged`).
+   */
+  file_set?: 'git' | 'walk' | 'head-tree' | 'index';
+  /**
+   * Tracked files that `.gitignore` matches and that were scanned anyway,
+   * because `.gitignore` says nothing about a file already committed. Present
+   * on `git` and `head-tree` runs.
+   */
+  tracked_ignored_files_scanned?: number;
+  /**
+   * Tracked files under a vendored directory name (`vendor`, `build`, `dist`
+   * and the like) below the scan root, scanned because only a direct child of
+   * the scan root is skipped by name. Present on `git` and `head-tree` runs.
+   */
+  tracked_nested_vendored_scanned?: number;
+  /**
+   * Tracked files absent from the working tree: deleted locally, or left out by
+   * a sparse checkout. Counted, not fatal. Present on `git` runs.
+   */
+  tracked_files_missing?: number;
+  /** Entries in the baseline's `entries` list that were loaded (0 when none). */
+  baseline_entries?: number;
 }
 
 /**
@@ -138,6 +164,12 @@ export interface JsonOutput {
       value: string;
       /** SHA-256 hex of `relPath|type|line|offset|matchLength` for baselines (no raw secret). */
       fingerprint: string;
+      /**
+       * Content fingerprint (`vg-fp-v2`): keyed on the path relative to the
+       * repository root, the rule and a digest of the raw match, not on the
+       * line. Present only for a value-bearing rule.
+       */
+      content_fingerprint?: string;
     }>;
   }>;
   /** Non-fatal scan warnings (skipped files, rejected patterns, git issues). */
@@ -170,6 +202,11 @@ export interface FormatOptions {
    * are keyed on.
    */
   scanRoot?: string;
+  /**
+   * Root the content fingerprint's path is relative to: the repository root
+   * inside git, the scan anchor outside it. Defaults to {@link cwd}.
+   */
+  contentRoot?: string;
   /** Non-fatal diagnostics to include in structured output. */
   diagnostics?: Diagnostic[];
   /** Scan timing / coverage stats for JSON and SARIF `runs[].properties`. */
@@ -334,6 +371,17 @@ function stripSarifBasePath(text: string, base: string): string {
   return text.split(withTrailingSep).join('').split(base).join('.');
 }
 
+/** The content fingerprint for one match, or undefined for a header-only rule. */
+function contentKey(
+  opts: FormatOptions,
+  fpCwd: string | null,
+  file: string,
+  m: SecretMatch,
+): string | undefined {
+  const root = opts.contentRoot ?? fpCwd ?? process.cwd();
+  return contentFingerprintForMatch(root, file, m);
+}
+
 export function formatJson(results: FileScanResult[], opts: FormatOptions = {}): string {
   const fpCwd = opts.cwd === undefined ? process.cwd() : opts.cwd;
   const output: JsonOutput = {
@@ -347,15 +395,19 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
     ...(opts.trustBase ? { trustBase: opts.trustBase } : {}),
     results: results.map(({ file, matches }) => ({
       file: normalizeFilePath(file, opts.cwd),
-      matches: matches.map(m => ({
-        type: m.type,
-        severity: m.severity,
-        line: m.line,
-        column: m.column,
-        offset: m.offset,
-        value: m.value,
-        fingerprint: fingerprintForMatch(fpCwd, file, m),
-      })),
+      matches: matches.map(m => {
+        const content = contentKey(opts, fpCwd, file, m);
+        return {
+          type: m.type,
+          severity: m.severity,
+          line: m.line,
+          column: m.column,
+          offset: m.offset,
+          value: m.value,
+          fingerprint: fingerprintForMatch(fpCwd, file, m),
+          ...(content !== undefined ? { content_fingerprint: content } : {}),
+        };
+      }),
     })),
   };
   if (opts.diagnostics && opts.diagnostics.length > 0) {
@@ -417,7 +469,14 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
       // Same fingerprint the JSON output emits per finding (positional: keyed
       // on relative path + type + line + offset + matchLength). Lets GitHub
       // Code Scanning track a finding's identity across runs.
-      partialFingerprints: { 'vault-guard/v1': fingerprintForMatch(fpCwd, file, m) },
+      // v2 is the content fingerprint, added beside v1 for value-bearing rules.
+      partialFingerprints: (() => {
+        const content = contentKey(opts, fpCwd, file, m);
+        return {
+          'vault-guard/v1': fingerprintForMatch(fpCwd, file, m),
+          ...(content !== undefined ? { 'vault-guard/v2': content } : {}),
+        };
+      })(),
     }))
   );
 
@@ -472,6 +531,19 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
               : {}),
             ...(opts.run.unscannable_files !== undefined
               ? { unscannable_files: opts.run.unscannable_files }
+              : {}),
+            ...(opts.run.file_set !== undefined ? { file_set: opts.run.file_set } : {}),
+            ...(opts.run.tracked_ignored_files_scanned !== undefined
+              ? { tracked_ignored_files_scanned: opts.run.tracked_ignored_files_scanned }
+              : {}),
+            ...(opts.run.tracked_nested_vendored_scanned !== undefined
+              ? { tracked_nested_vendored_scanned: opts.run.tracked_nested_vendored_scanned }
+              : {}),
+            ...(opts.run.tracked_files_missing !== undefined
+              ? { tracked_files_missing: opts.run.tracked_files_missing }
+              : {}),
+            ...(opts.run.baseline_entries !== undefined
+              ? { baseline_entries: opts.run.baseline_entries }
               : {}),
           },
         }

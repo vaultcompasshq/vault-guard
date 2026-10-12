@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { createHash } from 'crypto';
 import { SecretMatch } from '../types';
 import { VaultGuardConfig } from '../config';
 import { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from '../utils/entropy';
@@ -21,6 +22,16 @@ import {
 interface PatternEntry {
   regex: RegExp;
   severity: SecretMatch['severity'];
+  /**
+   * True when the match text contains the secret itself, so a digest of it
+   * identifies one particular secret. False when the rule matches only a fixed
+   * marker (the PEM header line that opens a private key, or the JSON type
+   * field that names a service account): the match text
+   * is then the same for every key, and a baseline entry keyed on it would
+   * suppress any replacement key. Required, with no default, so every rule
+   * added later has to decide. User `extra_patterns` are always false.
+   */
+  valueBearing: boolean;
   /**
    * Minimum Shannon entropy (bits/char) required for the raw matched value.
    * If set and the match falls below the threshold the match is dropped  -- 
@@ -62,7 +73,7 @@ interface PatternEntry {
  */
 const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // --- AI / ML providers ---
-  ['anthropic',         { regex: /sk-ant-[a-zA-Z0-9_-]{20,}/g,                                                         severity: 'critical' }],
+  ['anthropic',         { regex: /sk-ant-[a-zA-Z0-9_-]{20,}/g,                                                         severity: 'critical', valueBearing: true }],
   // OpenAI key formats. All current keys embed the T3BlbkFJ watermark (base64 "OpenAI").
   // Specific prefixes are ordered first so they get their own rule title (blast radius differs).
   // The legacy sk- catch-all uses the watermark + token-boundary so it does not shadow the
@@ -72,27 +83,27 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // That pattern fires on any base64/hex blob following `sk-` and floods false positives; the
   // watermark is the only reliable discriminator, matching the gitleaks/trufflehog consensus.
   // Do not re-add a bare `sk-[A-Za-z0-9]{N,}` rule without an entropy gate and a bench FP guard.
-  ['openai-project',    { regex: /sk-proj-[A-Za-z0-9_-]{20,100}T3BlbkFJ[A-Za-z0-9_-]{20,100}/g,                       severity: 'critical' }],
-  ['openai-svcacct',    { regex: /sk-svcacct-[A-Za-z0-9_-]{20,100}T3BlbkFJ[A-Za-z0-9_-]{20,100}/g,                    severity: 'critical' }],
-  ['openai-admin',      { regex: /sk-admin-[A-Za-z0-9_-]{20,100}T3BlbkFJ[A-Za-z0-9_-]{20,100}/g,                      severity: 'critical' }],
+  ['openai-project',    { regex: /sk-proj-[A-Za-z0-9_-]{20,100}T3BlbkFJ[A-Za-z0-9_-]{20,100}/g,                       severity: 'critical', valueBearing: true }],
+  ['openai-svcacct',    { regex: /sk-svcacct-[A-Za-z0-9_-]{20,100}T3BlbkFJ[A-Za-z0-9_-]{20,100}/g,                    severity: 'critical', valueBearing: true }],
+  ['openai-admin',      { regex: /sk-admin-[A-Za-z0-9_-]{20,100}T3BlbkFJ[A-Za-z0-9_-]{20,100}/g,                      severity: 'critical', valueBearing: true }],
   // Legacy user key (sk-<20>T3BlbkFJ<20+>). Token-boundary anchored so benign sk- prefixes
   // in identifiers (e.g. sk-None-short) don't fire without the watermark present.
-  ['openai',            { regex: /(?<![A-Za-z0-9_-])sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20,}/g,                    severity: 'critical' }],
-  ['huggingface',    { regex: /hf_[a-zA-Z0-9]{34,}/g,                                           severity: 'critical' }],
-  ['replicate',      { regex: /r8_[a-zA-Z0-9]{32}/g,                                            severity: 'critical' }],
+  ['openai',            { regex: /(?<![A-Za-z0-9_-])sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20,}/g,                    severity: 'critical', valueBearing: true }],
+  ['huggingface',    { regex: /hf_[a-zA-Z0-9]{34,}/g,                                           severity: 'critical', valueBearing: true }],
+  ['replicate',      { regex: /r8_[a-zA-Z0-9]{32}/g,                                            severity: 'critical', valueBearing: true }],
   // Post-2023 AI provider keys. The product's stated wedge is AI-assisted
   // coding, so these carry the same weight as the OpenAI/Anthropic rules.
   // Every one is prefix-anchored with a fixed length, so no entropy gate is
   // needed (same precision profile as `ghp_` / `hf_`).
-  ['groq',           { regex: /(?<![A-Za-z0-9_-])gsk_[a-zA-Z0-9]{52}/g,                          severity: 'critical' }],
-  ['openrouter',     { regex: /sk-or-v1-[a-f0-9]{64}/g,                                          severity: 'critical' }],
-  ['xai',            { regex: /(?<![A-Za-z0-9_-])xai-[a-zA-Z0-9]{80}/g,                          severity: 'critical' }],
-  ['perplexity',     { regex: /(?<![A-Za-z0-9_-])pplx-[a-zA-Z0-9]{40,}/g,                        severity: 'critical' }],
-  ['mistral',        { regex: /(?:mistral_api_key|MISTRAL_API_KEY)\s*[=:]\s*["']?([a-zA-Z0-9]{32})/g, severity: 'critical' }],
-  ['together-ai',    { regex: /(?:together_api_key|TOGETHER_API_KEY)\s*[=:]\s*["']?([a-f0-9]{64})/g,  severity: 'critical' }],
-  ['fireworks-ai',   { regex: /(?<![A-Za-z0-9_-])fw_[a-zA-Z0-9]{24,}/g,                          severity: 'critical' }],
-  ['langsmith',      { regex: /lsv2_(?:pt|sk)_[a-f0-9]{32}_[a-f0-9]{10}/g,                       severity: 'critical' }],
-  ['deepseek',       { regex: /(?:deepseek_api_key|DEEPSEEK_API_KEY)\s*[=:]\s*["']?(sk-[a-f0-9]{32})/g, severity: 'critical' }],
+  ['groq',           { regex: /(?<![A-Za-z0-9_-])gsk_[a-zA-Z0-9]{52}/g,                          severity: 'critical', valueBearing: true }],
+  ['openrouter',     { regex: /sk-or-v1-[a-f0-9]{64}/g,                                          severity: 'critical', valueBearing: true }],
+  ['xai',            { regex: /(?<![A-Za-z0-9_-])xai-[a-zA-Z0-9]{80}/g,                          severity: 'critical', valueBearing: true }],
+  ['perplexity',     { regex: /(?<![A-Za-z0-9_-])pplx-[a-zA-Z0-9]{40,}/g,                        severity: 'critical', valueBearing: true }],
+  ['mistral',        { regex: /(?:mistral_api_key|MISTRAL_API_KEY)\s*[=:]\s*["']?([a-zA-Z0-9]{32})/g, severity: 'critical', valueBearing: true }],
+  ['together-ai',    { regex: /(?:together_api_key|TOGETHER_API_KEY)\s*[=:]\s*["']?([a-f0-9]{64})/g,  severity: 'critical', valueBearing: true }],
+  ['fireworks-ai',   { regex: /(?<![A-Za-z0-9_-])fw_[a-zA-Z0-9]{24,}/g,                          severity: 'critical', valueBearing: true }],
+  ['langsmith',      { regex: /lsv2_(?:pt|sk)_[a-f0-9]{32}_[a-f0-9]{10}/g,                       severity: 'critical', valueBearing: true }],
+  ['deepseek',       { regex: /(?:deepseek_api_key|DEEPSEEK_API_KEY)\s*[=:]\s*["']?(sk-[a-f0-9]{32})/g, severity: 'critical', valueBearing: true }],
 
   // --- Payment processors ---
   // NOTE: `sk_live_` / `sk_test_` are not unique to Stripe -- Clerk uses the
@@ -101,17 +112,19 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // correct (it IS a live secret key); only the vendor label may be wrong. The
   // id is kept as-is because baseline fingerprints include the rule id and
   // renaming it would silently invalidate every existing baseline entry.
-  ['stripe',         { regex: /sk_live_[a-zA-Z0-9]{24,}/g,                                      severity: 'critical' }],
-  ['stripe-test',    { regex: /sk_test_[a-zA-Z0-9]{24,}/g,                                      severity: 'high' }],
-  ['paypal',         { regex: /access_token\$production\$[a-zA-Z0-9]{20,}/g,                    severity: 'critical' }],
+  ['stripe',         { regex: /sk_live_[a-zA-Z0-9]{24,}/g,                                      severity: 'critical', valueBearing: true }],
+  ['stripe-test',    { regex: /sk_test_[a-zA-Z0-9]{24,}/g,                                      severity: 'high', valueBearing: true }],
+  ['paypal',         { regex: /access_token\$production\$[a-zA-Z0-9]{20,}/g,                    severity: 'critical', valueBearing: true }],
 
   // --- Cloud providers ---
-  ['aws-access',          { regex: /AKIA[0-9A-Z]{16}/g,                                          severity: 'critical' }],
+  ['aws-access',          { regex: /AKIA[0-9A-Z]{16}/g,                                          severity: 'critical', valueBearing: true }],
   // Context-anchored AWS secret: only flags values that appear on the same
   // line as the canonical env-var / config-key name.
-  ['aws-secret-context',  { regex: /(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[=:]\s*["']?([a-zA-Z0-9/+]{40})/gi, severity: 'critical' }],
-  ['gcp-service-account', { regex: /"type":\s*"service_account"/g,                               severity: 'critical' }],
-  ['gcp-api-key',         { regex: /AIza[a-zA-Z0-9_-]{35}/g,                                    severity: 'critical' }],
+  ['aws-secret-context',  { regex: /(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[=:]\s*["']?([a-zA-Z0-9/+]{40})/gi, severity: 'critical', valueBearing: true }],
+  // Header-only: the match is the fixed JSON type field that names a service
+  // account, not the key, so it is not value-bearing.
+  ['gcp-service-account', { regex: /"type":\s*"service_account"/g,                               severity: 'critical', valueBearing: false }],
+  ['gcp-api-key',         { regex: /AIza[a-zA-Z0-9_-]{35}/g,                                    severity: 'critical', valueBearing: true }],
   // OAuth 2.0 client ID, not a secret: Google documents these as safe for
   // client-side / public embedding (only the paired client *secret* is
   // sensitive). Kept at low severity for visibility, not blocking.
@@ -120,8 +133,8 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // prefix is a short project number, well under 64 digits. Measured: the
   // unbounded form took 16.6s on a 200k-digit run (quadratic); bounded it is
   // linear.
-  ['gcp-oauth',           { regex: /[0-9]{1,64}-[a-zA-Z0-9_]{32}\.apps\.googleusercontent\.com/g, severity: 'low' }],
-  ['azure-storage',       { regex: /DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{20,}/g, severity: 'critical' }],
+  ['gcp-oauth',           { regex: /[0-9]{1,64}-[a-zA-Z0-9_]{32}\.apps\.googleusercontent\.com/g, severity: 'low', valueBearing: true }],
+  ['azure-storage',       { regex: /DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{20,}/g, severity: 'critical', valueBearing: true }],
 
   // --- Database connection strings ---
   //
@@ -134,58 +147,58 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // maximum (user/password/host 256, port 8 digits, path 1024) caps the
   // per-start work and makes all four linear; no real DSN comes close to these
   // limits.
-  ['postgresql-url', { regex: /postgres(?:ql)?:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/\S{1,1024}/g, severity: 'critical', connectionString: true }],
-  ['mysql-url',      { regex: /mysql:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/\S{1,1024}/g,            severity: 'critical', connectionString: true }],
-  ['mongodb-url',    { regex: /mongodb(?:\+srv)?:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})?/g,            severity: 'critical', connectionString: true }],
-  ['redis-url',      { regex: /rediss?:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})/g,                       severity: 'critical', connectionString: true }],
+  ['postgresql-url', { regex: /postgres(?:ql)?:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/\S{1,1024}/g, severity: 'critical', connectionString: true, valueBearing: true }],
+  ['mysql-url',      { regex: /mysql:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/\S{1,1024}/g,            severity: 'critical', connectionString: true, valueBearing: true }],
+  ['mongodb-url',    { regex: /mongodb(?:\+srv)?:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})?/g,            severity: 'critical', connectionString: true, valueBearing: true }],
+  ['redis-url',      { regex: /rediss?:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})/g,                       severity: 'critical', connectionString: true, valueBearing: true }],
 
   // --- Source control tokens ---
-  ['github-token',   { regex: /gh[pousor]_[a-zA-Z0-9]{36}/g,                                    severity: 'critical' }],
-  ['github-pat',     { regex: /github_pat_[a-zA-Z0-9_]{82}/g,                                   severity: 'critical' }],
-  ['gitlab-token',   { regex: /glpat-[a-zA-Z0-9_-]{20}/g,                                       severity: 'critical' }],
-  ['bitbucket-token',{ regex: /BBDC-[a-zA-Z0-9_-]{40}/g,                                        severity: 'critical' }],
+  ['github-token',   { regex: /gh[pousor]_[a-zA-Z0-9]{36}/g,                                    severity: 'critical', valueBearing: true }],
+  ['github-pat',     { regex: /github_pat_[a-zA-Z0-9_]{82}/g,                                   severity: 'critical', valueBearing: true }],
+  ['gitlab-token',   { regex: /glpat-[a-zA-Z0-9_-]{20}/g,                                       severity: 'critical', valueBearing: true }],
+  ['bitbucket-token',{ regex: /BBDC-[a-zA-Z0-9_-]{40}/g,                                        severity: 'critical', valueBearing: true }],
 
   // --- Communication platforms ---
-  ['slack-webhook',  { regex: /hooks\.slack\.com\/services\/[A-Z0-9]{9,}\/[A-Z0-9]{9,}\/[a-zA-Z0-9]{20,}/g, severity: 'critical' }],
-  ['slack-token',    { regex: /xox[baprs]-[a-zA-Z0-9-]{10,}/g,                                  severity: 'critical' }],
-  ['discord-webhook',{ regex: /discord\.com\/api\/webhooks\/[0-9]{17,20}\/[a-zA-Z0-9_-]{60,}/g, severity: 'critical' }],
+  ['slack-webhook',  { regex: /hooks\.slack\.com\/services\/[A-Z0-9]{9,}\/[A-Z0-9]{9,}\/[a-zA-Z0-9]{20,}/g, severity: 'critical', valueBearing: true }],
+  ['slack-token',    { regex: /xox[baprs]-[a-zA-Z0-9-]{10,}/g,                                  severity: 'critical', valueBearing: true }],
+  ['discord-webhook',{ regex: /discord\.com\/api\/webhooks\/[0-9]{17,20}\/[a-zA-Z0-9_-]{60,}/g, severity: 'critical', valueBearing: true }],
 
   // --- Email / messaging services ---
-  ['sendgrid-api',   { regex: /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/g,                     severity: 'critical' }],
+  ['sendgrid-api',   { regex: /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/g,                     severity: 'critical', valueBearing: true }],
   // `re_` is a short prefix that also occurs mid-identifier (e.g. a long Go
   // test name yields a `re_<camelCase>` substring). Anchor to a token boundary
   // so only standalone `re_<key>` tokens match, and entropy-gate to drop
   // low-entropy identifiers while keeping random Resend keys.
-  ['resend-api',     { regex: /(?<![A-Za-z0-9_])re_[a-zA-Z0-9]{32,}/g,                            severity: 'critical', minEntropy: 3.5 }],
-  ['mailgun-api',    { regex: /key-[a-zA-Z0-9]{32}/g,                                            severity: 'critical', minEntropy: 3.5 }],
+  ['resend-api',     { regex: /(?<![A-Za-z0-9_])re_[a-zA-Z0-9]{32,}/g,                            severity: 'critical', minEntropy: 3.5, valueBearing: true }],
+  ['mailgun-api',    { regex: /key-[a-zA-Z0-9]{32}/g,                                            severity: 'critical', minEntropy: 3.5, valueBearing: true }],
 
   // --- Package managers ---
-  ['npm-token',      { regex: /npm_[a-zA-Z0-9]{36}/g,                                            severity: 'critical' }],
+  ['npm-token',      { regex: /npm_[a-zA-Z0-9]{36}/g,                                            severity: 'critical', valueBearing: true }],
 
   // --- Backend / infra platforms ---
-  ['supabase-token',   { regex: /(?<![A-Za-z0-9_-])sbp_[a-f0-9]{40}/g,                          severity: 'critical' }],
-  ['supabase-secret',  { regex: /(?<![A-Za-z0-9_-])sb_secret_[a-zA-Z0-9_-]{20,}/g,              severity: 'critical' }],
-  ['vercel-blob',      { regex: /vercel_blob_rw_[a-zA-Z0-9]{20,}_[a-zA-Z0-9]{20,}/g,            severity: 'critical' }],
-  ['planetscale',      { regex: /pscale_(?:tkn|pw)_[a-zA-Z0-9_-]{32,}/g,                        severity: 'critical' }],
-  ['doppler-token',    { regex: /dp\.(?:pt|st|sa|scim|audit)\.[a-zA-Z0-9]{40,}/g,               severity: 'critical' }],
-  ['databricks-token', { regex: /(?<![A-Za-z0-9_-])dapi[a-f0-9]{32}/g,                          severity: 'critical' }],
-  ['cloudflare-token', { regex: /(?:cloudflare_api_token|CLOUDFLARE_API_TOKEN)\s*[=:]\s*["']?([a-zA-Z0-9_-]{40})/g, severity: 'critical' }],
+  ['supabase-token',   { regex: /(?<![A-Za-z0-9_-])sbp_[a-f0-9]{40}/g,                          severity: 'critical', valueBearing: true }],
+  ['supabase-secret',  { regex: /(?<![A-Za-z0-9_-])sb_secret_[a-zA-Z0-9_-]{20,}/g,              severity: 'critical', valueBearing: true }],
+  ['vercel-blob',      { regex: /vercel_blob_rw_[a-zA-Z0-9]{20,}_[a-zA-Z0-9]{20,}/g,            severity: 'critical', valueBearing: true }],
+  ['planetscale',      { regex: /pscale_(?:tkn|pw)_[a-zA-Z0-9_-]{32,}/g,                        severity: 'critical', valueBearing: true }],
+  ['doppler-token',    { regex: /dp\.(?:pt|st|sa|scim|audit)\.[a-zA-Z0-9]{40,}/g,               severity: 'critical', valueBearing: true }],
+  ['databricks-token', { regex: /(?<![A-Za-z0-9_-])dapi[a-f0-9]{32}/g,                          severity: 'critical', valueBearing: true }],
+  ['cloudflare-token', { regex: /(?:cloudflare_api_token|CLOUDFLARE_API_TOKEN)\s*[=:]\s*["']?([a-zA-Z0-9_-]{40})/g, severity: 'critical', valueBearing: true }],
 
   // --- SaaS / productivity ---
-  ['notion-token',   { regex: /(?<![A-Za-z0-9_-])(?:ntn_[a-zA-Z0-9]{40,}|secret_[a-zA-Z0-9]{43})/g, severity: 'critical' }],
-  ['airtable-pat',   { regex: /(?<![A-Za-z0-9_-])pat[a-zA-Z0-9]{14}\.[a-f0-9]{64}/g,            severity: 'critical' }],
-  ['figma-token',    { regex: /(?<![A-Za-z0-9_-])figd_[a-zA-Z0-9_-]{40,}/g,                     severity: 'critical' }],
+  ['notion-token',   { regex: /(?<![A-Za-z0-9_-])(?:ntn_[a-zA-Z0-9]{40,}|secret_[a-zA-Z0-9]{43})/g, severity: 'critical', valueBearing: true }],
+  ['airtable-pat',   { regex: /(?<![A-Za-z0-9_-])pat[a-zA-Z0-9]{14}\.[a-f0-9]{64}/g,            severity: 'critical', valueBearing: true }],
+  ['figma-token',    { regex: /(?<![A-Za-z0-9_-])figd_[a-zA-Z0-9_-]{40,}/g,                     severity: 'critical', valueBearing: true }],
 
   // --- Monitoring ---
-  ['newrelic-api',   { regex: /NRAK-[a-zA-Z0-9]{26}/g,                                          severity: 'critical' }],
+  ['newrelic-api',   { regex: /NRAK-[a-zA-Z0-9]{26}/g,                                          severity: 'critical', valueBearing: true }],
   // A Sentry DSN is designed to be embedded in client-side bundles -- the
   // public key it carries only permits event ingestion, not data read. Kept at
   // `low` for visibility under the same policy as `gcp-oauth`: real, but not a
   // credential leak worth blocking a commit over.
-  ['sentry-dsn',     { regex: /https:\/\/[a-f0-9]{32}@o\d+\.ingest\.(?:[a-z]{2}\.)?sentry\.io\/\d+/g, severity: 'low' }],
+  ['sentry-dsn',     { regex: /https:\/\/[a-f0-9]{32}@o\d+\.ingest\.(?:[a-z]{2}\.)?sentry\.io\/\d+/g, severity: 'low', valueBearing: true }],
 
   // --- E-commerce ---
-  ['shopify-admin',  { regex: /shp(?:ss|at|ca)_[a-zA-Z0-9]{32}/g,                               severity: 'critical' }],
+  ['shopify-admin',  { regex: /shp(?:ss|at|ca)_[a-zA-Z0-9]{32}/g,                               severity: 'critical', valueBearing: true }],
 
   // --- Keys and auth tokens ---
   // The algorithm prefix is optional. `-----BEGIN PRIVATE KEY-----` (PKCS#8)
@@ -207,7 +220,7 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // manufactured the match by deleting " BLOCK" from the header. It is a fixed
   // optional literal with no quantifier, so it adds no backtracking (measured
   // alongside the other bounds).
-  ['ssh-private-key',{ regex: /-----BEGIN (?:[A-Z0-9]+(?: [A-Z0-9]+)? )?PRIVATE KEY(?: BLOCK)?-----/g, severity: 'critical' }],
+  ['ssh-private-key',{ regex: /-----BEGIN (?:[A-Z0-9]+(?: [A-Z0-9]+)? )?PRIVATE KEY(?: BLOCK)?-----/g, severity: 'critical', valueBearing: false }],
   // Each base64url segment is bounded, and the `eyJ` prefix is token-boundary
   // anchored. Both are needed and they fix different halves of the same cost:
   //
@@ -223,17 +236,17 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // 4096 per segment is deliberately generous so a real token with fat claims
   // stays detected; a JWT glued directly to preceding word characters is not a
   // standalone token reference, the same rule eight other entries here apply.
-  ['jwt-token',      { regex: /(?<![A-Za-z0-9_-])eyJ[a-zA-Z0-9_-]{1,4096}\.[a-zA-Z0-9_-]{1,4096}\.[a-zA-Z0-9_-]{1,4096}/g, severity: 'high' }],
+  ['jwt-token',      { regex: /(?<![A-Za-z0-9_-])eyJ[a-zA-Z0-9_-]{1,4096}\.[a-zA-Z0-9_-]{1,4096}\.[a-zA-Z0-9_-]{1,4096}/g, severity: 'high', valueBearing: true }],
 
   // Generic patterns -- entropy-gated AND placeholder-filtered (aggressive) to
   // suppress false positives on documentation samples and unit-test fixtures.
-  ['bearer-token',   { regex: /Bearer [a-zA-Z0-9_-]{20,}/g,                                     severity: 'high',   minEntropy: 3.5, aggressivePlaceholder: true }],
-  ['api-key-generic',{ regex: /api[_-]?key["']?\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})/gi,         severity: 'high',   minEntropy: 3.5, aggressivePlaceholder: true }],
-  ['secret-generic', { regex: /secret["']?\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})/gi,               severity: 'high',   minEntropy: 3.5, aggressivePlaceholder: true }],
+  ['bearer-token',   { regex: /Bearer [a-zA-Z0-9_-]{20,}/g,                                     severity: 'high',   minEntropy: 3.5, aggressivePlaceholder: true, valueBearing: true }],
+  ['api-key-generic',{ regex: /api[_-]?key["']?\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})/gi,         severity: 'high',   minEntropy: 3.5, aggressivePlaceholder: true, valueBearing: true }],
+  ['secret-generic', { regex: /secret["']?\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})/gi,               severity: 'high',   minEntropy: 3.5, aggressivePlaceholder: true, valueBearing: true }],
   // Negative lookbehind prevents matching when `password` is a suffix of a
   // compound identifier (e.g. `email-reset-password`, `changePassword`).
   // Only standalone assignments trigger -- `password =`, `password:`, etc.
-  ['password-in-code',{ regex: /(?<![a-zA-Z0-9_-])password["']?\s*[:=]\s*["']([a-zA-Z0-9_\-!@#$%^&*]{12,})/gi, severity: 'high', minEntropy: 3.2, aggressivePlaceholder: true }],
+  ['password-in-code',{ regex: /(?<![a-zA-Z0-9_-])password["']?\s*[:=]\s*["']([a-zA-Z0-9_\-!@#$%^&*]{12,})/gi, severity: 'high', minEntropy: 3.2, aggressivePlaceholder: true, valueBearing: true }],
 ]);
 
 /**
@@ -359,6 +372,8 @@ export interface BuiltinPatternDocEntry {
   minEntropy?: number;
   regexSource: string;
   regexFlags: string;
+  /** See {@link PatternEntry.valueBearing}. */
+  valueBearing: boolean;
 }
 
 /** Stable insertion order of {@link BUILTIN_PATTERNS}. */
@@ -366,6 +381,7 @@ export function getBuiltinPatternDocEntries(): BuiltinPatternDocEntry[] {
   return [...BUILTIN_PATTERNS.entries()].map(([id, entry]) => ({
     id,
     severity: entry.severity,
+    valueBearing: entry.valueBearing,
     ...(entry.minEntropy !== undefined ? { minEntropy: entry.minEntropy } : {}),
     regexSource: entry.regex.source,
     regexFlags: entry.regex.flags,
@@ -453,6 +469,9 @@ export class SecretScanner {
           this.patterns.set(ep.id, {
             regex: new RegExp(ep.regex, 'g'),
             severity: ep.severity,
+            // vault-guard cannot know what a user pattern captures, so it is
+            // never trusted to identify one particular secret.
+            valueBearing: false,
             ...(ep.min_entropy !== undefined ? { minEntropy: ep.min_entropy } : {}),
           });
         } catch (e) {
@@ -482,6 +501,17 @@ export class SecretScanner {
   /** Number of built-in + extra patterns active after config (severity "off" removes rules). */
   getActivePatternCount(): number {
     return this.patterns.size;
+  }
+
+  /**
+   * Whether a rule, as this scanner's CURRENT rule table defines it, is
+   * value-bearing. The baseline reader asks this rather than looking at the
+   * shape of a stored entry, so an entry can never pick its own matching
+   * kind. An unknown rule is not value-bearing, which is the fail-closed side:
+   * it needs the stricter positional-plus-file-digest match.
+   */
+  isValueBearing(ruleId: string): boolean {
+    return this.patterns.get(ruleId)?.valueBearing === true;
   }
 
   /**
@@ -543,7 +573,8 @@ export class SecretScanner {
     }
 
     for (const [type, entry] of patternsForRun) {
-      const { regex, severity, minEntropy, aggressivePlaceholder, connectionString } = entry;
+      const { regex, severity, minEntropy, aggressivePlaceholder, connectionString, valueBearing } =
+        entry;
       regex.lastIndex = 0;
 
       let match: RegExpExecArray | null;
@@ -696,6 +727,11 @@ export class SecretScanner {
           offset: match.index,
           matchLength: fullMatch.length,
           severity,
+          // Only a digest leaves the scanner, and only for a rule whose match
+          // holds the secret: see PatternEntry.valueBearing.
+          ...(valueBearing
+            ? { valueDigest: createHash('sha256').update(fullMatch, 'utf8').digest('hex') }
+            : {}),
         });
       }
     }

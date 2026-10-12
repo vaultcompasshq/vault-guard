@@ -1,8 +1,10 @@
+import { spawnSync } from 'child_process';
 import fs, { promises as fsPromises } from 'fs';
 import path from 'path';
 import ignore from 'ignore';
 
 import { DiagnosticBus } from '../diagnostics';
+import { GitError } from '../errors';
 
 /**
  * Build a filter from `config.ignore.paths` / `config.ignore.patterns` entries.
@@ -81,6 +83,15 @@ function findGitRoot(startDir: string): string | null {
     if (parent === dir) return null;
     dir = parent;
   }
+}
+
+/**
+ * The nearest directory at or above `startDir` that holds a `.git` entry
+ * (a directory, or a file in a worktree or submodule), or null. Its presence,
+ * not an answer from git, is what decides that a path is inside git.
+ */
+export function findGitEntryRoot(startDir: string): string | null {
+  return findGitRoot(startDir);
 }
 
 function filesystemRootFor(resolvedPath: string): string {
@@ -406,10 +417,82 @@ export function getAllFiles(
 }
 
 /**
+ * What a plain directory scan's file set was built from, and what it found
+ * along the way that the run has to state. Filled by
+ * {@link getFilesToScanAsync}; one object may be shared across several
+ * directory targets, and the sets accumulate.
+ *
+ * Every path is absolute and expressed under the target as the caller gave it
+ * (not symlink-resolved), the same namespace the returned file list uses.
+ */
+export interface PlainFileSetInfo {
+  /**
+   * `git` when every directory target was inside a git work tree, `walk` when
+   * any was not. Undefined until a directory target has been built.
+   */
+  fileSet?: 'git' | 'walk';
+  /**
+   * Paths tracked by the OUTER repository's own index (before any filtering).
+   * Files of a submodule or an untracked nested repository are scanned but are
+   * not in this set: the baseline writer accepts findings only in files the
+   * repository it writes into has committed.
+   */
+  trackedFiles: Set<string>;
+  /** Tracked paths that `.gitignore` matches. */
+  trackedIgnored: Set<string>;
+  /** Tracked paths kept although they sit under a nested vendored directory name. */
+  trackedNestedVendored: Set<string>;
+  /**
+   * Tracked paths absent from the work tree: listed by `git ls-files --deleted`
+   * or marked skip-worktree by a sparse checkout, AND failing `lstat` with
+   * ENOENT or ENOTDIR. Counted, not fatal.
+   */
+  trackedMissing: string[];
+  /** Vendored names skipped as a direct child of the scan root in the tracked half. */
+  vendoredDirNames: Set<string>;
+  /**
+   * Tracked paths that could not be examined on disk for any other reason. The
+   * caller must fail closed on these (exit 2), exactly as pull-request mode does.
+   */
+  unreadable: Array<{ file: string; reason: string }>;
+}
+
+/** A fresh, empty {@link PlainFileSetInfo}. */
+export function newPlainFileSetInfo(): PlainFileSetInfo {
+  return {
+    trackedFiles: new Set(),
+    trackedIgnored: new Set(),
+    trackedNestedVendored: new Set(),
+    trackedMissing: [],
+    vendoredDirNames: new Set(),
+    unreadable: [],
+  };
+}
+
+function noteFileSet(info: PlainFileSetInfo | undefined, kind: 'git' | 'walk'): void {
+  if (!info) return;
+  info.fileSet = info.fileSet === undefined || info.fileSet === kind ? kind : 'walk';
+}
+
+/**
  * Get files to scan (filters out ignored directories/files) - async version
+ *
+ * INSIDE A GIT WORK TREE the set comes from git: tracked files plus untracked
+ * files that `.gitignore` does not exclude (see {@link getGitFilesToScan}). A
+ * tracked file is scanned whatever `.gitignore` says, because `.gitignore`
+ * governs what git will add and says nothing about a file already committed.
+ * Whether the target is inside git is decided by the presence of a `.git`
+ * entry, never by asking git: once one is found, any git failure throws
+ * {@link GitError} rather than quietly falling back to the walk, which would
+ * bring back exactly the gap this closes.
+ *
+ * OUTSIDE GIT the filesystem walk and the gitignore tester run as before.
  *
  * @param configIgnorePatterns - gitignore-style patterns from `config.ignore.paths`
  *   / `config.ignore.patterns`. Matched relative to `targetPath`.
+ * @param info - filled with what the run must report about the file set. A
+ *   caller that does not pass one cannot see tracked files that could not be
+ *   examined, so every caller that can fail closed should pass one.
  */
 export async function getFilesToScanAsync(
   targetPath: string,
@@ -417,7 +500,13 @@ export async function getFilesToScanAsync(
   bus?: DiagnosticBus,
   configIgnorePatterns: string[] = [],
   counts?: ScanSkipCounts,
+  info?: PlainFileSetInfo,
 ): Promise<string[]> {
+  if (findGitRoot(targetPath) !== null) {
+    noteFileSet(info, 'git');
+    return getGitFilesToScan(targetPath, configIgnorePatterns, counts, info ?? newPlainFileSetInfo(), bus);
+  }
+  noteFileSet(info, 'walk');
   const allFiles = await getAllFilesAsync(targetPath, new Set(), verbose, bus, counts);
   const gitignoreTester = getGitignoreTester(targetPath);
   const configIgnoreTester = buildConfigIgnoreFilter(configIgnorePatterns, targetPath);
@@ -498,9 +587,16 @@ export interface PullRequestSkips {
   /**
    * Files in the head tree that could not be examined on disk (a directory that
    * cannot be entered, a file missing from the checkout). Each is a file the run
-   * did not check, so the caller must fail closed on them.
+   * did not check, so the caller must fail closed on them. `code` is the
+   * `lstat` errno code, when there was one.
    */
-  unreadable?: Array<{ file: string; reason: string }>;
+  unreadable?: Array<{ file: string; reason: string; code?: string }>;
+  /**
+   * Files kept although a directory above them, below the scan root, carries a
+   * vendored name (`src/vendor/k.js`). The walk used to skip these at any
+   * depth; they are scanned, and counted so the run can say so.
+   */
+  nestedVendored?: string[];
 }
 
 /**
@@ -555,11 +651,13 @@ export function getPullRequestFilesToScan(
   const skippedNames = new Set<string>();
   let typeFiltered = 0;
   let configIgnored = 0;
-  const unreadable: Array<{ file: string; reason: string }> = [];
+  const unreadable: Array<{ file: string; reason: string; code?: string }> = [];
+  const nestedVendored: string[] = [];
   const out: string[] = [];
 
   for (const file of headTreeFiles) {
     const abs = path.resolve(file);
+    let underNestedVendored = false;
 
     if (!targetIsDirectory) {
       if (abs !== target) continue;
@@ -572,6 +670,7 @@ export function getPullRequestFilesToScan(
         skippedNames.add(segments[0]);
         continue;
       }
+      underNestedVendored = segments.slice(1, -1).some(shouldIgnoreDirectory);
     }
 
     // No gitignore tester: see the note above. The rest of the walk's file
@@ -597,11 +696,13 @@ export function getPullRequestFilesToScan(
       // cannot be entered, or a file missing from the checkout. A tracked file
       // nobody could look at is exactly the file nobody checked, so it is
       // reported to the caller, which exits 2 over it.
-      unreadable.push({ file: abs, reason: String(error) });
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      unreadable.push({ file: abs, reason: String(error), ...(code ? { code } : {}) });
       continue;
     }
     if (!stat.isFile()) continue;
 
+    if (underNestedVendored) nestedVendored.push(abs);
     out.push(abs);
   }
 
@@ -610,7 +711,289 @@ export function getPullRequestFilesToScan(
   skipped.typeFilteredFiles = typeFiltered;
   skipped.configIgnoredFiles = configIgnored;
   skipped.unreadable = unreadable;
+  skipped.nestedVendored = nestedVendored;
   return out;
+}
+
+/** Resolve symlinks; fall back to the input when that is not possible. */
+function canonicalPath(p: string): string {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return p;
+  }
+}
+
+/**
+ * Run git for the plain file set. Throws {@link GitError} quoting git's own
+ * stderr: a `.git` was found, so the file set must come from git, and a run
+ * that cannot get it has not established anything about the tree.
+ */
+function runFileSetGit(cwd: string, args: string[], bus?: DiagnosticBus): string {
+  const argv = ['-c', 'core.quotePath=false', ...args];
+  const r = spawnSync('git', argv, {
+    cwd,
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    maxBuffer: 512 * 1024 * 1024,
+  });
+  const stderr = typeof r.stderr === 'string' ? r.stderr.trim() : '';
+  if (r.error === undefined && r.status === 0) {
+    // git exits 0 over an untracked directory it could not open and says so
+    // on stderr only. The walk reported that as a warning; so does this.
+    for (const line of stderr.split('\n').map(l => l.trim()).filter(Boolean)) {
+      bus?.add({
+        code: /permission denied/i.test(line) ? 'fs.permission_denied' : 'git.warning',
+        severity: 'warning',
+        ctx: { dir: cwd, detail: line },
+      });
+    }
+    return r.stdout;
+  }
+  {
+    const err = r.error ?? new Error(`git exited with status ${String(r.status)}`);
+    const detail = stderr.length > 0 ? stderr : String(err);
+    throw new GitError(
+      `vault-guard: ${cwd} is inside a git repository (a .git entry was found), so the ` +
+        `file set has to come from git, and git failed: ${detail}\n` +
+        'Nothing was scanned. Fix the git error above; vault-guard does not fall back ' +
+        'to walking the directory, because that walk skips tracked files that ' +
+        '.gitignore matches.',
+      `git ${argv.join(' ')}`,
+      err,
+    );
+  }
+}
+
+/**
+ * Tracked files under `repoRoot` that `.gitignore` matches, as absolute paths
+ * resolved against `repoRoot`. Pull-request mode reports how many of these it
+ * scanned, as a plain scan inside git does. Throws {@link GitError} on failure.
+ */
+export function listTrackedIgnoredFiles(repoRoot: string): Set<string> {
+  const out = runFileSetGit(repoRoot, [
+    'ls-files', '-z', '--cached', '--ignored', '--exclude-per-directory=.gitignore', '--', ':(literal).',
+  ]);
+  return new Set(splitZ(out).map(p => path.resolve(repoRoot, p)));
+}
+
+/** NUL-separated git output into entries, without trimming. */
+function splitZ(out: string): string[] {
+  return out.split('\0').filter(s => s.length > 0);
+}
+
+/** The pieces the git file set is assembled from, as symlink-resolved absolute paths. */
+interface GitPathLists {
+  tracked: Set<string>;
+  /** The subset of `tracked` in the OUTER repository's own index. */
+  outerTracked: Set<string>;
+  sparse: Set<string>;
+  deleted: Set<string>;
+  ignoredTracked: Set<string>;
+  untracked: Set<string>;
+}
+
+/**
+ * List one repository's part of the file set under `dir`, and recurse into
+ * every checked-out submodule and every untracked nested repository below it.
+ *
+ * git runs at the toplevel `rev-parse --show-toplevel` reports for `dir`, with
+ * `dir` passed as a root-relative `:(literal)` pathspec so a directory named
+ * `[x]` or `:x` is that directory and never a glob or pathspec magic. Both
+ * sides are symlink-resolved before `path.relative`, because git reports the
+ * physical toplevel.
+ */
+function collectGitPaths(
+  dir: string,
+  out: GitPathLists,
+  visitedRepos: Set<string>,
+  skipNestedRepo: (dirAbs: string) => boolean,
+  bus: DiagnosticBus | undefined,
+  outer: boolean,
+): void {
+  const git = (cwd: string, args: string[]): string => runFileSetGit(cwd, args, bus);
+  const top = canonicalPath(git(dir, ['rev-parse', '--show-toplevel']).trim());
+  if (visitedRepos.has(`${top}\0${dir}`)) return;
+  visitedRepos.add(`${top}\0${dir}`);
+  const rel = path.relative(top, dir).split(path.sep).join('/');
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new GitError(
+      `vault-guard: ${dir} is not inside the git work tree git reported for it (${top}). ` +
+        'Nothing was scanned.',
+      'git rev-parse --show-toplevel',
+    );
+  }
+  const spec = `:(literal)${rel === '' ? '.' : rel}`;
+  const abs = (p: string): string => path.resolve(top, p);
+
+  // `-s -t`: `<tag> <mode> <object> <stage>\t<path>`. The tag says whether a
+  // sparse checkout left the path out (S); the mode says whether it is a
+  // gitlink. A path in conflict is listed once per stage: de-duplicated here.
+  for (const record of splitZ(git(top, ['ls-files', '-z', '-s', '-t', '--cached', '--', spec]))) {
+    const tab = record.indexOf('\t');
+    if (tab === -1) continue;
+    const [tag, mode] = record.slice(0, tab).split(' ');
+    const file = abs(record.slice(tab + 1));
+    if (mode === '160000') {
+      // A submodule. The walk used to descend into a checked-out one, so the
+      // same rule is applied inside it; an uninitialised one has no files.
+      if (fs.existsSync(path.join(file, '.git'))) {
+        collectGitPaths(file, out, visitedRepos, skipNestedRepo, bus, false);
+      }
+      continue;
+    }
+    out.tracked.add(file);
+    // Only the outer repository's own index is "committed here". Files of a
+    // submodule or a nested repository are scanned, but they are another
+    // repository's history, and the baseline writer must not name them.
+    if (outer) out.outerTracked.add(file);
+    if (tag === 'S') out.sparse.add(file);
+  }
+
+  for (const p of splitZ(git(top, ['ls-files', '-z', '--deleted', '--', spec]))) {
+    out.deleted.add(abs(p));
+  }
+
+  for (const p of splitZ(
+    git(top, [
+      'ls-files', '-z', '--cached', '--ignored', '--exclude-per-directory=.gitignore', '--', spec,
+    ]),
+  )) {
+    out.ignoredTracked.add(abs(p));
+  }
+
+  for (const p of splitZ(
+    git(top, ['ls-files', '-z', '--others', '--exclude-per-directory=.gitignore', '--', spec]),
+  )) {
+    if (p.endsWith('/')) {
+      // git lists an untracked nested repository as one `dir/` entry and stops.
+      const nested = abs(p.slice(0, -1));
+      if (fs.existsSync(path.join(nested, '.git')) && !skipNestedRepo(nested)) {
+        collectGitPaths(nested, out, visitedRepos, skipNestedRepo, bus, false);
+      }
+      continue;
+    }
+    out.untracked.add(abs(p));
+  }
+}
+
+/**
+ * The plain-scan file set inside git: tracked files plus untracked files that
+ * `.gitignore` does not exclude.
+ *
+ * THE TRACKED HALF goes through {@link getPullRequestFilesToScan} unchanged:
+ * vendored names anchored to the scan root, the counted type filter, the
+ * counted config `ignore` (the working tree's, as plain mode always used), and
+ * `lstat`/`isFile`, so symlinks are never followed. Plain mode and
+ * pull-request mode therefore build their tracked set with the same function.
+ *
+ * THE UNTRACKED HALF keeps the walk's own filtering: vendored names at ANY
+ * depth (an untracked `packages/x/node_modules` stays out), the type filter
+ * and the config `ignore`.
+ *
+ * `.gitignore` is the only exclude source (`--exclude-per-directory`), not
+ * `--exclude-standard`: the file set must not depend on `.git/info/exclude` or
+ * on a per-machine global excludes file.
+ */
+function getGitFilesToScan(
+  targetPath: string,
+  configIgnorePatterns: string[],
+  counts: ScanSkipCounts | undefined,
+  info: PlainFileSetInfo,
+  bus?: DiagnosticBus,
+): string[] {
+  const givenTarget = path.resolve(targetPath);
+  const canonTarget = canonicalPath(givenTarget);
+  const toGiven = (canon: string): string | null => {
+    const rel = path.relative(canonTarget, canon);
+    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+    return path.join(givenTarget, rel);
+  };
+  const isUnderVendoredName = (canon: string, includeLast: boolean): boolean => {
+    const rel = path.relative(canonTarget, canon);
+    const segments = rel.split(path.sep);
+    const dirs = includeLast ? segments : segments.slice(0, -1);
+    return dirs.some(shouldIgnoreDirectory);
+  };
+
+  const lists: GitPathLists = {
+    tracked: new Set(),
+    outerTracked: new Set(),
+    sparse: new Set(),
+    deleted: new Set(),
+    ignoredTracked: new Set(),
+    untracked: new Set(),
+  };
+  collectGitPaths(canonTarget, lists, new Set(), nested => isUnderVendoredName(nested, true), bus, true);
+
+  // Tracked half.
+  const trackedGiven: string[] = [];
+  const givenToCanon = new Map<string, string>();
+  for (const canon of lists.tracked) {
+    const given = toGiven(canon);
+    if (given === null) continue;
+    trackedGiven.push(given);
+    givenToCanon.set(given, canon);
+    if (lists.outerTracked.has(canon)) info.trackedFiles.add(given);
+  }
+  for (const canon of lists.ignoredTracked) {
+    const given = toGiven(canon);
+    if (given !== null) info.trackedIgnored.add(given);
+  }
+  const prSkips: PullRequestSkips = { dirCount: 0, dirNames: [], typeFilteredFiles: 0 };
+  const tracked = getPullRequestFilesToScan(givenTarget, trackedGiven, configIgnorePatterns, prSkips);
+  if (counts) {
+    counts.typeFiltered += prSkips.typeFilteredFiles;
+    counts.configIgnored += prSkips.configIgnoredFiles ?? 0;
+  }
+  for (const name of prSkips.dirNames) info.vendoredDirNames.add(name);
+  for (const f of prSkips.nestedVendored ?? []) info.trackedNestedVendored.add(f);
+  for (const u of prSkips.unreadable ?? []) {
+    const canon = givenToCanon.get(u.file) ?? u.file;
+    const listedAbsent = lists.deleted.has(canon) || lists.sparse.has(canon);
+    const absent = u.code === 'ENOENT' || u.code === 'ENOTDIR';
+    // Missing only when git ALSO says the file is not in the work tree AND the
+    // filesystem agrees it is not there. Anything else (a directory that cannot
+    // be entered, a name git's UTF-8 output turned into a path that does not
+    // exist) is a file nobody examined, and the caller exits 2 over it.
+    if (listedAbsent && absent) info.trackedMissing.push(u.file);
+    else info.unreadable.push({ file: u.file, reason: u.reason });
+  }
+
+  // Untracked half: the walk's filtering.
+  const configIgnoreTester = buildConfigIgnoreFilter(configIgnorePatterns, givenTarget);
+  const untracked: string[] = [];
+  for (const canon of lists.untracked) {
+    const given = toGiven(canon);
+    if (given === null) continue;
+    if (isUnderVendoredName(canon, false)) continue;
+    if (shouldIgnoreFile(given)) {
+      if (counts) counts.typeFiltered++;
+      continue;
+    }
+    if (configIgnoreTester(given)) {
+      if (counts) counts.configIgnored++;
+      continue;
+    }
+    let st: fs.Stats;
+    try {
+      st = fs.lstatSync(given);
+    } catch (error) {
+      // Untracked and gone, or not examinable: the walk reported these as a
+      // warning and moved on, and an untracked file is not part of what the
+      // repository holds.
+      bus?.add({
+        code: 'fs.permission_denied',
+        severity: 'warning',
+        ctx: { path: given, detail: String(error) },
+      });
+      continue;
+    }
+    if (!st.isFile()) continue;
+    untracked.push(given);
+  }
+
+  return [...tracked, ...untracked];
 }
 
 function shouldIgnoreDirectory(name: string): boolean {

@@ -31,6 +31,7 @@ export type DiagnosticCode =
   | 'file.scan_timeout'
   | 'fs.permission_denied'
   | 'git.staged_files_failed'
+  | 'git.warning'
   | 'baseline.invalid'
   | 'suppression.inline';
 

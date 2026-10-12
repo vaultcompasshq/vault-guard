@@ -6,15 +6,19 @@ import {
   mapPatternRejectionReasonToDiagnosticCode,
   getGitStagedFilePaths,
   getGitWorkTreeRoot,
+  readGitIndexBytes,
   isInsideGitWorkTree,
   DiagnosticBus,
   loadBaseline,
-  filterResultsByBaseline,
+  applyBaseline,
+  findGitEntryRoot,
   resolveFailOn,
   countBlockingMatches,
   FAIL_ON_VALUES,
   loadTrustedControls,
   TrustBaseError,
+  newPlainFileSetInfo,
+  listTrackedIgnoredFiles,
   type FailOnThreshold,
   type PullRequestSkips,
   type TrustBaseReport,
@@ -72,6 +76,17 @@ function canonicalPath(p: string): string {
   } catch {
     return p;
   }
+}
+
+/**
+ * The root baseline entries and content fingerprints are keyed against: the
+ * git work tree root when the anchor is inside git (a `.git` entry decides,
+ * and a git failure then throws GitError, which is exit 2), the anchor
+ * otherwise.
+ */
+export function resolveContentRoot(anchor: string): string {
+  if (findGitEntryRoot(anchor) === null) return canonicalPath(anchor);
+  return getGitWorkTreeRoot(anchor);
 }
 
 /**
@@ -349,6 +364,12 @@ export async function scanCommand(
   // Files the run reached but could not vouch for: unreadable, over the scan
   // budget, or a named target that is not there. Fatal (exit 2) on every path.
   const unreadable: UnreadableFile[] = [];
+  // Where a plain directory scan's file set came from, and what it has to say
+  // about it (section 2 of the 2026-10-11 design).
+  const plainFileSet = newPlainFileSetInfo();
+  // Every file actually opened, so the tracked counts are of files SCANNED,
+  // not merely listed.
+  const scannedFiles = new Set<string>();
   const t0 = Date.now();
 
   try {
@@ -414,9 +435,10 @@ export async function scanCommand(
         skips,
         configIgnorePatterns,
         inlineSuppressed,
+        scannedFiles,
         ...(controls
           ? { pullRequest: { headTreeFiles: controls.headTreeFiles, skipped: prSkips } }
-          : {}),
+          : { plainFileSet }),
       });
     }
 
@@ -472,6 +494,7 @@ export async function scanCommand(
       ? {
           sourcePath: controls.baselinePath ?? undefined,
           fingerprints: controls.baseline,
+          entries: controls.baselineEntries,
           parseError: controls.baselineParseError ?? undefined,
         }
       : loadBaseline(outputBase);
@@ -490,12 +513,26 @@ export async function scanCommand(
       }
     }
 
-    const { results: afterBaseline, suppressed: baselineSuppressed } = filterResultsByBaseline(
-      outputBase,
+    // Baseline entries and content fingerprints are keyed relative to the
+    // repository root inside git, so a baseline written at the root matches a
+    // run from anywhere in the tree.
+    const contentRoot = controls
+      ? controls.repoRoot
+      : resolveContentRoot(outputBase);
+    const { results: afterBaseline, suppressed: baselineSuppressed } = applyBaseline(
       results,
-      baselineLoad.fingerprints,
+      baselineLoad,
+      {
+        anchor: outputBase,
+        contentRoot,
+        isValueBearing: id => scanner.isValueBearing(id),
+        // A staged run scanned the index blob, so a header-only entry's file
+        // digest is taken over that blob too, never over the working tree.
+        ...(staged ? { readBytes: (f: string) => readGitIndexBytes(outputBase, f) } : {}),
+      },
     );
     results = afterBaseline;
+    const baselineEntriesLoaded = baselineLoad.entries?.length ?? 0;
 
     const durationMs = Date.now() - t0;
     // Pull-request mode counts the ignore list while building its file set;
@@ -504,6 +541,37 @@ export async function scanCommand(
       controls && !staged ? (prSkips.configIgnoredFiles ?? 0) : skips.configIgnored;
     const totalMatches = results.reduce((n, r) => n + r.matches.length, 0);
     const blocking = countBlockingMatches(results, failOn);
+
+    // Where the file set came from, and the tracked files it scanned that the
+    // walk used to skip, each counted only if it was actually scanned.
+    const fileSetKind: 'git' | 'walk' | 'head-tree' | 'index' = staged
+      ? 'index'
+      : controls
+        ? 'head-tree'
+        : (plainFileSet.fileSet ?? 'walk');
+    const countScanned = (files: Iterable<string>): number => {
+      let n = 0;
+      for (const f of files) if (scannedFiles.has(f)) n++;
+      return n;
+    };
+    let trackedIgnoredScanned = 0;
+    let trackedNestedVendoredScanned = 0;
+    if (fileSetKind === 'head-tree' && controls) {
+      trackedIgnoredScanned = countScanned(listTrackedIgnoredFiles(controls.repoRoot));
+      trackedNestedVendoredScanned = countScanned(prSkips.nestedVendored ?? []);
+    } else if (fileSetKind === 'git') {
+      trackedIgnoredScanned = countScanned(plainFileSet.trackedIgnored);
+      trackedNestedVendoredScanned = countScanned(plainFileSet.trackedNestedVendored);
+    }
+    const plainVendoredNames = [...plainFileSet.vendoredDirNames].sort();
+    const trackedCounts =
+      fileSetKind === 'git' || fileSetKind === 'head-tree'
+        ? {
+            tracked_ignored_files_scanned: trackedIgnoredScanned,
+            tracked_nested_vendored_scanned: trackedNestedVendoredScanned,
+          }
+        : {};
+
     const run = {
       duration_ms: durationMs,
       files_scanned: stats.filesScanned,
@@ -513,6 +581,7 @@ export async function scanCommand(
       fail_on: failOn,
       blocking_matches: blocking,
       ...(baselineSuppressed > 0 ? { baseline_suppressed: baselineSuppressed } : {}),
+      baseline_entries: baselineEntriesLoaded,
       // Always present (even at zero): a muted scanner must say so.
       inline_suppressed: inlineSuppressed.count,
       inline_suppressed_critical_vendor: inlineSuppressed.criticalVendorAnchored,
@@ -524,6 +593,9 @@ export async function scanCommand(
         : {}),
       // A plain directory walk has the same type filter; it was silent there.
       ...(!controls && !staged ? { type_filtered_files: skips.typeFiltered } : {}),
+      // Inside git a root-level vendored name still mutes by design, as in
+      // pull-request mode, so the count is stated the same way.
+      ...(fileSetKind === 'git' ? { vendored_dirs_skipped: plainVendoredNames.length } : {}),
       // Both are stated every run, even at zero: a skip by extension or by the
       // project's own ignore list is a decision the run must say it made.
       binary_files_skipped: skips.binary,
@@ -539,6 +611,9 @@ export async function scanCommand(
             })),
           }
         : {}),
+      file_set: fileSetKind,
+      ...trackedCounts,
+      ...(fileSetKind === 'git' ? { tracked_files_missing: plainFileSet.trackedMissing.length } : {}),
     };
 
     // A file vault-guard could not read, or whose scan blew the budget, or a
@@ -585,7 +660,7 @@ export async function scanCommand(
       // run failed, and `run.unscannable_files` plus the error-severity
       // `file.read_error` diagnostics inside it say why.
       process.stdout.write(
-        formatJson(results, { diagnostics, run, cwd: outputBase, trustBase }) + '\n',
+        formatJson(results, { diagnostics, run, cwd: outputBase, contentRoot, trustBase }) + '\n',
       );
       if (scanIncomplete) {
         // stdout carries the document; the reason and the remedy go to stderr,
@@ -602,7 +677,8 @@ export async function scanCommand(
       // subdirectory would otherwise make the base for files above it.
       const scanRoot = staged ? outputBase : resolveScanRoot(targetPaths, cwd);
       process.stdout.write(
-        formatSarif(results, { diagnostics, run, scanRoot, cwd: outputBase, trustBase }) + '\n',
+        formatSarif(results, { diagnostics, run, scanRoot, cwd: outputBase, contentRoot, trustBase }) +
+          '\n',
       );
       if (scanIncomplete) {
         reportIncomplete(unreadable, staged, trustBase);
@@ -676,6 +752,36 @@ export async function scanCommand(
     // state every count, including zero, for anything that parses rather than
     // reads. A plain directory walk has the same type filter pull-request mode
     // reports above.
+    // The plain file set inside git: what it scanned that the walk used to
+    // skip, the root-level vendored names that still mute by design, and
+    // tracked files that are not in the work tree. Each only when non-zero.
+    if (fileSetKind === 'git' && plainVendoredNames.length > 0) {
+      console.log(
+        chalk.yellow(
+          `Vendored directories skipped: ${plainVendoredNames.length} (${plainVendoredNames.join(', ')})`,
+        ),
+      );
+    }
+    if (trackedIgnoredScanned > 0) {
+      console.log(
+        chalk.gray(`Tracked files that .gitignore would hide, scanned: ${trackedIgnoredScanned}`),
+      );
+    }
+    if (trackedNestedVendoredScanned > 0) {
+      console.log(
+        chalk.gray(
+          `Tracked files under nested vendored directories, scanned: ${trackedNestedVendoredScanned}`,
+        ),
+      );
+    }
+    if (fileSetKind === 'git' && plainFileSet.trackedMissing.length > 0) {
+      console.log(
+        chalk.yellow(
+          `Tracked files missing from the working tree: ${plainFileSet.trackedMissing.length}` +
+            ' (deleted locally or left out by a sparse checkout, not scanned)',
+        ),
+      );
+    }
     if (!trustBase && !staged && skips.typeFiltered > 0) {
       console.log(chalk.gray(`Files skipped by type or name: ${skips.typeFiltered}`));
     }
@@ -723,6 +829,12 @@ export async function scanCommand(
 
     return 1;
   } catch (error) {
+    if (error instanceof GitError) {
+      // Inside a git work tree the file set comes from git; a git failure there
+      // is could-not-run, never a quiet fall back to the walk.
+      console.error(chalk.red('❌ Git error:'), chalk.white(error.message));
+      return COULD_NOT_RUN_EXIT;
+    }
     console.error(chalk.red('❌ Fatal error:'), chalk.white(String(error)));
     return COULD_NOT_RUN_EXIT;
   }

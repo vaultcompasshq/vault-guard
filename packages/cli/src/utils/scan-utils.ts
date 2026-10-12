@@ -14,10 +14,12 @@ import {
   formatJson as formatJsonResults,
   formatSarif as formatSarifResults,
   getPullRequestFilesToScan,
+  newPlainFileSetInfo,
   type JsonOutput,
   type JsonRunMetadata,
   type TrustBaseReport,
   type PullRequestSkips,
+  type PlainFileSetInfo,
   type ScanSkipCounts,
   type FileScanResult,
   type Diagnostic,
@@ -49,6 +51,8 @@ export interface ScanFormatOptions {
    * with whatever directory the caller happened to be standing in.
    */
   cwd?: string;
+  /** Root content fingerprints are relative to (the repository root inside git). */
+  contentRoot?: string;
   /** Pull-request mode's report, when the run was given `--trust-base`. */
   trustBase?: TrustBaseReport;
 }
@@ -56,6 +60,7 @@ export interface ScanFormatOptions {
 export function formatJson(results: ScanResult[], opts: ScanFormatOptions = {}): string {
   return formatJsonResults(results, {
     cwd: opts.cwd ?? process.cwd(),
+    contentRoot: opts.contentRoot,
     diagnostics: opts.diagnostics,
     run: opts.run,
     trustBase: opts.trustBase,
@@ -65,6 +70,7 @@ export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {})
   return formatSarifResults(results, {
     cwd: opts.cwd ?? process.cwd(),
     scanRoot: opts.scanRoot,
+    contentRoot: opts.contentRoot,
     diagnostics: opts.diagnostics,
     run: opts.run,
     trustBase: opts.trustBase,
@@ -412,6 +418,15 @@ export interface ScanOptions {
     /** Filled with what the run declined to look at, and why. */
     skipped: PullRequestSkips;
   };
+  /**
+   * Filled, on a plain directory scan, with where the file set came from (git
+   * or the walk) and what the run must report about it. Tracked files it lists
+   * as unreadable are recorded in {@link ScanOptions.unreadable}, so the run
+   * exits 2 over them.
+   */
+  plainFileSet?: PlainFileSetInfo;
+  /** Filled with every file actually opened and scanned, for the run's counts. */
+  scannedFiles?: Set<string>;
 }
 
 /**
@@ -591,6 +606,20 @@ export async function scanFileListAsync(
   return results;
 }
 
+/** Fold one directory target's file-set report into the run's. */
+function mergePlainFileSetInfo(into: PlainFileSetInfo, from: PlainFileSetInfo): void {
+  if (from.fileSet !== undefined) {
+    into.fileSet =
+      into.fileSet === undefined || into.fileSet === from.fileSet ? from.fileSet : 'walk';
+  }
+  for (const f of from.trackedFiles) into.trackedFiles.add(f);
+  for (const f of from.trackedIgnored) into.trackedIgnored.add(f);
+  for (const f of from.trackedNestedVendored) into.trackedNestedVendored.add(f);
+  for (const n of from.vendoredDirNames) into.vendoredDirNames.add(n);
+  into.trackedMissing.push(...from.trackedMissing);
+  into.unreadable.push(...from.unreadable);
+}
+
 /**
  * Check if a file is binary based on extension
  */
@@ -644,6 +673,12 @@ export async function scanFilesAsync(
 
     const stat = await fs.promises.stat(targetPath);
     let filesToScan: string[];
+    // Per target, so the unreadable tracked files recorded below belong to the
+    // directory just built and are never recorded a second time; merged into
+    // the caller's object afterwards.
+    // Always built, so a tracked file that cannot be examined is recorded as
+    // unreadable even for a caller that does not ask for the report.
+    const plainInfo = options.pullRequest ? undefined : newPlainFileSetInfo();
 
     if (stat.isFile()) {
       filesToScan = [targetPath];
@@ -661,6 +696,7 @@ export async function scanFilesAsync(
             options.bus,
             options.configIgnorePatterns ?? [],
             options.skips,
+            plainInfo,
           );
     } else {
       if (verbose) {
@@ -675,7 +711,8 @@ export async function scanFilesAsync(
     // filled the list for, so a file target after a directory must not record
     // the directory's entries a second time.
     const prUnreadable = stat.isDirectory() ? (options.pullRequest?.skipped.unreadable ?? []) : [];
-    for (const u of prUnreadable) {
+    if (plainInfo && options.plainFileSet) mergePlainFileSetInfo(options.plainFileSet, plainInfo);
+    for (const u of [...prUnreadable, ...(plainInfo?.unreadable ?? [])]) {
       const exclude = excludePatternFor(u.file, targetPath);
       const display = path.relative(process.cwd(), u.file);
       options.unreadable?.push({
@@ -721,6 +758,7 @@ export async function scanFilesAsync(
           options.stats.filesScanned += 1;
           options.stats.bytesScanned += fileStat.size;
         }
+        options.scannedFiles?.add(file);
 
         const tScan = Date.now();
         const hits: IgnoreDirectiveHits = { count: 0, lines: [] };

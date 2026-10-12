@@ -1,5 +1,6 @@
 import { Command, CommanderError } from 'commander';
 import { scanCommand, OutputFormat } from './commands/scan';
+import { baselineCommand } from './commands/baseline';
 import { installHookCommand } from './commands/install-hook';
 import { tokensCommand } from './commands/tokens';
 import { fixCommand } from './commands/fix';
@@ -94,6 +95,31 @@ export function buildCli(): Command {
           options.failOn,
           options.trustBase,
         );
+        setExitCode(exitCode);
+      },
+    );
+
+  program
+    .command('baseline')
+    .description(
+      'Accept the findings that would block today: print them (dry run), or write .vault-guard.baseline.json with --write',
+    )
+    .argument('[path]', 'Path to scan', '.')
+    .option('--write', 'Write .vault-guard.baseline.json at the repository root', false)
+    .option('--include-critical', 'Also accept critical findings (refused by default: rotate them)', false)
+    .option('--trust-base <ref>', 'Refused: a pull request cannot accept its own findings')
+    .option('--staged', 'Refused: the baseline describes the tree, not the index', false)
+    .action(
+      async (
+        target: string,
+        options: { write?: boolean; includeCritical?: boolean; trustBase?: string; staged?: boolean },
+      ) => {
+        const exitCode = await baselineCommand(target, {
+          write: Boolean(options.write),
+          includeCritical: Boolean(options.includeCritical),
+          trustBase: options.trustBase,
+          staged: Boolean(options.staged),
+        });
         setExitCode(exitCode);
       },
     );

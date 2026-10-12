@@ -1,6 +1,10 @@
 import path from 'path';
 import { formatJson, formatSarif, type FileScanResult } from '../../scan-output';
-import { fingerprintForMatch } from '../../match-fingerprint';
+import {
+  fingerprintForMatch,
+  contentFingerprint,
+  contentFingerprintForMatch,
+} from '../../match-fingerprint';
 import type { SecretMatch } from '../../types';
 import type { Diagnostic } from '../../diagnostics';
 
@@ -187,6 +191,35 @@ describe('scan-output formatters', () => {
       expect(partialFingerprints).toBeDefined();
       expect(partialFingerprints['vault-guard/v1']).toBe(expectedFingerprint);
       expect(partialFingerprints['vault-guard/v1']).toBe(fingerprintForMatch(cwd, file, match));
+    });
+
+    it('adds the content fingerprint as vault-guard/v2 and in JSON, keyed on the content root', () => {
+      const cwd = '/repo/project/sub';
+      const contentRoot = '/repo/project';
+      const file = '/repo/project/sub/src/leak.ts';
+      const match = makeMatch({ valueDigest: 'a'.repeat(64) });
+      const results: FileScanResult[] = [{ file, matches: [match] }];
+      const expected = contentFingerprint('sub/src/leak.ts', 'anthropic', 'a'.repeat(64));
+      expect(contentFingerprintForMatch(contentRoot, file, match)).toBe(expected);
+
+      const jsonMatch = JSON.parse(formatJson(results, { cwd, contentRoot })).results[0].matches[0];
+      expect(jsonMatch.content_fingerprint).toBe(expected);
+      // The positional fingerprint keeps its meaning.
+      expect(jsonMatch.fingerprint).toBe(fingerprintForMatch(cwd, file, match));
+
+      const sarif = JSON.parse(formatSarif(results, { cwd, contentRoot }));
+      expect(sarif.runs[0].results[0].partialFingerprints['vault-guard/v2']).toBe(expected);
+    });
+
+    it('a header-only match has no content fingerprint in either format', () => {
+      const results: FileScanResult[] = [
+        { file: '/repo/project/k.pem', matches: [makeMatch({ type: 'ssh-private-key' })] },
+      ];
+      const jsonMatch = JSON.parse(formatJson(results, { cwd: '/repo/project' })).results[0]
+        .matches[0];
+      expect(jsonMatch).not.toHaveProperty('content_fingerprint');
+      const sarif = JSON.parse(formatSarif(results, { cwd: '/repo/project' }));
+      expect(sarif.runs[0].results[0].partialFingerprints).not.toHaveProperty('vault-guard/v2');
     });
   });
 

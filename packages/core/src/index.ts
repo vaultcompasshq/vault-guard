@@ -20,7 +20,12 @@ export {
   type ControlShapeChange,
   type TrustedControls,
 } from './trust-base';
-export { fingerprintForMatch } from './match-fingerprint';
+export {
+  fingerprintForMatch,
+  contentFingerprintForMatch,
+  contentFingerprint,
+  rootPositionalFingerprint,
+} from './match-fingerprint';
 export * from './scan-output';
 export * from './diagnostics';
 export { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from './utils/entropy';
@@ -28,6 +33,7 @@ export { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedact
 export {
   getGitStagedFilePaths,
   readGitIndexFile,
+  readGitIndexBytes,
   isInsideGitWorkTree,
   getGitWorkTreeRoot,
 } from './utils/git-utils';

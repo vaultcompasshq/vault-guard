@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   getFilesToScanAsync,
+  newPlainFileSetInfo,
   scanTextFileAsync,
   FileTooLargeError,
   SecretScanner,
@@ -59,10 +60,19 @@ export async function scanWorkspaceDirectory(
   configIgnorePatterns: string[] = [],
   scanBudgetMs: number = MCP_SCAN_BUDGET_MS,
 ): Promise<WorkspaceScanOutcome> {
-  const files = await getFilesToScanAsync(root, false, undefined, configIgnorePatterns);
+  // Inside git the file set comes from git (tracked plus untracked files that
+  // are not ignored), the same set the CLI scans, so an editor and CI agree.
+  // A git failure there throws rather than falling back to the walk.
+  const info = newPlainFileSetInfo();
+  const files = await getFilesToScanAsync(root, false, undefined, configIgnorePatterns, undefined, info);
   const results: FileScanResult[] = [];
   const overBudget: OverBudgetFile[] = [];
-  const unscannable: UnscannableFile[] = [];
+  // A tracked file that could not be examined on disk was not scanned: never a clean.
+  const unscannable: UnscannableFile[] = info.unreadable.map(u => ({
+    file: u.file,
+    kind: 'read_error' as const,
+    reason: u.reason,
+  }));
   let filesScanned = 0;
   let bytesScanned = 0;
 

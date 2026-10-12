@@ -77,6 +77,21 @@ describe('vault-guard init', () => {
     expect(parsed.ignore.patterns).toContain('bench/fixtures/**');
   });
 
+  it('prints a one-line baseline hint and never writes a baseline', async () => {
+    const lines: string[] = [];
+    const spy = jest.spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
+      lines.push(a.map(String).join(' '));
+    });
+    try {
+      expect(await initCommand({ cwd: testDir })).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+    const hint = lines.filter(l => l.includes('vault-guard baseline'));
+    expect(hint).toHaveLength(1);
+    expect(fs.existsSync(path.join(testDir, '.vault-guard.baseline.json'))).toBe(false);
+  });
+
   it('creates managed files and manifest on first run', async () => {
     const code = await initCommand({ cwd: testDir });
     expect(code).toBe(0);

@@ -144,7 +144,31 @@ vault-guard check src/api.ts       # single file
 # is what gets scanned. See "Pull requests" under CI below. Never in a hook.
 vault-guard scan . --trust-base origin/main
 vault-guard check --trust-base origin/main
+
+# Accept the findings already on your default branch (see "Baseline" below).
+vault-guard baseline                 # dry run: print what would be accepted
+vault-guard baseline --write         # write .vault-guard.baseline.json at the repo root
 ```
+
+**What a directory scan looks at.** Inside a git repository a plain scan takes
+its files from git, so it scans the same tracked files pull-request mode does:
+
+| Run | File set |
+|---|---|
+| `scan .` outside git | Filesystem walk; `.gitignore` and vendored directory names (`node_modules`, `vendor`, `dist`, `build`, ...) are skipped at any depth. |
+| `scan .` inside git | Tracked files, **whatever `.gitignore` says**, plus untracked files `.gitignore` does not exclude. Vendored names are skipped only as a direct child of the scan root for tracked files, at any depth for untracked ones. Checked-out submodules and untracked nested repositories are scanned the same way. |
+| `scan --staged` | The files in the index, read from the index. |
+| `scan . --trust-base <ref>` | The HEAD tree (`git ls-tree -r HEAD`). |
+
+`.gitignore` controls what git will add, not what is already committed, so a
+committed `.env` is scanned in every mode. Only `.gitignore` files are read for
+untracked files, never `.git/info/exclude` or a global excludes file, so the
+result is the same on every machine. Whether a target is inside git is decided by
+a `.git` entry at or above it; once one is found, a git failure (a missing git, a
+`safe.directory` refusal, a corrupt repository) is exit 2 with git's message,
+never a quiet fall back to the walk. A tracked file missing from the working tree
+(deleted locally, or left out by a sparse checkout) is counted as
+`tracked_files_missing`; any other tracked file that cannot be examined is exit 2.
 
 **Machine-readable output** (SARIF for GitHub Code Scanning, or JSON):
 
@@ -419,6 +443,9 @@ What changes in that mode:
   scanned in this mode: they are not part of the tree the pull request is
   proposing, and the index is local state the base ref says nothing about. Use
   `vault-guard scan --staged` for the pre-commit job of checking the index.
+  Since 1.10.0 a plain `vault-guard scan .` inside git scans the same tracked
+  files (plus untracked files that are not ignored), so a committed `.env` is no
+  longer clean on push and blocking on pull requests.
 - The vendored-directory names (`vendor`, `dist`, `node_modules`, …) are
   anchored to the scan root, so a committed `src/vendor/` is scanned. The run
   prints how many directories it skipped, in yellow when that number is not
@@ -546,13 +573,85 @@ JSON Schema for editor autocomplete: **[schemas/vault-guard-config.json](./schem
 > unconditionally. Pinning `@v1.7.0` keeps the old Action, the one that installs
 > its scanner from inside the tree it scans.
 
-**Baseline**: fingerprint accepted findings so new issues still fail the gate:
+**Baseline**: accept the findings that already exist, so only new ones fail the
+gate. Pull-request mode scans the whole head tree, so without a baseline every
+finding already on the default branch blocks every unrelated pull request.
 
-```json
-{ "version": 1, "fingerprints": ["<sha256 hex from scan JSON>", "…"] }
+```bash
+vault-guard baseline              # dry run: lists what would be accepted, writes nothing
+vault-guard baseline --write      # writes .vault-guard.baseline.json
+vault-guard baseline --write --include-critical
+vault-guard baseline src/ --write # accept only under src/ (run from the root)
 ```
 
-Each `--format json` match includes a `fingerprint` field. Copy values you accept into `.vault-guard.baseline.json`. See **[docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md)**.
+- It runs the same plain scan as `vault-guard scan`, with the working-tree config
+  and the effective `fail_on`, and accepts **every finding that would block, in
+  tracked files only**. A finding in an untracked file is never written, not
+  even its name; the command prints `untracked files with findings: N` instead.
+- It prints one line per accepted finding (`file:line`, rule, severity), then
+  `kept N, added N, dropped N (no longer found)`, plus `converted N` when it
+  upgrades a file that had only the old `fingerprints` list.
+- **Critical findings are refused** unless you pass `--include-critical`: they
+  are listed as `not accepted: critical, rotate and remove instead`, the rest is
+  still written, and the command exits 1. Rotate a critical key rather than
+  accepting it.
+- **Where it writes.** When the target is inside git, always
+  `.vault-guard.baseline.json` at that repository's root, and `--write` refuses
+  to run from any other directory (exit 2, naming the root). Outside git it says
+  `not a git repository` and writes in the current directory. Files of a
+  submodule or of an untracked nested repository are never accepted: they are
+  another repository's history.
+- **A path argument merges.** `baseline src/ --write` re-examines only `src/`:
+  entries for files outside it are kept untouched and counted as `N entries
+  outside the scanned path kept`, never reported as dropped.
+- Exit codes: 0 written (or dry run), 1 written with critical findings refused,
+  2 could not run (an incomplete scan writes nothing). `--trust-base` and
+  `--staged` are refused.
+- Nothing else writes the file: not `scan`, not `check`, not `init`, not the
+  hook, not the Action.
+
+**The baseline pull request is itself red.** Under `--trust-base` the baseline
+comes from the base branch, so the pull request that adds it is judged without
+it, and a pull request can never accept its own findings. Land it while the gate
+is advisory, or merge it knowingly. After that, commit changes to the file
+through review (see the CODEOWNERS example above).
+
+The file keeps two lists:
+
+```json
+{
+  "version": 1,
+  "comment": "Written by vault-guard baseline --write; ...",
+  "fingerprints": ["<positional sha256>"],
+  "entries": [
+    { "fingerprint": "<content sha256>", "rule": "jwt-token",
+      "file": "data/rows.csv", "line": 7187, "severity": "high", "count": 1 }
+  ]
+}
+```
+
+- **`entries`** is what 1.10.0 and later match on, and only that list when it is
+  present. An entry's key is the file's path from the repository root, the rule
+  and a digest of the matched text, not the line, so moving a finding keeps it
+  accepted while a different value, a rename or a copy into another file is a new
+  finding. An entry suppresses at most `count` matches, so a pasted second copy
+  surfaces, and only while the finding's severity is no higher than the recorded
+  one, so a rule raised later surfaces again. For rules that match only a fixed
+  marker (`ssh-private-key`, `gcp-service-account`) the entry is bound to the
+  whole file instead: it carries a `file_digest`, a SHA-256 over the file's raw
+  bytes, and any change to the file (a new key behind the same header, or only
+  converting LF line endings to CRLF) re-surfaces it. A malformed `entries` list
+  suppresses nothing and raises a `baseline.invalid` warning; it never falls back
+  to `fingerprints`.
+- **`fingerprints`** is the positional list (path, rule, line, offset, length)
+  that 1.9.x reads, so a runner pinned to 1.9.x keeps working with the same
+  file. It applies neither `count` nor the severity bound, and marker-only
+  findings are left out of it, so a 1.9.x runner keeps showing them.
+
+A committed digest lets someone confirm a guessed low-entropy secret. The
+plaintext already sits in the same repository and its history, so the added
+exposure is an entry that outlives a history rewrite; `--write` regenerates the
+file and drops stale entries. See **[docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md)**.
 
 **Inline suppression:**
 
@@ -644,6 +743,22 @@ tracked file missing on disk, or a path named to `check` that does not exist. `r
 each one with its `kind` and, where possible, the `ignore.paths` entry that would declare it.
 When it is present the process exits 2, and a `blocking_matches` of 0 means "nothing found in
 what was scanned", not "nothing there".
+
+**Fields added in 1.10.0**, all additive:
+
+- `run.file_set`: `git` (a plain scan inside git), `walk` (outside git), `head-tree`
+  (`--trust-base`) or `index` (`--staged`).
+- `run.tracked_ignored_files_scanned` and `run.tracked_nested_vendored_scanned`
+  (on `git` and `head-tree` runs): tracked files that `.gitignore` matches, and
+  tracked files under a nested vendored directory, that were scanned. Text mode
+  prints each only when it is not zero.
+- `run.tracked_files_missing` (on `git` runs): tracked files not in the working
+  tree. `run.vendored_dirs_skipped` is now also stated on `git` runs.
+- `run.baseline_entries`: entries loaded from the baseline's `entries` list.
+- `matches[].content_fingerprint`: the content key a baseline entry uses, for
+  rules whose match holds the secret. `matches[].fingerprint` keeps its
+  positional meaning. SARIF adds it as `partialFingerprints["vault-guard/v2"]`
+  beside `vault-guard/v1`.
 
 ---
 
