@@ -133,3 +133,41 @@ describe('scanWorkspaceDirectory', () => {
     });
   });
 });
+
+/**
+ * Design 2026-10-12, U19: the MCP workspace scan reads tracked content from
+ * the index blob, as a plain CLI scan does, so a head-side working-tree-
+ * encoding cannot hide a key from an editor any more than from CI.
+ */
+describe('scanWorkspaceDirectory reads tracked content from git (U19)', () => {
+  const itPosix = process.platform === 'win32' ? it.skip : it;
+  const key = ['AKIA', 'Q7MZR2XVB9', 'NTD4WH'].join('');
+  const run = (cwd: string, args: string[]): string =>
+    execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+
+  itPosix('U19: scan_workspace on a re-encoding clone returns the finding', async () => {
+    const src = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-u19-src-')));
+    const parent = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-u19-')));
+    try {
+      run(src, ['init', '-q', '-b', 'main']);
+      run(src, ['config', 'user.email', 'test@example.invalid']);
+      run(src, ['config', 'user.name', 'Test']);
+      fs.mkdirSync(path.join(src, 'src'));
+      fs.writeFileSync(path.join(src, 'src', 'leak.ts'), `export const k = "${key}";\n`);
+      run(src, ['add', '-A']);
+      run(src, ['commit', '-q', '-m', 'one']);
+      fs.writeFileSync(path.join(src, '.gitattributes'), 'src/leak.ts working-tree-encoding=UTF-16LE\n');
+      run(src, ['add', '.gitattributes']);
+      run(src, ['commit', '-q', '-m', 'two']);
+      run(parent, ['clone', '-q', src, 'c']);
+      const clone = path.join(parent, 'c');
+      expect(fs.readFileSync(path.join(clone, 'src', 'leak.ts'))[1]).toBe(0);
+      const { results } = await scanWorkspaceDirectory(clone, new SecretScanner());
+      expect(results.map(r => path.relative(clone, r.file))).toEqual([path.join('src', 'leak.ts')]);
+      expect(results[0].matches[0].source).toBe('index');
+    } finally {
+      fs.rmSync(src, { recursive: true, force: true });
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  });
+});

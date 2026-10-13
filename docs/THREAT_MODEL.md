@@ -93,6 +93,9 @@ Vault Guard does not, and will not, claim to defend against:
 | `.vault-guard.json`     | Silent default fallback on parse error              | `loadConfig` throws `ConfigError`; CLI exits non-zero with the parser message. |
 | `.vault-guard.json`     | A schema-invalid key silently dropped               | The schema check that used to run only in `config validate` runs on every load, on every path (CLI, MCP, editor extension). |
 | Control inputs, on a pull request | A pull request mutes the scanner in the same commit that carries the secret: `ignore: ["**"]`, `severity_overrides` off, `fail_on: none`, a head-added `.vault-guard.local.json`, a rewritten baseline, a `.gitignore` over the committed file, or the key under a `vendor/` directory | `--trust-base <ref>`: config and baseline read from the base ref, head tree scanned, tracked-file set instead of the gitignore tester, vendored names anchored to the scan root. A changed control input is reported and not applied. Unresolvable ref, a ref equal to HEAD's commit, and a ref carrying HEAD's tree are all exit 2. |
+| `.gitattributes`, on a pull request | A head-side `working-tree-encoding` (or `eol`, `filter`, `ident`) rewrites a committed key on checkout, for example into BOM-less UTF-16 the scanner would read as UTF-8 | Tracked content is read from the git blob by object id (the HEAD tree under `--trust-base`, the index in a plain scan), never only from the checkout. Any `.gitattributes` change between the base ref and HEAD is reported as a proposal. |
+| Control files on disk   | A committed symlink at `.vault-guard.baseline.json`, `.vault-guard.json` or `.vault-guard.local.json` makes the reader echo, or `baseline --write` overwrite, a file outside the repository | Opened with `O_NOFOLLOW` and refused unless a regular file (a dangling link included); exit 2 before scanning. `baseline --write` writes by temporary file and rename. JSON parse messages are never echoed. The hook installer applies the same rules to the hook files it writes. |
+| Git environment in a hook | A hook's `GIT_INDEX_FILE` or `GIT_DIR` makes a plain scan list a submodule, or another repository, through the wrong index | Plain and pull-request git calls run with git's local-repository variables removed; `--staged` keeps them, because the hook's index is what will be committed. |
 | The workflow file itself | A pull request edits or deletes the job that runs the gate | Not solvable inside the tool: on a same-repo `pull_request` event GitHub runs the workflow from the head. Required-check branch protection, or a reusable workflow on a protected ref. Documented in the README and `GITHUB_ACTION.md`. |
 | Repository git config   | `diff.relative` shrinks the staged file list        | Config forced off per invocation (`git -c diff.relative=false ...`); staged paths resolved against the worktree root, never the caller's cwd. |
 | Git index, files on disk | A file the scanner cannot read, one over the 32 MiB limit, a tracked file missing on disk | Counted in `run.unscannable_files`; staged, directory and pull-request scans exit **2** and print no success line (see "Fail-closed behaviour"). |
@@ -210,6 +213,10 @@ boundary is the editor process.
   supported but will increase noise.
 - **Git history is not scanned.** Use `git-secrets`, `gitleaks`, or
   `trufflehog` for retro scans of `.git/objects/`.
+- **BOM-less UTF-16 in an untracked file is not detected.** Untracked files
+  have no blob, so they are read from disk with the BOM-only decoder. This is
+  not a pull-request vector: everything a pull request carries is tracked and
+  read from git.
 
 ## Reporting
 

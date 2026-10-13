@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { decodeTextBuffer } from '../text-decode';
+import { decodeDiskCopy, decodeTextBuffer, mappedWorktreeEncodings } from '../text-decode';
 import { SecretScanner } from '../../scanners/secret-scanner';
 import { scanTextFileAsync, scanTextFileSync } from '../scan-file';
 
@@ -108,5 +108,57 @@ describe('a key in a BOM-marked UTF-16 file is found, with sensible positions', 
     const matches = await scanTextFileAsync(new SecretScanner(), f);
     expect(matches.length).toBeGreaterThan(0);
     expect(matches[0].line).toBe(2);
+  });
+});
+
+/**
+ * Decoding the WORKING-TREE copy of a tracked file (design 2026-10-12, 2.4):
+ * a BOM first, then a declared working-tree-encoding through an explicit
+ * label map, and anything else is scanned as UTF-8 and reported.
+ */
+describe('decodeDiskCopy (U21)', () => {
+  it('U21: every mapped label constructs a TextDecoder on this Node', () => {
+    for (const [label, name] of mappedWorktreeEncodings()) {
+      if (name === null) continue;
+      expect(() => new TextDecoder(name)).not.toThrow();
+      expect(label).toBe(label.toUpperCase());
+    }
+  });
+
+  it('U21: a BOM overrides a contrary label', () => {
+    expect(decodeDiskCopy(utf16be(TEXT), 'UTF-16LE').texts).toEqual([TEXT]);
+    expect(decodeDiskCopy(utf16le(TEXT), 'UTF-16BE').texts).toEqual([TEXT]);
+    expect(decodeDiskCopy(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(TEXT)]), 'SHIFT_JIS').texts).toEqual([TEXT]);
+  });
+
+  it('U21: a mapped label decodes a BOM-less copy', () => {
+    expect(decodeDiskCopy(utf16le(TEXT, false), 'UTF-16LE').texts).toEqual([TEXT]);
+    expect(decodeDiskCopy(utf16be(TEXT, false), 'utf-16be').texts).toEqual([TEXT]);
+    const cafe = String.fromCodePoint(0x63, 0x61, 0x66, 0xe9);
+    expect(decodeDiskCopy(Buffer.from([0x63, 0x61, 0x66, 0xe9]), 'ISO-8859-1').texts).toEqual([cafe]);
+  });
+
+  it('U21: UTF-16, UTF-16LE-BOM and UTF-8-BOM route to the BOM sniff', () => {
+    // git writes these with a BOM; TextDecoder('UTF-16') is little-endian
+    // only and TextDecoder('UTF-16LE-BOM') throws, so neither label is passed on.
+    for (const label of ['UTF-16', 'UTF-16LE-BOM', 'UTF-16BE-BOM', 'UTF-8-BOM', 'UTF-8']) {
+      const r = decodeDiskCopy(utf16be(TEXT), label);
+      expect({ label, texts: r.texts, unsupported: r.unsupported }).toEqual({ label, texts: [TEXT], unsupported: undefined });
+    }
+    expect(decodeDiskCopy(Buffer.from(TEXT), 'UTF-16').texts).toEqual([TEXT]);
+  });
+
+  it('U21: UTF-32 and an unknown label are a coverage entry and a UTF-8 decode', () => {
+    for (const label of ['UTF-32', 'UTF-32LE', 'X-NOT-A-CHARSET']) {
+      const r = decodeDiskCopy(Buffer.from(TEXT), label);
+      expect({ label, texts: r.texts, unsupported: r.unsupported }).toEqual({ label, texts: [TEXT], unsupported: label });
+    }
+  });
+
+  it('U21: a filter-attributed copy with a declared encoding is decoded both ways', () => {
+    const bytes = utf16le(TEXT, false);
+    const r = decodeDiskCopy(bytes, 'UTF-16LE', true);
+    expect(r.texts).toEqual([TEXT, bytes.toString('utf8')]);
+    expect(decodeDiskCopy(bytes, 'UTF-16LE', false).texts).toEqual([TEXT]);
   });
 });

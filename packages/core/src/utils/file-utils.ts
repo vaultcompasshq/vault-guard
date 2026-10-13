@@ -5,6 +5,8 @@ import ignore from 'ignore';
 
 import { DiagnosticBus } from '../diagnostics';
 import { GitError } from '../errors';
+import { inspectWorktree, wantsWorktreeCopy, type TrackedEntry } from './content-source';
+import { fileSetGitEnv } from './git-env';
 
 /**
  * Build a filter from `config.ignore.paths` / `config.ignore.patterns` entries.
@@ -455,6 +457,14 @@ export interface PlainFileSetInfo {
    * caller must fail closed on these (exit 2), exactly as pull-request mode does.
    */
   unreadable: Array<{ file: string; reason: string }>;
+  /**
+   * Where each tracked file in the returned list is read from: its index blob
+   * (design 2026-10-12, section 2), keyed by the path as returned. Untracked
+   * files are absent and are read from disk.
+   */
+  blobs: Map<string, TrackedEntry>;
+  /** Tracked paths whose disk copy is scanned as well as the blob (2.4). */
+  worktreeAlso: Set<string>;
 }
 
 /** A fresh, empty {@link PlainFileSetInfo}. */
@@ -466,6 +476,8 @@ export function newPlainFileSetInfo(): PlainFileSetInfo {
     trackedMissing: [],
     vendoredDirNames: new Set(),
     unreadable: [],
+    blobs: new Map(),
+    worktreeAlso: new Set(),
   };
 }
 
@@ -733,6 +745,7 @@ function runFileSetGit(cwd: string, args: string[], bus?: DiagnosticBus): string
   const argv = ['-c', 'core.quotePath=false', ...args];
   const r = spawnSync('git', argv, {
     cwd,
+    env: fileSetGitEnv(),
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
     maxBuffer: 512 * 1024 * 1024,
@@ -791,6 +804,10 @@ interface GitPathLists {
   deleted: Set<string>;
   ignoredTracked: Set<string>;
   untracked: Set<string>;
+  /** Where each tracked path's content is read from, keyed by the canonical path. */
+  entries: Map<string, TrackedEntry>;
+  /** The first `git status` column of each tracked path that has one. */
+  indexColumn: Map<string, string>;
 }
 
 /**
@@ -826,14 +843,19 @@ function collectGitPaths(
   const spec = `:(literal)${rel === '' ? '.' : rel}`;
   const abs = (p: string): string => path.resolve(top, p);
 
-  // `-s -t`: `<tag> <mode> <object> <stage>\t<path>`. The tag says whether a
-  // sparse checkout left the path out (S); the mode says whether it is a
-  // gitlink. A path in conflict is listed once per stage: de-duplicated here.
-  for (const record of splitZ(git(top, ['ls-files', '-z', '-s', '-t', '--cached', '--', spec]))) {
+  // `-s -v`: `<tag> <mode> <object> <stage>\t<path>`. The tag says whether a
+  // sparse checkout left the path out (S, or s), and is lowercase for an
+  // assume-unchanged entry; the mode says whether it is a gitlink; the object
+  // is the blob the content is read from. A path in conflict is listed once
+  // per stage (1 to 3, no stage 0): de-duplicated here, stages 2 and 3 kept.
+  const repoRel: string[] = [];
+  const tags = new Map<string, string>();
+  for (const record of splitZ(git(top, ['ls-files', '-z', '-s', '-v', '--cached', '--', spec]))) {
     const tab = record.indexOf('\t');
     if (tab === -1) continue;
-    const [tag, mode] = record.slice(0, tab).split(' ');
-    const file = abs(record.slice(tab + 1));
+    const [tag, mode, oid, stage] = record.slice(0, tab).split(' ');
+    const rel = record.slice(tab + 1);
+    const file = abs(rel);
     if (mode === '160000') {
       // A submodule. The walk used to descend into a checked-out one, so the
       // same rule is applied inside it; an uninitialised one has no files.
@@ -842,12 +864,37 @@ function collectGitPaths(
       }
       continue;
     }
+    if (!out.tracked.has(file)) repoRel.push(rel);
     out.tracked.add(file);
     // Only the outer repository's own index is "committed here". Files of a
     // submodule or a nested repository are scanned, but they are another
     // repository's history, and the baseline writer must not name them.
     if (outer) out.outerTracked.add(file);
-    if (tag === 'S') out.sparse.add(file);
+    if (tag === 'S' || tag === 's') out.sparse.add(file);
+    tags.set(rel, tag);
+    const entry = out.entries.get(file) ?? { repoTop: top, mode, worktreeAlso: false, filtered: false };
+    if (stage === '0') entry.oid = oid;
+    else if (stage === '2') entry.ours = oid;
+    else if (stage === '3') entry.theirs = oid;
+    out.entries.set(file, entry);
+  }
+
+  // Where each tracked file's content comes from (design 2026-10-12, 2.4):
+  // one status and one check-attr for this repository, never one per file.
+  const inspection = inspectWorktree(top, spec, repoRel, fileSetGitEnv());
+  for (const rel of repoRel) {
+    const file = abs(rel);
+    const entry = out.entries.get(file);
+    if (!entry) continue;
+    const attrs = inspection.attrs.get(rel) ?? { filter: false };
+    const xy = inspection.status.get(rel);
+    if (xy !== undefined && xy[0] !== ' ') out.indexColumn.set(file, xy[0]);
+    entry.filtered = attrs.filter;
+    if (attrs.encoding !== undefined) entry.encoding = attrs.encoding;
+    // A conflicted path: stage 2 and 3 blobs, plus the disk copy holding the
+    // conflict markers.
+    entry.worktreeAlso =
+      entry.oid === undefined || wantsWorktreeCopy('index', xy, tags.get(rel), attrs.filter);
   }
 
   for (const p of splitZ(git(top, ['ls-files', '-z', '--deleted', '--', spec]))) {
@@ -923,6 +970,8 @@ function getGitFilesToScan(
     deleted: new Set(),
     ignoredTracked: new Set(),
     untracked: new Set(),
+    entries: new Map(),
+    indexColumn: new Map(),
   };
   collectGitPaths(canonTarget, lists, new Set(), nested => isUnderVendoredName(nested, true), bus, true);
 
@@ -948,6 +997,13 @@ function getGitFilesToScan(
   }
   for (const name of prSkips.dirNames) info.vendoredDirNames.add(name);
   for (const f of prSkips.nestedVendored ?? []) info.trackedNestedVendored.add(f);
+  for (const file of tracked) {
+    const entry = lists.entries.get(givenToCanon.get(file) ?? file);
+    if (!entry) continue;
+    info.blobs.set(file, entry);
+    if (entry.worktreeAlso) info.worktreeAlso.add(file);
+  }
+  const stagedButDeleted: string[] = [];
   for (const u of prSkips.unreadable ?? []) {
     const canon = givenToCanon.get(u.file) ?? u.file;
     const listedAbsent = lists.deleted.has(canon) || lists.sparse.has(canon);
@@ -956,8 +1012,26 @@ function getGitFilesToScan(
     // filesystem agrees it is not there. Anything else (a directory that cannot
     // be entered, a name git's UTF-8 output turned into a path that does not
     // exist) is a file nobody examined, and the caller exits 2 over it.
-    if (listedAbsent && absent) info.trackedMissing.push(u.file);
-    else info.unreadable.push({ file: u.file, reason: u.reason });
+    if (listedAbsent && absent) {
+      info.trackedMissing.push(u.file);
+      // Staged, then deleted on disk (`AD` or `MD`): the index holds content
+      // HEAD does not, which the next commit will contain, so its blob is
+      // scanned. A committed file removed with plain `rm` (` D`) is only
+      // counted: its index blob is the committed content, and scanning it
+      // would block the very `commit -a` that removes it. A sparse entry
+      // left out on disk is never read (its blob may not be local).
+      const entry = lists.entries.get(canon);
+      if (
+        lists.deleted.has(canon) &&
+        !lists.sparse.has(canon) &&
+        lists.indexColumn.has(canon) &&
+        entry?.oid !== undefined
+      ) {
+        const readable: TrackedEntry = { ...entry, worktreeAlso: false, diskAbsent: true };
+        info.blobs.set(u.file, readable);
+        stagedButDeleted.push(u.file);
+      }
+    } else info.unreadable.push({ file: u.file, reason: u.reason });
   }
 
   // Untracked half: the walk's filtering.
@@ -993,7 +1067,7 @@ function getGitFilesToScan(
     untracked.push(given);
   }
 
-  return [...tracked, ...untracked];
+  return [...tracked, ...stagedButDeleted, ...untracked];
 }
 
 function shouldIgnoreDirectory(name: string): boolean {

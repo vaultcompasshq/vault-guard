@@ -1,6 +1,10 @@
-import fs from 'fs';
+import path from 'path';
 import chalk from 'chalk';
 import {
+  ControlFileReadError,
+  configParseFailure,
+  controlFileRefusal,
+  readRegularFileNoFollow,
   findVaultGuardConfigPath,
   validateVaultGuardConfig,
   SecretScanner,
@@ -17,12 +21,23 @@ export async function configValidateCommand(cwd: string = process.cwd()): Promis
     return 0;
   }
 
+  // Read without following a link: a linked config is one more config this
+  // command cannot accept (exit 1), and nothing of its target is printed.
   let raw: string;
   try {
-    raw = fs.readFileSync(configPath, 'utf-8');
+    const r = readRegularFileNoFollow(configPath);
+    if (r.kind === 'refused') {
+      console.error(chalk.red('❌'), chalk.white(controlFileRefusal(path.basename(configPath), configPath, r.what)));
+      return 1;
+    }
+    if (r.kind === 'absent') {
+      console.error(chalk.red('❌'), chalk.white(`Failed to read ${configPath}: it disappeared while being read`));
+      return 1;
+    }
+    raw = r.text;
   } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
-    console.error(chalk.red('❌'), chalk.white(`Failed to read ${configPath}: ${detail}`));
+    const code = e instanceof ControlFileReadError ? e.code : 'EUNKNOWN';
+    console.error(chalk.red('❌'), chalk.white(`Failed to read ${configPath} (${code})`));
     return 1;
   }
 
@@ -30,8 +45,8 @@ export async function configValidateCommand(cwd: string = process.cwd()): Promis
   try {
     parsed = JSON.parse(raw);
   } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
-    console.error(chalk.red('❌'), chalk.white(`Invalid JSON in ${configPath}: ${detail}`));
+    // Never the engine's message, which quotes the start of the file.
+    console.error(chalk.red('❌'), chalk.white(`${configPath}: ${configParseFailure(raw, e)}`));
     return 1;
   }
 

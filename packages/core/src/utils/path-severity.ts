@@ -2,7 +2,7 @@ import path from 'path';
 import type { SecretMatch } from '../types';
 import { isDocumentationPath } from './doc-context';
 import { contextPathFor, splitPathParts } from './path-parts';
-import { LOW_PRECISION_PATH_DOWNGRADE_IDS } from './path-downgrade-ids';
+import { LOCALE_PATH_DOWNGRADE_IDS, LOW_PRECISION_PATH_DOWNGRADE_IDS } from './path-downgrade-ids';
 
 /**
  * Pattern IDs whose severity is downgraded to `low` in obvious test / fixture
@@ -106,23 +106,19 @@ const LOCALE_DIR_SEGMENTS = new Set([
 ]);
 
 /**
- * Locale file basenames: `en.json`, `de-DE.yaml`, `pt_BR.yml`, `zh-Hant.json`.
- */
-const LOCALE_BASENAME = /^[a-z]{2}(?:[-_][A-Za-z]{2,4})?\.(json|ya?ml|ts|js|po|properties)$/;
-
-/**
- * True when a file is a translation catalogue.
+ * True when a file sits under a translation-catalogue directory.
  *
- * These are entirely natural-language strings keyed by identifiers, so a key
- * such as `tfa_secret` or `api_key_label` puts a translated *label* where the
+ * Catalogues are natural-language strings keyed by identifiers, so a key such
+ * as `tfa_secret` or `api_key_label` puts a translated *label* where the
  * generic assignment patterns expect a value -- `tfa_secret: Zwei-Faktor-
- * Authentifizierung` reads as a 29-character high-entropy secret. Translation
- * files never hold real credentials.
+ * Authentifizierung` reads as a 29-character high-entropy secret.
+ *
+ * Only a locale DIRECTORY on the path counts (design 2026-10-12, section 5).
+ * A two-letter file name alone (`db.ts`, `ci.yml`, `sa.json`) used to count,
+ * which downgraded DSNs, private keys and JWTs in those files to `low`.
  */
 export function isLocalePath(filePath: string): boolean {
-  const parts = splitPathParts(filePath);
-  if (parts.some(p => LOCALE_DIR_SEGMENTS.has(p.toLowerCase()))) return true;
-  return LOCALE_BASENAME.test(path.basename(filePath));
+  return splitPathParts(filePath).some(p => LOCALE_DIR_SEGMENTS.has(p.toLowerCase()));
 }
 
 /**
@@ -179,15 +175,22 @@ export function applyPathAwareSeverity(
   if (matches.length === 0) return matches;
   const ctxPath = contextPathFor(filePath, pathRoot);
   if (!isLowPrecisionContextPath(ctxPath)) return matches;
-  // Documentation is not a fixture directory. Test / fixture / locale paths
-  // hold throwaway PEMs, so they still downgrade one; a docs or markdown path
-  // alone does not (a full-body private key pasted into CLAUDE.md is a leak).
-  const docsOnly =
-    !isTestFilePath(ctxPath) && !isLocalePath(ctxPath) && isDocumentationPath(ctxPath);
+  // A match is downgraded when ANY context the path is in allows its rule:
+  // a test path the low-precision set (throwaway PEMs and DSNs live there),
+  // a documentation path that set without the PEM rule (a full-body key
+  // pasted into CLAUDE.md is a leak), a locale path only the four generic
+  // rules. The union replaces a docs-only special case that read "not a
+  // locale path" as permission to downgrade the PEM rule.
+  const test = isTestFilePath(ctxPath);
+  const docs = isDocumentationPath(ctxPath);
+  const locale = isLocalePath(ctxPath);
+  const allowed = (id: string): boolean =>
+    (test && TEST_PATH_DOWNGRADE_IDS.has(id)) ||
+    (docs && TEST_PATH_DOWNGRADE_IDS.has(id) && !DOCS_EXEMPT_IDS.has(id)) ||
+    (locale && LOCALE_PATH_DOWNGRADE_IDS.has(id));
 
   return matches.map(m => {
-    if (docsOnly && DOCS_EXEMPT_IDS.has(m.type)) return m;
-    if (TEST_PATH_DOWNGRADE_IDS.has(m.type) && m.severity !== 'low') {
+    if (allowed(m.type) && m.severity !== 'low') {
       return { ...m, severity: 'low' as const };
     }
     return m;

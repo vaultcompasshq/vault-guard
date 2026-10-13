@@ -1,9 +1,62 @@
-import { isTestFilePath, applyPathAwareSeverity } from '../path-severity';
+import { isTestFilePath, isLocalePath, applyPathAwareSeverity } from '../path-severity';
 import type { SecretMatch } from '../../types';
 
 function match(type: string, severity: SecretMatch['severity']): SecretMatch {
   return { type, value: 'abcd…(20c)', line: 1, column: 0, offset: 0, matchLength: 20, severity };
 }
+
+/**
+ * The locale rule (design 2026-10-12, section 5): a locale path needs a locale
+ * directory, and on one only four generic rules downgrade.
+ */
+describe('locale paths', () => {
+  const NEVER_ON_LOCALE = ['postgresql-url', 'mysql-url', 'mongodb-url', 'redis-url', 'ssh-private-key', 'jwt-token'];
+  const ALLOWED_ON_LOCALE = ['password-in-code', 'api-key-generic', 'secret-generic', 'bearer-token'];
+
+  it.each(['db.ts', 'db.js', 'db.yml', 'ci.yml', 'sa.json', 'pg.js'])(
+    'U14: two-letter basenames outside a locale directory keep full severity (%s)',
+    name => {
+      expect(isLocalePath(`loc/${name}`)).toBe(false);
+      for (const id of [...NEVER_ON_LOCALE, ...ALLOWED_ON_LOCALE]) {
+        expect(applyPathAwareSeverity([match(id, 'critical')], `loc/${name}`)[0].severity).toBe('critical');
+      }
+    },
+  );
+
+  it('U14: two-letter basenames outside a locale directory keep full severity', () => {
+    expect(isLocalePath('src/en.json')).toBe(false);
+    expect(isLocalePath('src/locales/de.json')).toBe(true);
+  });
+
+  it('U14: DSN, PEM and JWT rules are never downgraded on a locale path', () => {
+    for (const p of ['src/locales/de.json', 'config/locales/en.yml', 'i18n/en.json', 'app/lang/x.ts']) {
+      for (const id of NEVER_ON_LOCALE) {
+        expect({ p, id, s: applyPathAwareSeverity([match(id, 'critical')], p)[0].severity }).toEqual({
+          p,
+          id,
+          s: 'critical',
+        });
+      }
+    }
+  });
+
+  it('U14: the four generic rules are downgraded on a locale path', () => {
+    for (const id of ALLOWED_ON_LOCALE) {
+      expect(applyPathAwareSeverity([match(id, 'high')], 'src/locales/de-DE.yaml')[0].severity).toBe('low');
+    }
+  });
+
+  it('U14: a PEM under docs/locales is not downgraded', () => {
+    expect(applyPathAwareSeverity([match('ssh-private-key', 'critical')], 'docs/locales/x.md')[0].severity).toBe(
+      'critical',
+    );
+  });
+
+  it('U14: a test path still downgrades the PEM and DSN rules', () => {
+    expect(applyPathAwareSeverity([match('ssh-private-key', 'critical')], 'tests/locales/k.pem')[0].severity).toBe('low');
+    expect(applyPathAwareSeverity([match('postgresql-url', 'critical')], 'tests/db.ts')[0].severity).toBe('low');
+  });
+});
 
 describe('isTestFilePath', () => {
   it('recognizes common JS/TS test paths', () => {

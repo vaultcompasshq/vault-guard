@@ -3,8 +3,13 @@ import path from 'path';
 import {
   getFilesToScanAsync,
   newPlainFileSetInfo,
-  scanTextFileAsync,
   FileTooLargeError,
+  GitContentSource,
+  GitError,
+  MAX_SCAN_FILE_BYTES,
+  dropHeaderOnlyTwins,
+  fileSetGitEnv,
+  scanFileContent,
   SecretScanner,
   type FileScanResult,
 } from '@vaultcompass/vault-guard-core';
@@ -76,25 +81,47 @@ export async function scanWorkspaceDirectory(
   let filesScanned = 0;
   let bytesScanned = 0;
 
+  // Tracked content is read from the index blob, exactly as a plain CLI scan
+  // reads it (design 2026-10-12, 2.8), so an editor and CI agree. A git
+  // failure while reading it throws, as the file-set failures do.
+  const content = new GitContentSource('index', fileSetGitEnv(), info.blobs);
+  content.prepare(files.filter(f => !isBinaryFile(f)));
+
   const scanOne = async (file: string): Promise<void> => {
     try {
       if (isBinaryFile(file)) return;
-      const st = await fs.promises.stat(file);
-      if (!st.isFile()) return;
-      const t0 = Date.now();
-      const matches = await scanTextFileAsync(scanner, file, { pathRoot: root });
-      const elapsed = Date.now() - t0;
+      const entry = content.entryFor(file);
+      if (!entry) {
+        const st = await fs.promises.stat(file);
+        if (!st.isFile()) return;
+      }
+      const outcome = await scanFileContent(scanner, file, entry, entry ? content : undefined, {
+        pathRoot: root,
+        maxBytes: MAX_SCAN_FILE_BYTES,
+      });
+      if (outcome.failure) {
+        unscannable.push({
+          file,
+          kind: outcome.failure.kind,
+          reason:
+            outcome.failure.kind === 'too_large'
+              ? new FileTooLargeError(outcome.failure.bytes, MAX_SCAN_FILE_BYTES).message
+              : outcome.failure.reason,
+        });
+        return;
+      }
       // Counted only once the scan has run: a file refused for its size is in
       // `unscannable`, not in the scanned totals.
       filesScanned += 1;
-      bytesScanned += st.size;
-      if (matches.length > 0) {
-        results.push({ file, matches });
+      bytesScanned += outcome.bytesRead;
+      if (outcome.matches.length > 0) {
+        results.push({ file, matches: outcome.matches });
       }
-      if (elapsed > scanBudgetMs) {
-        overBudget.push({ file, elapsed_ms: elapsed, budget_ms: scanBudgetMs });
+      if (outcome.elapsedMs > scanBudgetMs) {
+        overBudget.push({ file, elapsed_ms: outcome.elapsedMs, budget_ms: scanBudgetMs });
       }
     } catch (error) {
+      if (error instanceof GitError) throw error;
       // A file above the scan limit, or one that cannot be read, was NOT
       // scanned; say so instead of letting it pass as clean.
       const tooLarge = error instanceof FileTooLargeError;
@@ -106,10 +133,14 @@ export async function scanWorkspaceDirectory(
     }
   };
 
-  for (let i = 0; i < files.length; i += concurrency) {
-    const batch = files.slice(i, i + concurrency);
-    await Promise.all(batch.map(scanOne));
+  try {
+    for (let i = 0; i < files.length; i += concurrency) {
+      const batch = files.slice(i, i + concurrency);
+      await Promise.all(batch.map(scanOne));
+    }
+  } finally {
+    content.close();
   }
 
-  return { results, filesScanned, bytesScanned, overBudget, unscannable };
+  return { results: dropHeaderOnlyTwins(results), filesScanned, bytesScanned, overBudget, unscannable };
 }

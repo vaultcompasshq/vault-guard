@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import { HookError } from '../errors';
+import { readRegularFileNoFollow, writeFileAtomically, type NoFollowRead } from '../utils/read-no-follow';
 
 export type HookManager = 'native' | 'husky' | 'lefthook' | 'precommit';
 
@@ -169,6 +170,49 @@ repos:
         language: system
         pass_filenames: false
 `;
+
+/** A hook-file read: its text, absent, or a refusal message naming the path. */
+type HookRead = { kind: 'absent' } | { kind: 'file'; text: string; mode: number } | { kind: 'refused'; message: string };
+
+/**
+ * Read a hook file the installer may write, never through a link (design
+ * 2026-10-12, section 13). A link (a dangling one included), anything that is
+ * not a regular file, or a parent directory that is a link, is refused with a
+ * message naming the path; nothing is changed.
+ */
+function readHookFile(filePath: string, display: string): HookRead {
+  const dir = path.dirname(filePath);
+  try {
+    if (fs.lstatSync(dir).isSymbolicLink()) {
+      return {
+        kind: 'refused',
+        message: `${path.dirname(display)} is a symlink, not a regular file; vault-guard does not write through a link`,
+      };
+    }
+  } catch {
+    // The directory does not exist yet: it is created as a real directory.
+  }
+  // A read error (not a link) is thrown, so each installer step reports it
+  // through its own existing failure message.
+  const r: NoFollowRead = readRegularFileNoFollow(filePath);
+  if (r.kind === 'absent') return { kind: 'absent' };
+  if (r.kind === 'refused') {
+    return {
+      kind: 'refused',
+      message:
+        r.what === 'symlink'
+          ? `${display} is a symlink, not a regular file; vault-guard does not write through a link`
+          : `${display} is not a regular file; vault-guard does not write through a link`,
+    };
+  }
+  let mode = 0o644;
+  try {
+    mode = fs.lstatSync(filePath).mode & 0o777;
+  } catch {
+    // Keep the default.
+  }
+  return { kind: 'file', text: r.text, mode };
+}
 
 export class PreCommitHook {
   /**
@@ -364,9 +408,9 @@ export class PreCommitHook {
     const manager = options.manager ?? 'native';
     const hookPath = this.getPreCommitHookPath(cwd, manager);
 
-    if (!fs.existsSync(hookPath)) return false;
-    const content = fs.readFileSync(hookPath, 'utf-8');
-    return content.includes('vault-guard') && content.includes('scan --staged');
+    const r = readHookFile(hookPath, hookPath);
+    if (r.kind !== 'file') return false;
+    return r.text.includes('vault-guard') && r.text.includes('scan --staged');
   }
 
   // -------------------------------------------------------------------------
@@ -379,22 +423,23 @@ export class PreCommitHook {
    */
   private writeNativeCmdCompanion(hooksDir: string): boolean {
     const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
-    if (fs.existsSync(cmdPath)) {
-      const existing = fs.readFileSync(cmdPath, 'utf-8');
-      const isOurs =
-        existing.includes('vault-guard') && existing.includes('scan --staged');
+    const r = readHookFile(cmdPath, cmdPath);
+    if (r.kind === 'refused') return false;
+    if (r.kind === 'file') {
+      const isOurs = r.text.includes('vault-guard') && r.text.includes('scan --staged');
       if (!isOurs) {
         return false;
       }
     }
-    fs.writeFileSync(cmdPath, NATIVE_HOOK_CMD, { encoding: 'utf-8' });
+    writeFileAtomically(cmdPath, NATIVE_HOOK_CMD, 0o644);
     return true;
   }
 
   private removeNativeCmdCompanion(hooksDir: string): boolean {
     const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
-    if (!fs.existsSync(cmdPath)) return false;
-    const content = fs.readFileSync(cmdPath, 'utf-8');
+    const r = readHookFile(cmdPath, cmdPath);
+    if (r.kind !== 'file') return false;
+    const content = r.text;
     if (!content.includes('vault-guard') || !content.includes('scan --staged')) {
       return false;
     }
@@ -428,13 +473,20 @@ export class PreCommitHook {
     const hookPath = path.join(hooksDir, 'pre-commit');
     const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
 
+    // Both files are checked before either is written: a link at either path
+    // fails the step and changes nothing (design 2026-10-12, section 13).
     try {
+      const hookRead = readHookFile(hookPath, this.relFromCwd(cwd, hookPath));
+      const cmdRead = readHookFile(cmdPath, this.relFromCwd(cwd, cmdPath));
+      if (hookRead.kind === 'refused') return { success: false, message: hookRead.message };
+      if (cmdRead.kind === 'refused') return { success: false, message: cmdRead.message };
+
       if (!fs.existsSync(hooksDir)) {
         fs.mkdirSync(hooksDir, { recursive: true });
       }
 
-      if (fs.existsSync(hookPath)) {
-        const existing = fs.readFileSync(hookPath, 'utf-8');
+      if (hookRead.kind === 'file') {
+        const existing = hookRead.text;
         if (existing.includes('vault-guard') && existing.includes('scan --staged')) {
           // Refresh the Windows companion if missing or stale (never clobber foreign).
           const cmdOk = this.writeNativeCmdCompanion(hooksDir);
@@ -450,7 +502,7 @@ export class PreCommitHook {
         }
       }
 
-      fs.writeFileSync(hookPath, NATIVE_HOOK_SCRIPT, { mode: 0o755 });
+      writeFileAtomically(hookPath, NATIVE_HOOK_SCRIPT, 0o755);
       const cmdOk = this.writeNativeCmdCompanion(hooksDir);
 
       const hint = viaHooksPath
@@ -483,9 +535,11 @@ export class PreCommitHook {
     }
 
     const hookPath = path.join(hooksDir, 'pre-commit');
+    const hookRead = readHookFile(hookPath, this.relFromCwd(cwd, hookPath));
+    if (hookRead.kind === 'refused') return { success: false, message: hookRead.message };
     const cmdRemoved = this.removeNativeCmdCompanion(hooksDir);
 
-    if (!fs.existsSync(hookPath)) {
+    if (hookRead.kind === 'absent') {
       return {
         success: true,
         message: cmdRemoved
@@ -494,7 +548,7 @@ export class PreCommitHook {
       };
     }
 
-    const content = fs.readFileSync(hookPath, 'utf-8');
+    const content = hookRead.text;
     if (!content.includes('vault-guard')) {
       return {
         success: true,
@@ -537,27 +591,32 @@ export class PreCommitHook {
     const relHookPath = this.relFromCwd(cwd, hookPath);
 
     try {
+      const hookRead = readHookFile(hookPath, relHookPath);
+      if (hookRead.kind === 'refused') return { success: false, message: hookRead.message };
+
       if (!fs.existsSync(huskyDir)) {
         fs.mkdirSync(huskyDir, { recursive: true });
       }
 
-      if (fs.existsSync(hookPath)) {
-        const existing = fs.readFileSync(hookPath, 'utf-8');
+      if (hookRead.kind === 'file') {
+        const existing = hookRead.text;
         if (existing.includes('vault-guard') && existing.includes('scan --staged')) {
           return { success: true, message: 'Husky hook already contains vault-guard', hookPath };
         }
         if (existing.includes('# --- vault-guard ---')) {
           return { success: true, message: 'Husky hook already contains vault-guard block', hookPath };
         }
-        fs.appendFileSync(
+        // An append is read, concatenate, write by temporary file and rename,
+        // so a link planted in between is replaced, never written through.
+        writeFileAtomically(
           hookPath,
-          `\n# --- vault-guard ---\nvault-guard scan --staged || {\n  echo "❌ vault-guard blocked commit"\n  exit 1\n}\n`,
-          { encoding: 'utf-8' },
+          `${existing}\n# --- vault-guard ---\nvault-guard scan --staged || {\n  echo "❌ vault-guard blocked commit"\n  exit 1\n}\n`,
+          hookRead.mode,
         );
         return { success: true, message: `Appended vault-guard to existing ${relHookPath}`, hookPath };
       }
 
-      fs.writeFileSync(hookPath, HUSKY_HOOK_SCRIPT, { mode: 0o755 });
+      writeFileAtomically(hookPath, HUSKY_HOOK_SCRIPT, 0o755);
       return {
         success: true,
         message: `Created ${relHookPath} (run \`npx husky init\` first if _/husky.sh is missing)`,
@@ -595,11 +654,13 @@ export class PreCommitHook {
   ): { success: boolean; message: string } {
     const hookPath = path.join(huskyDir, 'pre-commit');
     const relHookPath = this.relFromCwd(cwd, hookPath);
-    if (!fs.existsSync(hookPath)) {
+    const hookRead = readHookFile(hookPath, relHookPath);
+    if (hookRead.kind === 'refused') return { success: false, message: hookRead.message };
+    if (hookRead.kind === 'absent') {
       return { success: true, message: `No ${relHookPath} to remove` };
     }
 
-    const content = fs.readFileSync(hookPath, 'utf-8');
+    const content = hookRead.text;
     if (!content.includes('vault-guard')) {
       return { success: true, message: `No vault-guard stanza in ${relHookPath}` };
     }
@@ -621,7 +682,7 @@ export class PreCommitHook {
         fs.unlinkSync(hookPath);
         return { success: true, message: `Removed ${relHookPath}` };
       }
-      fs.writeFileSync(hookPath, stripped, { mode: 0o755 });
+      writeFileAtomically(hookPath, stripped, hookRead.mode);
       const stillInstalled = stripped.includes('vault-guard') && stripped.includes('scan --staged');
       return {
         success: !stillInstalled,
@@ -651,8 +712,10 @@ export class PreCommitHook {
   private installLefthook(cwd: string): { success: boolean; message: string; hookPath?: string } {
     const localPath = path.join(cwd, 'lefthook-local.yml');
     try {
-      if (fs.existsSync(localPath)) {
-        const existing = fs.readFileSync(localPath, 'utf-8');
+      const localRead = readHookFile(localPath, 'lefthook-local.yml');
+      if (localRead.kind === 'refused') return { success: false, message: localRead.message };
+      if (localRead.kind === 'file') {
+        const existing = localRead.text;
         if (existing.includes('vault-guard scan --staged')) {
           return { success: true, message: 'lefthook-local.yml already configures vault-guard', hookPath: localPath };
         }
@@ -663,7 +726,7 @@ export class PreCommitHook {
             '  vault-guard:\n    run: vault-guard scan --staged\n',
         };
       }
-      fs.writeFileSync(localPath, LEFTHOOK_LOCAL, 'utf-8');
+      writeFileAtomically(localPath, LEFTHOOK_LOCAL, 0o644);
       return {
         success: true,
         message: 'Wrote lefthook-local.yml (merged by Lefthook with lefthook.yml). Run: lefthook install',
@@ -677,10 +740,12 @@ export class PreCommitHook {
 
   private uninstallLefthook(cwd: string): { success: boolean; message: string } {
     const localPath = path.join(cwd, 'lefthook-local.yml');
-    if (!fs.existsSync(localPath)) {
+    const localRead = readHookFile(localPath, 'lefthook-local.yml');
+    if (localRead.kind === 'refused') return { success: false, message: localRead.message };
+    if (localRead.kind === 'absent') {
       return { success: true, message: 'No lefthook-local.yml' };
     }
-    const content = fs.readFileSync(localPath, 'utf-8');
+    const content = localRead.text;
     if (!content.includes('vault-guard')) {
       return { success: true, message: 'lefthook-local.yml does not reference vault-guard' };
     }
@@ -706,8 +771,10 @@ export class PreCommitHook {
 
   private installPreCommitFramework(cwd: string): { success: boolean; message: string; hookPath?: string } {
     const cfg = path.join(cwd, '.pre-commit-config.yaml');
-    if (fs.existsSync(cfg)) {
-      const existing = fs.readFileSync(cfg, 'utf-8');
+    const cfgRead = readHookFile(cfg, '.pre-commit-config.yaml');
+    if (cfgRead.kind === 'refused') return { success: false, message: cfgRead.message };
+    if (cfgRead.kind === 'file') {
+      const existing = cfgRead.text;
       if (existing.includes('vault-guard') && existing.includes('scan --staged')) {
         return { success: true, message: '.pre-commit-config.yaml already includes vault-guard', hookPath: cfg };
       }
@@ -720,7 +787,7 @@ export class PreCommitHook {
       };
     }
     try {
-      fs.writeFileSync(cfg, PRE_COMMIT_CONFIG, 'utf-8');
+      writeFileAtomically(cfg, PRE_COMMIT_CONFIG, 0o644);
       return {
         success: true,
         message: 'Created .pre-commit-config.yaml -- run: pre-commit install',
@@ -734,10 +801,12 @@ export class PreCommitHook {
 
   private uninstallPreCommitFramework(cwd: string): { success: boolean; message: string } {
     const cfg = path.join(cwd, '.pre-commit-config.yaml');
-    if (!fs.existsSync(cfg)) {
+    const cfgRead = readHookFile(cfg, '.pre-commit-config.yaml');
+    if (cfgRead.kind === 'refused') return { success: false, message: cfgRead.message };
+    if (cfgRead.kind === 'absent') {
       return { success: true, message: 'No .pre-commit-config.yaml' };
     }
-    const content = fs.readFileSync(cfg, 'utf-8');
+    const content = cfgRead.text;
     if (!content.includes('vault-guard')) {
       return { success: true, message: '.pre-commit-config.yaml does not reference vault-guard' };
     }

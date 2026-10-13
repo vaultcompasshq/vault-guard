@@ -3,8 +3,9 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { baselineCommand } from '../../commands/baseline';
+import { baselineCommand, writeBaselineAtomically } from '../../commands/baseline';
 import { scanCommand } from '../../commands/scan';
+import * as fx from './git-fixture';
 
 /**
  * `vault-guard baseline [path] [--write] [--include-critical]` (design
@@ -444,5 +445,68 @@ describe('vault-guard baseline', () => {
     expect(r.code).toBe(0);
     expect(r.log).toMatch(/converted 1/);
     expect(readBaseline().entries).toHaveLength(1);
+  });
+});
+
+/**
+ * `baseline --write` never writes through a link (design 2026-10-12, 4.3).
+ */
+describe('baseline --write and links at the output path', () => {
+  const originalCwd = process.cwd();
+  const itPosix = process.platform === 'win32' ? it.skip : it;
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    process.chdir(originalCwd);
+    for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  /** A repository inside a parent directory that also holds `victim.txt`. */
+  function setup(link: (repo: string, victim: string) => void): { repo: string; victim: string } {
+    const parent = fx.tmpDir('vg-writer-link-');
+    dirs.push(parent);
+    const repo = path.join(parent, 'repo');
+    fs.mkdirSync(repo);
+    const victim = path.join(parent, 'victim.txt');
+    fs.writeFileSync(victim, 'victim contents\n');
+    fx.initRepo(repo);
+    fx.write(repo, 'app.ts', `export const k = "${fx.AWS_KEY}";\n`);
+    link(repo, victim);
+    fx.commitAll(repo, 'base');
+    return { repo, victim };
+  }
+
+  itPosix('F10: baseline --write refuses a symlinked baseline and leaves the target untouched', async () => {
+    const { repo, victim } = setup(r => fs.symlinkSync('../victim.txt', path.join(r, '.vault-guard.baseline.json')));
+    process.chdir(repo);
+    const r = await fx.capture(() => baselineCommand('.', { write: true, includeCritical: true }));
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('baseline --write refuses');
+    expect(r.err).toContain('.vault-guard.baseline.json');
+    expect(r.err).toContain('it is a symlink, not a regular file');
+    expect(fs.readFileSync(victim, 'utf-8')).toBe('victim contents\n');
+    expect(fs.readdirSync(repo).filter(f => f.endsWith('.tmp'))).toEqual([]);
+  });
+
+  itPosix('F10b: baseline --write replaces a link planted before the rename instead of writing through it', async () => {
+    const { victim } = setup(() => undefined);
+    const outPath = path.join(path.dirname(victim), 'repo', '.vault-guard.baseline.json');
+    writeBaselineAtomically(outPath, '{"version":1}\n', {
+      beforeRename: () => fs.symlinkSync(victim, outPath),
+    });
+    expect(fs.readFileSync(victim, 'utf-8')).toBe('victim contents\n');
+    expect(fs.lstatSync(outPath).isFile()).toBe(true);
+  });
+
+  itPosix('F12: baseline --write refuses a dangling symlink', async () => {
+    const { repo, victim } = setup(r =>
+      fs.symlinkSync('../not-yet-there.json', path.join(r, '.vault-guard.baseline.json')),
+    );
+    process.chdir(repo);
+    const r = await fx.capture(() => baselineCommand('.', { write: true, includeCritical: true }));
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('it is a symlink, not a regular file');
+    expect(fs.existsSync(path.join(path.dirname(victim), 'not-yet-there.json'))).toBe(false);
   });
 });

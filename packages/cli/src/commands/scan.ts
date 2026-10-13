@@ -4,12 +4,17 @@ import {
   ConfigError,
   GitError,
   mapPatternRejectionReasonToDiagnosticCode,
-  getGitStagedFilePaths,
+  getGitStagedEntries,
   getGitWorkTreeRoot,
-  readGitIndexBytes,
+  GitContentSource,
+  cleanGitEnv,
+  copyKey,
+  dropHeaderOnlyTwins,
+  type TrackedEntry,
   isInsideGitWorkTree,
   DiagnosticBus,
   loadBaseline,
+  BaselineRefusedError,
   applyBaseline,
   findGitEntryRoot,
   resolveFailOn,
@@ -17,6 +22,8 @@ import {
   FAIL_ON_VALUES,
   loadTrustedControls,
   TrustBaseError,
+  ATTRIBUTES_PROPOSAL_LINE,
+  ATTRIBUTES_NOTE_LINE,
   newPlainFileSetInfo,
   listTrackedIgnoredFiles,
   type FailOnThreshold,
@@ -27,7 +34,7 @@ import {
 } from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
 import fs from 'fs';
-import { isAbsolute, relative, resolve as pathResolve } from 'path';
+import { basename, dirname, isAbsolute, join as pathJoin, relative, resolve as pathResolve } from 'path';
 import {
   scanFilesAsync,
   scanFileListAsync,
@@ -37,6 +44,7 @@ import {
   resolveScanRoot,
   formatExcludeEntry,
   excludeEntryNote,
+  newContentReport,
   type RunSkipCounts,
   type UnreadableFile,
 } from '../utils/scan-utils';
@@ -84,9 +92,13 @@ function canonicalPath(p: string): string {
  * and a git failure then throws GitError, which is exit 2), the anchor
  * otherwise.
  */
-export function resolveContentRoot(anchor: string): string {
+export function resolveContentRoot(anchor: string, staged = false): string {
   if (findGitEntryRoot(anchor) === null) return canonicalPath(anchor);
-  return getGitWorkTreeRoot(anchor);
+  // A plain or pull-request run uses a clean git environment: a hook's
+  // GIT_DIR or GIT_WORK_TREE must not move the root a path is judged against.
+  // `--staged` keeps the inherited one, as for every staged git call
+  // (design 2026-10-12, 2.7 and 6).
+  return staged ? getGitWorkTreeRoot(anchor) : getGitWorkTreeRoot(anchor, cleanGitEnv());
 }
 
 /**
@@ -231,7 +243,24 @@ export async function scanCommand(
   // of behaviour this whole flag exists to remove.
   if (controls && !staged) {
     for (const target of targetPaths) {
-      const abs = canonicalPath(pathResolve(cwd, target));
+      // The directory is resolved, the last component is not: a tracked
+      // symlink named as a target is judged by where it sits, never by where
+      // it points (design 2026-10-12, 2.1).
+      // A link to a directory is still resolved, as before.
+      const given = pathResolve(cwd, target);
+      const namedFileLink = ((): boolean => {
+        try {
+          if (!fs.lstatSync(given).isSymbolicLink()) return false;
+        } catch {
+          return false;
+        }
+        try {
+          return !fs.statSync(given).isDirectory();
+        } catch {
+          return true;
+        }
+      })();
+      const abs = namedFileLink ? pathJoin(canonicalPath(dirname(given)), basename(given)) : canonicalPath(given);
       const rel = relative(controls.repoRoot, abs);
       if (rel.startsWith('..') || isAbsolute(rel)) {
         console.error(
@@ -259,6 +288,8 @@ export async function scanCommand(
           baselineChanged: controls.baselineChanged,
           configShapeChange: controls.configShapeChange,
           baselineShapeChange: controls.baselineShapeChange,
+          attributesChanged: controls.attributesChanged,
+          attributesPaths: controls.attributesPaths,
         };
 
   let config: VaultGuardConfig;
@@ -277,6 +308,22 @@ export async function scanCommand(
       return COULD_NOT_RUN_EXIT;
     }
     throw e;
+  }
+
+  // The working-tree baseline is loaded here, beside the config, so a linked
+  // baseline fails the run before anything is scanned or announced (design
+  // 2026-10-12, 4.2). Pull-request mode already read the base ref's.
+  let plainBaseline: ReturnType<typeof loadBaseline> | undefined;
+  if (!controls) {
+    try {
+      plainBaseline = loadBaseline(outputBase);
+    } catch (e) {
+      if (e instanceof BaselineRefusedError) {
+        console.error(chalk.red('❌'), chalk.white(e.message));
+        return COULD_NOT_RUN_EXIT;
+      }
+      throw e;
+    }
   }
 
   // Resolve the gate threshold before scanning so an invalid value fails fast
@@ -370,6 +417,9 @@ export async function scanCommand(
   // Every file actually opened, so the tracked counts are of files SCANNED,
   // not merely listed.
   const scannedFiles = new Set<string>();
+  // Where content was read from (design 2026-10-12, section 2).
+  const contentReport = newContentReport();
+  let stagedContent: GitContentSource | undefined;
   const t0 = Date.now();
 
   try {
@@ -386,7 +436,16 @@ export async function scanCommand(
         // outputBase was resolved above, before the config load. If that
         // lookup failed it was left as `cwd` and NOT reported; this call
         // repeats it internally and is where the failure surfaces.
-        stagedFiles = getGitStagedFilePaths(cwd);
+        const staged = getGitStagedEntries(cwd);
+        stagedFiles = staged.map(e => e.path);
+        // The blobs are read by the object ids this listing named, with the
+        // inherited environment (a hook's index, a GIT_DIR-only repository).
+        const root = getGitWorkTreeRoot(cwd);
+        const entries = new Map<string, TrackedEntry>();
+        for (const e of staged) {
+          entries.set(e.path, { repoTop: root, mode: e.mode, oid: e.oid, worktreeAlso: false, filtered: false });
+        }
+        stagedContent = new GitContentSource('index', process.env, entries);
       } catch (e) {
         if (e instanceof GitError) {
           console.error(chalk.red('❌ Git error:'), chalk.white(e.message));
@@ -409,6 +468,7 @@ export async function scanCommand(
         }
         console.log(chalk.gray(`   ${stagedFiles.length} file(s) in the index\n`));
       }
+      try {
       results = await scanFileListAsync(stagedFiles, scanner, {
         verbose: format === 'text',
         skipBinary: true,
@@ -423,7 +483,12 @@ export async function scanCommand(
         // Explicit: staged paths are judged relative to the repository root.
         pathRoot: outputBase,
         inlineSuppressed,
+        content: contentReport,
+        ...(stagedContent ? { contentSource: stagedContent } : {}),
       });
+      } finally {
+        stagedContent?.close();
+      }
     } else {
       results = await scanFilesAsync(targetPaths, scanner, {
         verbose: format === 'text',
@@ -436,8 +501,16 @@ export async function scanCommand(
         configIgnorePatterns,
         inlineSuppressed,
         scannedFiles,
+        content: contentReport,
         ...(controls
-          ? { pullRequest: { headTreeFiles: controls.headTreeFiles, skipped: prSkips } }
+          ? {
+              pullRequest: {
+                headTreeFiles: controls.headTreeFiles,
+                headBlobs: controls.headBlobs,
+                repoRoot: controls.repoRoot,
+                skipped: prSkips,
+              },
+            }
           : { plainFileSet }),
       });
     }
@@ -497,7 +570,7 @@ export async function scanCommand(
           entries: controls.baselineEntries,
           parseError: controls.baselineParseError ?? undefined,
         }
-      : loadBaseline(outputBase);
+      : (plainBaseline ?? { fingerprints: new Set<string>() });
     if (baselineLoad.parseError) {
       diagnostics.push({
         code: 'baseline.invalid',
@@ -518,7 +591,7 @@ export async function scanCommand(
     // run from anywhere in the tree.
     const contentRoot = controls
       ? controls.repoRoot
-      : resolveContentRoot(outputBase);
+      : resolveContentRoot(outputBase, staged);
     const { results: afterBaseline, suppressed: baselineSuppressed } = applyBaseline(
       results,
       baselineLoad,
@@ -526,12 +599,22 @@ export async function scanCommand(
         anchor: outputBase,
         contentRoot,
         isValueBearing: id => scanner.isValueBearing(id),
-        // A staged run scanned the index blob, so a header-only entry's file
-        // digest is taken over that blob too, never over the working tree.
-        ...(staged ? { readBytes: (f: string) => readGitIndexBytes(outputBase, f) } : {}),
+        // A header-only entry's file digest is taken over the bytes the
+        // finding came from, kept by the scan: the blob for a blob match, the
+        // disk copy for a worktree match. Nothing is re-read after the scan.
+        readBytes: (f: string, source, stage) => {
+          const kept = contentReport.kept.get(copyKey(f, source, stage));
+          if (kept !== undefined) return kept;
+          if (source === undefined || source === 'file' || source === 'worktree') return fs.readFileSync(f);
+          throw new Error(`no bytes kept for ${f}`);
+        },
       },
     );
-    results = afterBaseline;
+    // 2.5, step 3: a disk-copy header-only match whose unsuppressed blob twin
+    // is reported is the same finding, reported once.
+    results = dropHeaderOnlyTwins(afterBaseline);
+    // Kept bytes are released once the baseline has been applied.
+    contentReport.kept.clear();
     const baselineEntriesLoaded = baselineLoad.entries?.length ?? 0;
 
     const durationMs = Date.now() - t0;
@@ -614,6 +697,10 @@ export async function scanCommand(
       file_set: fileSetKind,
       ...trackedCounts,
       ...(fileSetKind === 'git' ? { tracked_files_missing: plainFileSet.trackedMissing.length } : {}),
+      content_source:
+        contentReport.blobFiles > 0 || fileSetKind !== 'walk' ? ('git' as const) : ('disk' as const),
+      worktree_copies_scanned: contentReport.worktreeCopies.size,
+      worktree_undecodable: contentReport.undecodable,
     };
 
     // A file vault-guard could not read, or whose scan blew the budget, or a
@@ -706,8 +793,13 @@ export async function scanCommand(
       if (trustBase.proposals.length === 0) {
         console.log(chalk.gray('Proposed, not applied: none'));
       } else {
+        let attributesNoted = false;
         for (const proposal of trustBase.proposals) {
           console.log(chalk.yellow(`Proposed, not applied: ${proposal}`));
+          if (!attributesNoted && proposal.startsWith(ATTRIBUTES_PROPOSAL_LINE)) {
+            attributesNoted = true;
+            console.log(chalk.gray(`   ${ATTRIBUTES_NOTE_LINE}`));
+          }
         }
       }
       // Not on the staged path: its file list comes from the index and never
@@ -779,6 +871,26 @@ export async function scanCommand(
         chalk.yellow(
           `Tracked files missing from the working tree: ${plainFileSet.trackedMissing.length}` +
             ' (deleted locally or left out by a sparse checkout, not scanned)',
+        ),
+      );
+    }
+    if (contentReport.worktreeCopies.size > 0) {
+      console.log(
+        chalk.gray(
+          `Tracked files whose working-tree copy differs, both scanned: ${contentReport.worktreeCopies.size}`,
+        ),
+      );
+    }
+    if (contentReport.undecodable.length > 0) {
+      const named = contentReport.undecodable
+        .slice(0, 3)
+        .map(u => `${u.file}: ${u.encoding}`)
+        .join(', ');
+      const more = contentReport.undecodable.length > 3 ? ', ...' : '';
+      console.log(
+        chalk.yellow(
+          `Working-tree copies in an encoding vault-guard cannot decode, scanned as UTF-8: ` +
+            `${contentReport.undecodable.length} (${named}${more})`,
         ),
       );
     }

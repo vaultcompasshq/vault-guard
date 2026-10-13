@@ -7,6 +7,13 @@ import { fingerprintForMatch, contentFingerprintForMatch } from './match-fingerp
 export interface FileScanResult {
   file: string;
   matches: SecretMatch[];
+  /**
+   * Set when this tracked file's disk copy was scanned as well as its blob:
+   * the blob side it was compared with (`index` or `head`). Text output
+   * labels each finding's copy only then, so a clean tree prints exactly what
+   * it printed before.
+   */
+  bothCopies?: 'index' | 'head';
 }
 
 /** Optional machine-readable scan run metadata (JSON + SARIF driver properties). */
@@ -118,6 +125,18 @@ export interface JsonRunMetadata {
   tracked_files_missing?: number;
   /** Entries in the baseline's `entries` list that were loaded (0 when none). */
   baseline_entries?: number;
+  /**
+   * `git` when tracked content was read from git blobs (a plain scan inside
+   * git, `--trust-base`, `--staged`, a named tracked file), `disk` otherwise.
+   */
+  content_source?: 'git' | 'disk';
+  /** Tracked files whose disk copy differed from the blob and was scanned as well. */
+  worktree_copies_scanned?: number;
+  /**
+   * Disk copies whose declared `working-tree-encoding` vault-guard cannot
+   * decode; each was scanned as UTF-8. The blob was always scanned.
+   */
+  worktree_undecodable?: Array<{ file: string; encoding: string }>;
 }
 
 /**
@@ -140,6 +159,10 @@ export interface TrustBaseReport {
   configShapeChange: 'symlink' | 'not-a-file' | 'removed' | 'mode' | null;
   /** The same for the baseline file. */
   baselineShapeChange: 'symlink' | 'not-a-file' | 'removed' | 'mode' | null;
+  /** True when any `.gitattributes` differs between the base ref and HEAD. */
+  attributesChanged?: boolean;
+  /** Those paths, sorted. */
+  attributesPaths?: string[];
 }
 
 export interface JsonOutput {
@@ -170,6 +193,8 @@ export interface JsonOutput {
        * line. Present only for a value-bearing rule.
        */
       content_fingerprint?: string;
+      /** Which copy the match came from: `index`, `head`, `worktree` or `file`. */
+      source?: string;
     }>;
   }>;
   /** Non-fatal scan warnings (skipped files, rejected patterns, git issues). */
@@ -406,6 +431,7 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
           value: m.value,
           fingerprint: fingerprintForMatch(fpCwd, file, m),
           ...(content !== undefined ? { content_fingerprint: content } : {}),
+          ...(m.source !== undefined ? { source: m.source } : {}),
         };
       }),
     })),
@@ -477,6 +503,7 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
           ...(content !== undefined ? { 'vault-guard/v2': content } : {}),
         };
       })(),
+      ...(m.source !== undefined ? { properties: { 'vault-guard/source': m.source } } : {}),
     }))
   );
 
@@ -544,6 +571,13 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
               : {}),
             ...(opts.run.baseline_entries !== undefined
               ? { baseline_entries: opts.run.baseline_entries }
+              : {}),
+            ...(opts.run.content_source !== undefined ? { content_source: opts.run.content_source } : {}),
+            ...(opts.run.worktree_copies_scanned !== undefined
+              ? { worktree_copies_scanned: opts.run.worktree_copies_scanned }
+              : {}),
+            ...(opts.run.worktree_undecodable !== undefined
+              ? { worktree_undecodable: opts.run.worktree_undecodable }
               : {}),
           },
         }

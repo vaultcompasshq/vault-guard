@@ -58,6 +58,136 @@ Also in this release:
   `partialFingerprints["vault-guard/v2"]`. All additive.
 - The MCP `scan_workspace` tool uses the same file set as the CLI.
 
+**Tracked files are read from git, not from the checkout.** A key in a
+committed file is found whatever `.gitattributes` says about encoding, line
+endings or filters. A pull request can no longer hide a key by adding a
+`working-tree-encoding` line.
+
+**A staged secret is found by a plain scan even if the file on disk no
+longer has it.** A plain scan inside git now reads the staged version of
+each tracked file and, when the file on disk is different, the disk version
+too. Findings that exist only in uncommitted edits say so.
+
+**Files with a non-UTF-8 `working-tree-encoding` may show findings for the
+first time.**
+
+**On a checkout that converts line endings** (Windows with
+`core.autocrlf=true`, or `eol=crlf`), positions in findings describe the
+committed file. A positional baseline entry stores an absolute offset into
+the file, so every positional entry that 1.9.x made on such a checkout, for
+a finding after line 1, stops matching. Run `vault-guard baseline --write`
+once to replace them with content entries, which do not depend on positions.
+Baselines made on Linux or macOS checkouts are unaffected.
+
+**New ways to exit 2**, each naming the file or the git error: a tracked
+file whose committed content is missing from the local repository; a
+failure of `git cat-file`, `git status` or `git check-attr`; and under
+`--trust-base`, a failure of `git ls-tree` or of the `git diff-tree` that
+looks for `.gitattributes` changes (previously an `ls-tree` failure was
+caught only by the zero-files check).
+
+**A pull-request run that finds its repository only through `GIT_DIR`** (no
+`.git` in the checkout) now exits 2 with "not inside a git worktree".
+Pull-request mode needs a real checkout; an Action checkout always has one.
+
+**Skip-worktree and assume-unchanged files are scanned from disk too.** A
+tracked config template marked `git update-index --skip-worktree` (or
+`--assume-unchanged`) so real local credentials can sit in it unseen by git
+is scanned from the committed template and from the file on disk, so those
+credentials are still found by a plain scan.
+
+**A tracked symlink named on the command line** (`scan link.txt`) is scanned
+twice: the link text git stores, and the file it points to when that file
+is inside the repository. A link that points outside the repository, or
+nowhere, is no longer followed: the run prints a warning naming the link and
+the reason and carries on (a dangling named link used to be exit 2).
+Directory scans skip symlinks, as before.
+
+**A tracked file staged and then deleted from disk** is now scanned from the
+staged version, and still counted as missing, but only when the staged
+version differs from the last commit (`git status` shows `AD` or `MD`). A
+committed file you removed with `rm` and have not staged yet (` D`) is only
+counted, not scanned, so a plain-scan hook on `git commit -a` never blocks
+the commit that removes an accidentally committed secret file.
+
+**A symlinked `.vault-guard.baseline.json`, `.vault-guard.json` or
+`.vault-guard.local.json` is refused with exit 2**, including a link that
+points nowhere (it no longer lets a parent directory's file take over).
+`vault-guard config validate` refuses it too, with its usual exit 1. The VS
+Code extension shows its existing "ignoring broken config" warning for a
+symlinked config and scans with the built-in rules. Replace the link with
+the file. `baseline --write` never writes through a link, and replaces the
+file by rename. `vault-guard init` and `install-hook` never write a hook
+file through a link either: a linked hook file is reported and left alone.
+
+**Two-letter file names are no longer treated as translation files.**
+`db.ts`, `ci.yml`, `sa.json`, `pg.js` and similar get full severity, so a
+DSN, key, JWT or password in them now blocks.
+
+**Inside `locales/`, `i18n/`, `lang/` and similar directories, connection
+strings, private keys and JWTs are no longer downgraded.** Generic password,
+API key, secret and bearer findings still are.
+
+**A translation file outside those directories** (`src/en.json`,
+`messages/de.json`) is judged like any other file, so a translated label
+such as `tfa_secret: ...` can now block. Declare such files in
+`ignore.paths`.
+
+**A plain scan run from a pre-commit hook** no longer reads the hook's
+index: with submodules it no longer fails with "index file open failed",
+`git commit -a` no longer produces bogus "tracked files missing" counts,
+and a hook that scans a different repository lists that repository's own
+files. `scan --staged` still reads exactly what the commit will contain,
+including in a repository reached through `GIT_DIR`.
+
+Also in this release:
+
+- Git LFS and other filtered files are still scanned from disk, as before,
+  and their pointer files are scanned from git as well.
+- Text output gains labels only when a tracked file's disk copy differs:
+  findings are suffixed `(index)`, `(head commit)`, `(working tree, not in
+  the index)`, `(working tree, not committed)`, or `(index, ours)` and
+  `(index, theirs)` during a merge conflict, and a line `Tracked files whose
+  working-tree copy differs, both scanned: N` appears. On a clean tree the
+  output is unchanged.
+- An edited file whose `working-tree-encoding` vault-guard cannot decode
+  (UTF-32, or an unusual label) is scanned as UTF-8 and named in a coverage
+  line, `Working-tree copies in an encoding vault-guard cannot decode,
+  scanned as UTF-8: N`. The committed version is still read from git. The
+  exit code does not change.
+- A pull request that changes any `.gitattributes` shows `Proposed, not
+  applied: .gitattributes changed in this pull request` with the file
+  names. The exit code does not change. conductor shows the line with the
+  other proposals.
+- A malformed baseline no longer quotes its content in warnings, JSON or
+  SARIF. A malformed config, in `scan` and in `config validate`, gives the
+  line and column, not the text.
+- New output fields, all additive: `matches[].source`, `run.content_source`,
+  `run.worktree_copies_scanned`, `run.worktree_undecodable`, and in
+  pull-request runs `trustBase.attributesChanged` and
+  `trustBase.attributesPaths`; SARIF results carry `vault-guard/source`.
+- `baseline --write` lists findings in uncommitted edits as not accepted,
+  beside the existing untracked-file line.
+
+### Security
+
+- A head-side `.gitattributes` line (`working-tree-encoding`) could make the
+  checkout write a committed key as BOM-less UTF-16, which the scanner read
+  as UTF-8 and passed, in pull-request and plain mode. Tracked content is now
+  read from git. Found by an independent audit on 2026-10-12.
+- `vault-guard baseline --write` followed a committed symlink at the
+  baseline path and overwrote a file outside the repository, and the reader
+  echoed the start of the link's target in a parse warning. Control files
+  are now never read or written through a link. Found by an independent
+  audit on 2026-10-12.
+
+### Known limits
+
+- A plain scan drops a tracked file whose disk entry was replaced by a
+  symlink (a typechange, `git status` `MT` or ` T`) without counting it as
+  missing. This predates this release; `scan --staged` still reads the
+  staged blob. Follow-up work.
+
 ## [1.9.1] - 2026-10-03
 
 **Patch bump on all four packages.** `@vaultcompass/vault-guard`,

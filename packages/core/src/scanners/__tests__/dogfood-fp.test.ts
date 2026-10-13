@@ -119,12 +119,13 @@ describe('translation catalogues hold labels, not credentials', () => {
     'src/locales/en.json',
     'frontend/i18n/pt_BR.yml',
     'ui/translations/nl-NL.yaml',
-    'src/en.json',
   ])('treats %s as a locale path', p => {
     expect(isLocalePath(p)).toBe(true);
   });
 
-  it.each(['src/server/config.json', 'packages/core/src/index.ts', 'src/language-service.ts'])(
+  // A two-letter file name alone is not a locale path (design 2026-10-12,
+  // section 5): `src/en.json` needs a locale directory, or `ignore.paths`.
+  it.each(['src/server/config.json', 'packages/core/src/index.ts', 'src/language-service.ts', 'src/en.json'])(
     'does not treat %s as a locale path',
     p => {
       expect(isLocalePath(p)).toBe(false);

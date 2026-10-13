@@ -2,6 +2,11 @@ export * from './types';
 export * from './errors';
 export * from './scanners';
 export * from './utils/file-utils';
+export * from './utils/content-source';
+export * from './utils/git-env';
+export * from './utils/read-no-follow';
+export { BlobBatchReader, batchCheckBlobs, type BlobCheck } from './utils/blob-reader';
+export { decodeTextBuffer, decodeDiskCopy, mappedWorktreeEncodings, type DecodedDiskCopy } from './utils/text-decode';
 export * from './config';
 export * from './config-validate';
 export * from './baseline';
@@ -10,12 +15,16 @@ export {
   loadTrustedControls,
   assertTrustBaseResolvable,
   listHeadTreeFiles,
+  listHeadTreeBlobs,
+  HEAD_TREE_LISTING_MAX_BYTES,
   readFileAtRef,
   isRegularFileMode,
   CONFIG_PROPOSAL_LINE,
   BASELINE_PROPOSAL_LINE,
   CONFIG_ADDED_LINE,
   BASELINE_ADDED_LINE,
+  ATTRIBUTES_PROPOSAL_LINE,
+  ATTRIBUTES_NOTE_LINE,
   type ControlFile,
   type ControlShapeChange,
   type TrustedControls,
@@ -32,6 +41,9 @@ export { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from './utils/entropy';
 export { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, SEQUENTIAL_RUN_COVERAGE_THRESHOLD } from './utils/placeholder';
 export {
   getGitStagedFilePaths,
+  getGitStagedEntries,
+  parseStagedRaw,
+  type StagedEntry,
   readGitIndexFile,
   readGitIndexBytes,
   isInsideGitWorkTree,

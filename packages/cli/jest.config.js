@@ -8,6 +8,10 @@ module.exports = {
   // race to bind/use the same OS-recycled port. Single worker eliminates
   // the hazard with negligible cost (proxy tests dominate the runtime anyway).
   maxWorkers: 1,
+  // Integration tests drive real git repositories. Alone the slowest takes
+  // about a second; under the parallel root `pnpm test` (every package at
+  // once) CPU contention pushed a few past jest's 5 s default. Not a hang.
+  testTimeout: 30000,
   // Resolve workspace package before core `dist/` exists (CI / local `pnpm test`)
   moduleNameMapper: {
     '^@vaultcompass/vault-guard-core$': '<rootDir>/../core/src/index.ts',
