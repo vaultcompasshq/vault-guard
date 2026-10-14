@@ -139,7 +139,9 @@ export async function scanWorkspaceDirectory(
       await Promise.all(batch.map(scanOne));
     }
   } finally {
-    content.close();
+    // Wait, bounded, for the readers' git processes to exit, so none outlives
+    // the scan. Never rejects, so an earlier error still propagates.
+    await content.closeAndWait();
   }
 
   return { results: dropHeaderOnlyTwins(results), filesScanned, bytesScanned, overBudget, unscannable };

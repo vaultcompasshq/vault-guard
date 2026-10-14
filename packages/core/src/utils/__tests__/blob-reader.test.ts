@@ -96,6 +96,42 @@ describe('blob reader', () => {
     expect(await settled(reader)).toBe(0);
   });
 
+  it('closeAndWait returns with no git process alive after a normal read', async () => {
+    const oid = blob(Buffer.from('fine\n'));
+    const reader = new BlobBatchReader(repo, process.env);
+    await reader.read(oid);
+    await reader.closeAndWait();
+    expect(reader.liveChildren).toBe(0);
+  });
+
+  const itPosix = process.platform === 'win32' ? it.skip : it;
+
+  itPosix('closeAndWait kills a git that never exits, within its bound, and does not reject', async () => {
+    // A git stub that ignores the end of its input and never exits.
+    const bin = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vg-stuck-git-')));
+    try {
+      fs.writeFileSync(
+        path.join(bin, 'git'),
+        `#!${process.execPath}\nprocess.stdin.resume();\nsetInterval(() => undefined, 1000);\n`,
+        { mode: 0o755 },
+      );
+      const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` };
+      const reader = new BlobBatchReader(repo, env);
+      const pending = reader.read('0123456789abcdef0123456789abcdef01234567');
+      const settledRead = pending.then(
+        () => 'resolved',
+        () => 'rejected',
+      );
+      const t0 = Date.now();
+      await expect(reader.closeAndWait(300)).resolves.toBeUndefined();
+      expect(Date.now() - t0).toBeLessThan(5000);
+      expect(await settled(reader, 3000)).toBe(0);
+      expect(await settledRead).toBe('rejected');
+    } finally {
+      fs.rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
   it('a closed content source refuses a read for a repository it has no reader for yet', async () => {
     // A sibling file in the same batch can still reach read() after a git
     // error closed the source; it must not start a git process nothing closes.

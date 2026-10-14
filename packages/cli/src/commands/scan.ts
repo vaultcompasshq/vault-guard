@@ -487,7 +487,9 @@ export async function scanCommand(
         ...(stagedContent ? { contentSource: stagedContent } : {}),
       });
       } finally {
-        stagedContent?.close();
+        // Wait, bounded, for the reader's git to exit, so none outlives the
+        // scan. Never rejects, so an earlier error and the exit code stand.
+        await stagedContent?.closeAndWait();
       }
     } else {
       results = await scanFilesAsync(targetPaths, scanner, {

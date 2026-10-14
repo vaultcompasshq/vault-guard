@@ -991,7 +991,9 @@ export async function scanFilesAsync(
     }
   }
   } finally {
-    content.close();
+    // Wait, bounded, for the readers' git processes to exit, so none outlives
+    // the scan. Never rejects, so an earlier error and the exit code stand.
+    await content.closeAndWait();
   }
 
   return results;

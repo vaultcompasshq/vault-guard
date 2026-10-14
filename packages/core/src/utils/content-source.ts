@@ -330,6 +330,24 @@ export class GitContentSource {
   exited(): Promise<void> {
     return Promise.all([...this.readers.values()].map(r => r.exited())).then(() => undefined);
   }
+
+  /**
+   * Close every reader and wait, bounded, for its git process to exit; a
+   * stuck one is killed. Every scan path calls this in its `finally`, so no
+   * git process outlives the scan (on Windows a live process keeps its
+   * working directory locked). Never rejects.
+   */
+  async closeAndWait(timeoutMs?: number): Promise<void> {
+    this.closed = true;
+    await Promise.all([...this.readers.values()].map(r => r.closeAndWait(timeoutMs)));
+  }
+
+  /** git processes started by every reader and not yet exited. */
+  get liveChildren(): number {
+    let n = 0;
+    for (const r of this.readers.values()) n += r.liveChildren;
+    return n;
+  }
 }
 
 /** The outcome of scanning every copy of one file. */

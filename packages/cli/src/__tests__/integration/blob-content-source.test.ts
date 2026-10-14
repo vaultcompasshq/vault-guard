@@ -41,6 +41,12 @@ function utf16be(text: string): Buffer {
   return Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(le).swap16()]);
 }
 
+/** Child processes of this test process, as `pgrep -P` lists them (pgrep excludes itself). */
+function childrenOfThisProcess(): string {
+  const p = spawnSync('pgrep', ['-P', String(process.pid)], { encoding: 'utf-8' });
+  return (p.stdout ?? '').trim();
+}
+
 function sha256(b: Buffer): string {
   return createHash('sha256').update(b).digest('hex');
 }
@@ -769,14 +775,32 @@ describe('tracked content comes from git blobs', () => {
     const r = await capture(() => scanCommand('.', 'json', false));
     expect(r.code).toBe(2);
     expect(r.err).toContain('stubbed cat-file failure in the submodule');
-    // Every child of this process (the git stubs and their git) has exited.
-    const children = (): string => {
-      const p = spawnSync('pgrep', ['-P', String(process.pid)], { encoding: 'utf-8' });
-      return (p.stdout ?? '').trim();
-    };
-    const end = Date.now() + 5000;
-    while (children() !== '' && Date.now() < end) await new Promise(res => setTimeout(res, 50));
-    expect(children()).toBe('');
+    // Every child of this process (the git stubs and their git) has already
+    // exited when the scan returns: the scan waits for them, no polling here.
+    expect(childrenOfThisProcess()).toBe('');
+  }, 60_000);
+
+  itPosix('no git process is alive when a plain, pull-request or staged scan returns', async () => {
+    const dir = fresh();
+    initRepo(dir);
+    for (let i = 0; i < 25; i++) write(dir, `src/f${i}.ts`, `export const f${i} = ${i};\n`);
+    commitAll(dir, 'base');
+    git(dir, ['branch', 'base']);
+    write(dir, 'src/leak.ts', `export const k = "${AWS_KEY}";\n`);
+    commitAll(dir, 'head');
+    write(dir, 'src/staged.ts', `export const s = "${AWS_KEY_2}";\n`);
+    git(dir, ['add', 'src/staged.ts']);
+    process.chdir(dir);
+    const runs: Array<[string, () => Promise<number>]> = [
+      ['plain', () => scanCommand('.', 'json', false)],
+      ['trust-base', () => scanCommand('.', 'json', false, undefined, 'base')],
+      ['staged', () => scanCommand('.', 'json', true)],
+    ];
+    for (const [mode, run] of runs) {
+      const r = await capture(run);
+      expect({ mode, code: r.code }).toEqual({ mode, code: 1 });
+      expect({ mode, children: childrenOfThisProcess() }).toEqual({ mode, children: '' });
+    }
   }, 60_000);
 
   itPosix('U1: blob reads use at most two cat-file processes per repository', () => {

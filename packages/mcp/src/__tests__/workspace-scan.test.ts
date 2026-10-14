@@ -1,9 +1,15 @@
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { GitError, SecretScanner } from '@vaultcompass/vault-guard-core';
 import { scanWorkspaceDirectory } from '../workspace-scan';
+
+/** Child processes of this test process, as `pgrep -P` lists them (pgrep excludes itself). */
+function childrenOfThisProcess(): string {
+  const p = spawnSync('pgrep', ['-P', String(process.pid)], { encoding: 'utf-8' });
+  return (p.stdout ?? '').trim();
+}
 
 describe('scanWorkspaceDirectory', () => {
   it('returns empty when no secrets in temp workspace', async () => {
@@ -165,6 +171,8 @@ describe('scanWorkspaceDirectory reads tracked content from git (U19)', () => {
       const { results } = await scanWorkspaceDirectory(clone, new SecretScanner());
       expect(results.map(r => path.relative(clone, r.file))).toEqual([path.join('src', 'leak.ts')]);
       expect(results[0].matches[0].source).toBe('index');
+      // The scan waited for its git processes: none is alive when it returns.
+      expect(childrenOfThisProcess()).toBe('');
     } finally {
       fs.rmSync(src, { recursive: true, force: true });
       fs.rmSync(parent, { recursive: true, force: true });
@@ -234,6 +242,8 @@ describe('scanWorkspaceDirectory reads tracked content from git (U19)', () => {
     process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ''}`;
     try {
       await expect(scanWorkspaceDirectory(dir, new SecretScanner())).rejects.toThrow(GitError);
+      // The error still propagated, and the readers were waited for first.
+      expect(childrenOfThisProcess()).toBe('');
     } finally {
       process.env.PATH = originalPath;
       fs.rmSync(dir, { recursive: true, force: true });

@@ -25,6 +25,9 @@ export type BlobCheck =
 
 const BATCH_ARGS = ['-c', 'core.quotePath=false', 'cat-file'];
 
+/** How long a scan waits for its git processes to exit after closing them. */
+export const CLOSE_WAIT_MS = 5000;
+
 function readFailure(repoTop: string, detail: string, command: string, cause?: unknown): GitError {
   return new GitError(
     `vault-guard: could not read committed content for tracked files in ${repoTop}: ${detail}\n` +
@@ -134,6 +137,8 @@ export class BlobBatchReader {
   private closed = false;
   /** One promise per git process started, settled once it has exited. */
   private readonly exits: Array<Promise<void>> = [];
+  /** git processes not yet exited, so a stuck one can be killed. */
+  private readonly live = new Set<ChildProcessWithoutNullStreams>();
 
   constructor(
     private readonly repoTop: string,
@@ -209,6 +214,32 @@ export class BlobBatchReader {
     return Promise.all(this.exits).then(() => undefined);
   }
 
+  /**
+   * close(), then wait for every git process to exit, at most `timeoutMs`.
+   * A git that has not exited by then is killed, so a stuck git can never
+   * hang a scan. Never rejects: it must not replace an error the scan is
+   * already reporting, nor change its exit code.
+   */
+  async closeAndWait(timeoutMs = CLOSE_WAIT_MS): Promise<void> {
+    this.close();
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = await Promise.race([
+      this.exited().then(() => false),
+      new Promise<boolean>(resolve => {
+        timer = setTimeout(() => resolve(true), timeoutMs);
+      }),
+    ]);
+    if (timer !== undefined) clearTimeout(timer);
+    if (!timedOut) return;
+    for (const p of this.live) {
+      try {
+        p.kill('SIGKILL');
+      } catch {
+        // Already gone.
+      }
+    }
+  }
+
   private start(): ChildProcessWithoutNullStreams {
     if (this.proc) return this.proc;
     this.spawned++;
@@ -218,6 +249,7 @@ export class BlobBatchReader {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.liveChildren++;
+    this.live.add(proc);
     this.exits.push(
       new Promise<void>(resolve => {
         let done = false;
@@ -225,6 +257,7 @@ export class BlobBatchReader {
           if (done) return;
           done = true;
           this.liveChildren--;
+          this.live.delete(proc);
           resolve();
         };
         proc.on('close', finish);
