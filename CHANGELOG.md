@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-10-14
+
 **Minor.** Plain scans inside git take their file set from git, and a new
 `vault-guard baseline` command writes the baseline. A plain run that was green
 on 1.9.1 can be red on this release.
