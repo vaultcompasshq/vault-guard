@@ -132,6 +132,8 @@ export class BlobBatchReader {
   /** git processes started and not yet exited, for the leak tests. */
   liveChildren = 0;
   private closed = false;
+  /** One promise per git process started, settled once it has exited. */
+  private readonly exits: Array<Promise<void>> = [];
 
   constructor(
     private readonly repoTop: string,
@@ -197,6 +199,16 @@ export class BlobBatchReader {
     }
   }
 
+  /**
+   * Settles once every git process this reader started has exited. close()
+   * only ends git's stdin, and git exits a moment later; on Windows the
+   * directory a live process runs in cannot be removed, so a caller that
+   * deletes the repository afterwards (the tests do) waits for this first.
+   */
+  exited(): Promise<void> {
+    return Promise.all(this.exits).then(() => undefined);
+  }
+
   private start(): ChildProcessWithoutNullStreams {
     if (this.proc) return this.proc;
     this.spawned++;
@@ -206,9 +218,22 @@ export class BlobBatchReader {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.liveChildren++;
-    proc.on('close', () => {
-      this.liveChildren--;
-    });
+    this.exits.push(
+      new Promise<void>(resolve => {
+        let done = false;
+        const finish = (): void => {
+          if (done) return;
+          done = true;
+          this.liveChildren--;
+          resolve();
+        };
+        proc.on('close', finish);
+        // A process that never started emits 'error' and may never close.
+        proc.on('error', () => {
+          if (proc.pid === undefined) finish();
+        });
+      }),
+    );
     proc.stdout.on('data', (chunk: Buffer) => this.onData(chunk));
     proc.stderr.on('data', (chunk: Buffer) => {
       this.stderr += chunk.toString('utf-8');

@@ -33,15 +33,30 @@ export const CLEAN_GIT_ENV_STRIPPED: readonly string[] = [
  * wrong paths, and a hook in one repository that scans another would list the
  * other through the first one's index. `--staged` does NOT use this: the
  * hook's index is exactly what it must read.
+ *
+ * On Windows environment names are case-insensitive (git for Windows reads
+ * `Git_Index_File` as `GIT_INDEX_FILE`), and a spread copy of `process.env`
+ * keeps each name in whatever case it was set. So there the names are matched
+ * case-insensitively, both to strip and before the two set variables are
+ * written, so no second spelling survives beside them. `Path` keeps its own
+ * case; Node's spawn finds it case-insensitively. `base` and `platform` are
+ * for the tests.
  */
-export function cleanGitEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  for (const name of CLEAN_GIT_ENV_STRIPPED) delete env[name];
-  env.GIT_OPTIONAL_LOCKS = '0';
+export function cleanGitEnv(
+  base: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base };
+  const set = { GIT_OPTIONAL_LOCKS: '0', GIT_NO_REPLACE_OBJECTS: '1' };
+  const drop = new Set([...CLEAN_GIT_ENV_STRIPPED, ...Object.keys(set)]);
+  for (const name of Object.keys(env)) {
+    if (drop.has(platform === 'win32' ? name.toUpperCase() : name)) delete env[name];
+  }
+  env.GIT_OPTIONAL_LOCKS = set.GIT_OPTIONAL_LOCKS;
   // Read the object a listing names, never a refs/replace substitute for it.
   // Hardening for persistent self-hosted workspaces; an Action checkout never
   // fetches refs/replace.
-  env.GIT_NO_REPLACE_OBJECTS = '1';
+  env.GIT_NO_REPLACE_OBJECTS = set.GIT_NO_REPLACE_OBJECTS;
   return env;
 }
 

@@ -325,6 +325,11 @@ export class GitContentSource {
     this.closed = true;
     for (const r of this.readers.values()) r.close();
   }
+
+  /** Settles once every git process any reader started has exited. */
+  exited(): Promise<void> {
+    return Promise.all([...this.readers.values()].map(r => r.exited())).then(() => undefined);
+  }
 }
 
 /** The outcome of scanning every copy of one file. */

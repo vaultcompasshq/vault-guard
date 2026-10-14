@@ -59,7 +59,11 @@ describe('blob reader', () => {
       expect(reader.spawned).toBe(1);
     } finally {
       reader.close();
+      // git exits a moment after its stdin closes; on Windows the repository
+      // directory cannot be removed while git still runs in it.
+      await reader.exited();
     }
+    expect(reader.liveChildren).toBe(0);
   }, 60_000);
 
   /** Wait until the reader has no live git child, or give up after `ms`. */
@@ -131,6 +135,7 @@ describe('blob reader', () => {
       expect(results.map(r => r.matches.length)).toEqual([1, 1]);
     } finally {
       source.close();
+      await source.exited();
     }
     // One object id written to git, one process.
     expect(source.blobsRequested).toBe(1);
@@ -156,6 +161,7 @@ describe('blob reader', () => {
       }
     } finally {
       source.close();
+      await source.exited();
     }
     expect(source.blobsRequested).toBe(200);
     expect(source.maxBlobsHeld).toBeLessThanOrEqual(10);

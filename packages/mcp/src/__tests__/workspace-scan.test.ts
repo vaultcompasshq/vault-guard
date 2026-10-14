@@ -170,4 +170,74 @@ describe('scanWorkspaceDirectory reads tracked content from git (U19)', () => {
       fs.rmSync(parent, { recursive: true, force: true });
     }
   });
+
+  /** A small committed repository with one tracked file. */
+  function repoWithFile(prefix: string): string {
+    const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+    run(dir, ['init', '-q', '-b', 'main']);
+    run(dir, ['config', 'user.email', 'test@example.invalid']);
+    run(dir, ['config', 'user.name', 'Test']);
+    fs.writeFileSync(path.join(dir, 'app.ts'), 'export const a = 1;\n');
+    run(dir, ['add', '-A']);
+    run(dir, ['commit', '-q', '-m', 'one']);
+    return dir;
+  }
+
+  itPosix('an untracked file that cannot be read is listed as not scanned, never as clean', async () => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return;
+    const dir = repoWithFile('vgmcp-unread-');
+    const locked = path.join(dir, 'notes.txt');
+    fs.writeFileSync(locked, `key = ${key}\n`);
+    fs.chmodSync(locked, 0o000);
+    try {
+      const { unscannable, results } = await scanWorkspaceDirectory(dir, new SecretScanner());
+      expect(results).toEqual([]);
+      expect(unscannable.map(u => [path.basename(u.file), u.kind])).toEqual([['notes.txt', 'read_error']]);
+    } finally {
+      fs.chmodSync(locked, 0o644);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('a tracked blob missing from the object store is listed as not scanned', async () => {
+    const dir = repoWithFile('vgmcp-missing-');
+    try {
+      const oid = run(dir, ['rev-parse', 'HEAD:app.ts']).trim();
+      fs.rmSync(path.join(dir, '.git', 'objects', oid.slice(0, 2), oid.slice(2)));
+      const { unscannable } = await scanWorkspaceDirectory(dir, new SecretScanner());
+      expect(unscannable.map(u => [path.basename(u.file), u.kind])).toEqual([['app.ts', 'read_error']]);
+      expect(unscannable[0].reason).toContain('not in the local object store');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('a git failure while reading tracked content rejects with GitError and closes the reader', async () => {
+    const dir = repoWithFile('vgmcp-catfile-');
+    const binDir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-stub-')));
+    const realGit = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf-8' }).trim();
+    // A git stub that passes everything to real git except cat-file --batch.
+    fs.writeFileSync(
+      path.join(binDir, 'git'),
+      [
+        `#!${process.execPath}`,
+        "const { spawnSync } = require('child_process');",
+        'const args = process.argv.slice(2);',
+        "if (args.includes('--batch')) { process.stderr.write('fatal: stubbed batch failure\\n'); process.exit(128); }",
+        `const r = spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });`,
+        'process.exit(r.status === null ? 1 : r.status);',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ''}`;
+    try {
+      await expect(scanWorkspaceDirectory(dir, new SecretScanner())).rejects.toThrow(GitError);
+    } finally {
+      process.env.PATH = originalPath;
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(binDir, { recursive: true, force: true });
+    }
+  });
 });
