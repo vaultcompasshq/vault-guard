@@ -33,7 +33,9 @@ export type DiagnosticCode =
   | 'git.staged_files_failed'
   | 'git.warning'
   | 'baseline.invalid'
-  | 'suppression.inline';
+  | 'suppression.inline'
+  | 'encoding.unsupported'
+  | 'symlink.not_followed';
 
 /**
  * Structured non-fatal warning/error emitted during a scan.

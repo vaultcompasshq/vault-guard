@@ -15,6 +15,15 @@ import {
   findGitEntryRoot,
   getGitWorkTreeRoot,
   newPlainFileSetInfo,
+  copyKey,
+  cleanGitEnv,
+  dropHeaderOnlyTwins,
+  readRegularFileNoFollow,
+  refusalWhat,
+  writeFileAtomically,
+  writeTargetKind,
+  type AtomicWriteHooks,
+  type NoFollowRead,
   FAIL_ON_VALUES,
   type BaselineEntry,
   type SecretMatch,
@@ -23,7 +32,12 @@ import chalk from 'chalk';
 import fs from 'fs';
 import path from 'path';
 
-import { scanFilesAsync, type RunSkipCounts, type UnreadableFile } from '../utils/scan-utils';
+import {
+  scanFilesAsync,
+  newContentReport,
+  type RunSkipCounts,
+  type UnreadableFile,
+} from '../utils/scan-utils';
 
 /**
  * `vault-guard baseline [path] [--write] [--include-critical]`.
@@ -64,6 +78,23 @@ export const BASELINE_FILE_COMMENT =
   'marker, such as a private key header) also requires the SHA-256 of the file raw bytes ' +
   'to be unchanged, so any byte change, including LF versus CRLF line endings, makes it ' +
   'stop matching.';
+
+/** The refusal `baseline --write` prints for a link or non-regular file at its output path. */
+function writerRefusal(outPath: string, what: 'symlink' | 'not-a-file'): string {
+  return (
+    `baseline --write refuses ${outPath}: it ${refusalWhat(what)}. baseline --write never writes ` +
+    'through a link. Remove the link (git rm it) and run again. Nothing was written.'
+  );
+}
+
+/**
+ * Write the baseline by temporary file and rename, so a link at the output
+ * path is replaced and never written through (design 2026-10-12, 4.3).
+ * `hooks.beforeRename` is a test seam, absent in production.
+ */
+export function writeBaselineAtomically(outPath: string, text: string, hooks?: AtomicWriteHooks): void {
+  writeFileAtomically(outPath, text, 0o644, hooks);
+}
 
 function canonical(p: string): string {
   try {
@@ -119,10 +150,12 @@ export async function baselineCommand(target: string, options: BaselineOptions):
   const inGit = cwdInGit || targetInGit;
   let root: string;
   try {
+    // A clean git environment, as for every plain-scan git call (design
+    // 2026-10-12, section 6).
     root = targetInGit
-      ? getGitWorkTreeRoot(targetDir)
+      ? getGitWorkTreeRoot(targetDir, cleanGitEnv())
       : cwdInGit
-        ? getGitWorkTreeRoot(cwd)
+        ? getGitWorkTreeRoot(cwd, cleanGitEnv())
         : canonical(cwd);
   } catch (e) {
     if (e instanceof GitError) {
@@ -161,6 +194,22 @@ export async function baselineCommand(target: string, options: BaselineOptions):
     return COULD_NOT_RUN;
   }
 
+  // The output path is checked before anything is scanned: a link (a dangling
+  // one included) or anything but a regular file is refused, and nothing is
+  // written (design 2026-10-12, 4.3).
+  const outPath = path.join(root, BASELINE_FILENAME);
+  let outKind: ReturnType<typeof writeTargetKind>;
+  try {
+    outKind = writeTargetKind(outPath);
+  } catch (e) {
+    console.error(chalk.red('❌'), chalk.white(`baseline --write cannot examine ${outPath}: ${String(e)}. Nothing was written.`));
+    return COULD_NOT_RUN;
+  }
+  if (outKind === 'symlink' || outKind === 'not-a-file') {
+    console.error(chalk.red('❌'), chalk.white(writerRefusal(outPath, outKind)));
+    return COULD_NOT_RUN;
+  }
+
   let config;
   try {
     config = loadConfig(cwd);
@@ -187,19 +236,23 @@ export async function baselineCommand(target: string, options: BaselineOptions):
   const unreadable: UnreadableFile[] = [];
   const stats = { filesScanned: 0, bytesScanned: 0 };
   const skips: RunSkipCounts = { typeFiltered: 0, configIgnored: 0, binary: 0 };
+  const contentReport = newContentReport();
   let results;
   try {
-    results = await scanFilesAsync([target], scanner, {
-      verbose: false,
-      skipBinary: true,
-      bus: new DiagnosticBus(),
-      stats,
-      unreadable,
-      skips,
-      configIgnorePatterns,
-      inlineSuppressed: { count: 0, criticalVendorAnchored: 0 },
-      plainFileSet,
-    });
+    results = dropHeaderOnlyTwins(
+      await scanFilesAsync([target], scanner, {
+        verbose: false,
+        skipBinary: true,
+        bus: new DiagnosticBus(),
+        stats,
+        unreadable,
+        skips,
+        configIgnorePatterns,
+        inlineSuppressed: { count: 0, criticalVendorAnchored: 0 },
+        plainFileSet,
+        content: contentReport,
+      }),
+    );
   } catch (e) {
     if (e instanceof GitError) {
       console.error(chalk.red('❌ Git error:'), chalk.white(e.message));
@@ -236,12 +289,19 @@ export async function baselineCommand(target: string, options: BaselineOptions):
   const accepted: Accepted[] = [];
   const refused: Accepted[] = [];
   const untrackedWithFindings = new Set<string>();
+  const worktreeEditsWithFindings = new Set<string>();
   for (const r of results) {
     for (const m of r.matches) {
       if (!meetsFailThreshold(m.severity, failOn)) continue;
       if (!tracked(r.file)) {
         // Never written: no name and no digest of a file the author never committed.
         untrackedWithFindings.add(r.file);
+        continue;
+      }
+      if (m.source === 'worktree') {
+        // Found only in an uncommitted edit: the baseline accepts what the
+        // index holds, never a change nobody has staged.
+        worktreeEditsWithFindings.add(r.file);
         continue;
       }
       if (m.severity === 'critical' && !options.includeCritical) {
@@ -268,7 +328,10 @@ export async function baselineCommand(target: string, options: BaselineOptions):
       fingerprints.add(positional);
     } else {
       key = rootPositionalFingerprint(root, file, m);
-      digest = fileDigest(file) ?? undefined;
+      // Over the bytes the finding came from, kept by the scan (the index
+      // blob inside git), never a fresh read of the disk.
+      const kept = contentReport.kept.get(copyKey(file, m.source, m.stage));
+      digest = kept !== undefined ? (fileDigest(file, () => kept) ?? undefined) : undefined;
     }
     if (key === undefined || (!valueBearing && digest === undefined)) continue;
     const id = `${key}\0${digest ?? ''}`;
@@ -295,16 +358,21 @@ export async function baselineCommand(target: string, options: BaselineOptions):
     (a, b) => (a.file ?? '').localeCompare(b.file ?? '') || (a.line ?? 0) - (b.line ?? 0),
   );
 
-  // Compare with the file being replaced.
-  const outPath = path.join(root, BASELINE_FILENAME);
+  // Compare with the file being replaced, read without following a link. A
+  // refusal here means the path changed after the check above: the same exit 2.
   let previous: ReturnType<typeof parseBaselineText> | null = null;
-  if (fs.existsSync(outPath)) {
-    try {
-      previous = parseBaselineText(fs.readFileSync(outPath, 'utf-8'));
-    } catch {
-      previous = null;
-    }
+  let prev: NoFollowRead;
+  try {
+    prev = readRegularFileNoFollow(outPath);
+  } catch (e) {
+    console.error(chalk.red('❌'), chalk.white(`baseline --write cannot read ${outPath}: ${String(e)}. Nothing was written.`));
+    return COULD_NOT_RUN;
   }
+  if (prev.kind === 'refused') {
+    console.error(chalk.red('❌'), chalk.white(writerRefusal(outPath, prev.what)));
+    return COULD_NOT_RUN;
+  }
+  if (prev.kind === 'file') previous = parseBaselineText(prev.text);
   // A path argument scopes the write. Entries outside the scanned path were
   // not re-examined, so they are kept untouched rather than reported as "no
   // longer found"; the positional list cannot be attributed to paths, so on a
@@ -364,6 +432,14 @@ export async function baselineCommand(target: string, options: BaselineOptions):
       ),
     );
   }
+  if (worktreeEditsWithFindings.size > 0) {
+    console.log(
+      chalk.yellow(
+        `uncommitted working-tree edits with findings: ${worktreeEditsWithFindings.size} ` +
+          '(not accepted; stage or revert them)',
+      ),
+    );
+  }
   console.log(
     `kept ${kept}, added ${added}, dropped ${dropped} (no longer found)` +
       (converted !== null ? `, converted ${converted}` : ''),
@@ -390,7 +466,12 @@ export async function baselineCommand(target: string, options: BaselineOptions):
       ...outsideScope,
     ].sort((a, b) => (a.file ?? '').localeCompare(b.file ?? '') || (a.line ?? 0) - (b.line ?? 0)),
   };
-  fs.writeFileSync(outPath, `${JSON.stringify(doc, null, 2)}\n`);
+  try {
+    writeBaselineAtomically(outPath, `${JSON.stringify(doc, null, 2)}\n`);
+  } catch (e) {
+    console.error(chalk.red('❌'), chalk.white(`baseline --write could not write ${outPath}: ${String(e)}. Nothing was written.`));
+    return COULD_NOT_RUN;
+  }
   console.log(chalk.green(`Wrote ${outPath}. Commit it through review.`));
   if (refused.length > 0) {
     console.log(

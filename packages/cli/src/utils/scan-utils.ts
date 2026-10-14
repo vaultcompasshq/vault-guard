@@ -9,12 +9,22 @@ import {
   scanTextFileSync,
   MAX_SCAN_FILE_BYTES,
   FileTooLargeError,
-  readGitIndexFile,
-  applyPathAwareSeverity,
   formatJson as formatJsonResults,
   formatSarif as formatSarifResults,
   getPullRequestFilesToScan,
   newPlainFileSetInfo,
+  GitContentSource,
+  GitError,
+  scanFileContent,
+  listNamedTrackedFiles,
+  inspectWorktree,
+  wantsWorktreeCopy,
+  resolveNamedLink,
+  namedLinkWarning,
+  findGitEntryRoot,
+  fileSetGitEnv,
+  cleanGitEnv,
+  type TrackedEntry,
   type JsonOutput,
   type JsonRunMetadata,
   type TrustBaseReport,
@@ -133,8 +143,12 @@ export function resolveContextRoot(target: string, cwd = process.cwd()): string 
     dir = path.dirname(abs);
   }
   try {
+    // A clean git environment (design 2026-10-12, 2.7): a hook's GIT_DIR or
+    // GIT_WORK_TREE must not move the root context is judged against. A
+    // `--staged` run passes its own pathRoot and never reaches this.
     const top = execFileSync('git', ['rev-parse', '--show-toplevel'], {
       cwd: dir,
+      env: cleanGitEnv(),
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
@@ -378,7 +392,8 @@ export interface ScanOptions {
    */
   configIgnorePatterns?: string[];
   /**
-   * When true, read each path from the git index (`git show :path`) so
+   * When true, read each path's staged blob by the object id the staged
+   * listing named (`git cat-file --batch`, never `git show :path`), so
    * `--staged` matches what will actually be committed -- including `AD`
    * (added in index, deleted in worktree) and partially staged files.
    */
@@ -415,6 +430,10 @@ export interface ScanOptions {
   pullRequest?: {
     /** Absolute paths of the head tree's regular files, from `git ls-tree`. */
     headTreeFiles: string[];
+    /** The HEAD tree blob of each of those files, which is what is read. */
+    headBlobs?: Map<string, string>;
+    /** The repository root the head tree belongs to. */
+    repoRoot?: string;
     /** Filled with what the run declined to look at, and why. */
     skipped: PullRequestSkips;
   };
@@ -427,6 +446,107 @@ export interface ScanOptions {
   plainFileSet?: PlainFileSetInfo;
   /** Filled with every file actually opened and scanned, for the run's counts. */
   scannedFiles?: Set<string>;
+  /**
+   * The tracked-content reader for a `--staged` run, built from the staged
+   * listing so the blobs are read by the object ids that listing named. Built
+   * here when absent.
+   */
+  contentSource?: GitContentSource;
+  /** Filled with where content came from and what the run must say about it. */
+  content?: ContentReport;
+}
+
+/**
+ * What the run learned about where it read content from (design 2026-10-12,
+ * section 2), for the run fields, the text lines and the baseline.
+ */
+export interface ContentReport {
+  /** Tracked files whose disk copy was scanned as well as the blob. */
+  worktreeCopies: Set<string>;
+  /** Disk copies whose declared encoding could not be honoured. */
+  undecodable: Array<{ file: string; encoding: string }>;
+  /** Raw bytes of each copy that produced a header-only match, by `copyKey`. */
+  kept: Map<string, Buffer>;
+  /** Files whose content came from a git blob. */
+  blobFiles: number;
+}
+
+/** A fresh, empty {@link ContentReport}. */
+export function newContentReport(): ContentReport {
+  return { worktreeCopies: new Set(), undecodable: [], kept: new Map(), blobFiles: 0 };
+}
+
+/**
+ * Read a file's content through the run's content source and fold what it
+ * found into the run's counters. Returns the matches, or undefined when the
+ * file was recorded as unscannable. A GitError propagates: a git failure while
+ * reading tracked content is could-not-run, never a fall back to the disk.
+ */
+async function scanOneFile(
+  scanner: SecretScanner,
+  file: string,
+  display: string,
+  exclude: string | undefined,
+  pathRoot: string,
+  content: GitContentSource | undefined,
+  options: ScanOptions,
+  maxSize: number,
+  scanBudgetMs: number,
+): Promise<ScanResult | null | undefined> {
+  const entry = content?.entryFor(path.resolve(file));
+  const hits: IgnoreDirectiveHits = { count: 0, lines: [] };
+  const outcome = await scanFileContent(scanner, file, entry, entry ? content : undefined, {
+    pathRoot,
+    maxBytes: maxSize,
+    ignoreHits: hits,
+  });
+  if (outcome.failure?.kind === 'too_large') {
+    recordTooLarge(display, outcome.failure.bytes, maxSize, options, exclude);
+    return undefined;
+  }
+  if (outcome.failure?.kind === 'read_error') {
+    options.unreadable?.push({
+      kind: 'read_error',
+      file: display,
+      reason: outcome.failure.reason,
+      ...(exclude ? { exclude } : {}),
+    });
+    options.bus?.add({
+      code: 'file.read_error',
+      severity: 'error',
+      ctx: { file: display, detail: outcome.failure.reason },
+    });
+    return undefined;
+  }
+  if (options.stats) {
+    options.stats.filesScanned += 1;
+    options.stats.bytesScanned += outcome.bytesRead;
+  }
+  options.scannedFiles?.add(file);
+  recordInlineSuppression(hits, display, options);
+  const report = options.content;
+  if (report) {
+    if (entry) report.blobFiles++;
+    for (const [k, v] of outcome.kept) report.kept.set(k, v);
+    if (outcome.worktreeScanned) report.worktreeCopies.add(file);
+  }
+  if (outcome.undecodable !== undefined) {
+    report?.undecodable.push({ file: display, encoding: outcome.undecodable });
+    options.bus?.add({
+      code: 'encoding.unsupported',
+      severity: 'warning',
+      ctx: { file: display, encoding: outcome.undecodable },
+    });
+  }
+  if (outcome.elapsedMs > scanBudgetMs) {
+    recordBudgetExceeded(display, outcome.elapsedMs, scanBudgetMs, options, exclude);
+  }
+  if (outcome.matches.length === 0) return null;
+  return {
+    file,
+    matches: outcome.matches,
+    ...(outcome.worktreeScanned && content ? { bothCopies: content.blobSource } : {}),
+  };
 }
 
 /**
@@ -484,85 +604,58 @@ export async function scanFileListAsync(
 
   const results: ScanResult[] = [];
 
+  // `--staged` reads each file's index blob by the object id the staged
+  // listing named, through the shared batch reader, with the INHERITED git
+  // environment (a hook's index, a GIT_DIR-only repository). No content
+  // sniffing: only the extension rule skips a blob. The size limit is on the
+  // raw blob (from `cat-file --batch-check`), never on decoded text.
+  // The caller builds the content source from the staged listing it already
+  // ran (scan.ts does), and closes it, so the blobs are read by exactly the
+  // object ids that listing named.
+  const content: GitContentSource | undefined = fromGitIndex ? options.contentSource : undefined;
+  if (fromGitIndex) {
+    if (content === undefined) {
+      throw new Error('scanFileListAsync: fromGitIndex needs options.contentSource built from the staged listing');
+    }
+    content.prepare(filteredFiles.filter(f => !(skipBinary && isBinaryFile(f))));
+  }
+
   const scanFile = async (file: string): Promise<void> => {
     const pathRoot = pathRootFor(file);
     const exclude = excludePatternFor(file, cwd);
+    const display = fromGitIndex ? path.relative(cwd, file).split(path.sep).join('/') : path.relative(cwd, file);
     try {
       if (fromGitIndex) {
-        const rel = path.relative(cwd, file).split(path.sep).join('/');
         if (skipBinary && isBinaryFile(file)) {
           if (options.skips) options.skips.binary++;
           return;
         }
-
-        // Pass the ABSOLUTE path. `git show :<path>` resolves against the
-        // worktree root, not the process cwd, and `rel` is cwd-relative --
-        // handing it over is what broke every staged scan launched from a
-        // subdirectory. `rel` stays for display only.
-        const content = readGitIndexFile(cwd, file);
-        // No content sniffing: only the extension rule above skips a blob, the
-        // same rule directory mode uses. A NUL byte is scanned as text like any
-        // other content. Skipping on NUL let a key sit beside one and pass
-        // silently; refusing on NUL broke ordinary commits of fonts and
-        // lockfiles.
-
-        // The size limit is on the RAW blob (readGitIndexFile throws
-        // FileTooLargeError over MAX_SCAN_FILE_BYTES, and the catch below
-        // records it as too large),
-        // not on the decoded text: a UTF-16 blob under the limit decodes to a
-        // different length and must not be refused for that.
-        const byteLen = Buffer.byteLength(content, 'utf-8');
-
-        if (options.stats) {
-          options.stats.filesScanned += 1;
-          options.stats.bytesScanned += byteLen;
+        if (content?.entryFor(file) === undefined) {
+          throw new Error(`No staged (stage 0) blob found for ${display}`);
         }
-
-        const hits: IgnoreDirectiveHits = { count: 0, lines: [] };
-        const tScan = Date.now();
-        const matches = applyPathAwareSeverity(
-          scanner.scanContent(content, { filePath: file, ignoreHits: hits, pathRoot }),
-          file,
-          pathRoot,
-        );
-        const elapsed = Date.now() - tScan;
-        recordInlineSuppression(hits, rel, options);
-        if (matches.length > 0) {
-          results.push({ file, matches });
+      } else {
+        if (!fs.existsSync(file)) return;
+        const st = await fs.promises.stat(file);
+        if (!st.isFile()) return;
+        if (skipBinary && isBinaryFile(file)) {
+          if (options.skips) options.skips.binary++;
+          return;
         }
-        if (elapsed > scanBudgetMs) recordBudgetExceeded(rel, elapsed, scanBudgetMs, options, exclude);
-        return;
       }
-
-      if (!fs.existsSync(file)) return;
-      const st = await fs.promises.stat(file);
-      if (!st.isFile()) return;
-
-      if (skipBinary && isBinaryFile(file)) {
-        if (options.skips) options.skips.binary++;
-        return;
-      }
-
-      if (st.size > maxSize) {
-        recordTooLarge(path.relative(cwd, file), st.size, maxSize, options, exclude);
-        return;
-      }
-
-      if (options.stats) {
-        options.stats.filesScanned += 1;
-        options.stats.bytesScanned += st.size;
-      }
-
-      const tScan = Date.now();
-      const matches = scanner.scan(file, { pathRoot });
-      const elapsed = Date.now() - tScan;
-      if (matches.length > 0) {
-        results.push({ file, matches });
-      }
-      if (elapsed > scanBudgetMs) {
-        recordBudgetExceeded(path.relative(cwd, file), elapsed, scanBudgetMs, options, exclude);
-      }
+      const r = await scanOneFile(
+        scanner,
+        file,
+        display,
+        exclude,
+        pathRoot,
+        fromGitIndex ? content : undefined,
+        options,
+        maxSize,
+        scanBudgetMs,
+      );
+      if (r) results.push(r);
     } catch (error) {
+      if (error instanceof GitError) throw error;
       // A staged blob over the limit: the same record, wording and exclude as a
       // file over the limit on disk.
       if (error instanceof FileTooLargeError) {
@@ -618,6 +711,8 @@ function mergePlainFileSetInfo(into: PlainFileSetInfo, from: PlainFileSetInfo): 
   for (const n of from.vendoredDirNames) into.vendoredDirNames.add(n);
   into.trackedMissing.push(...from.trackedMissing);
   into.unreadable.push(...from.unreadable);
+  for (const [k, v] of from.blobs) into.blobs.set(k, v);
+  for (const f of from.worktreeAlso) into.worktreeAlso.add(f);
 }
 
 /**
@@ -648,6 +743,65 @@ export async function scanFilesAsync(
 
   const results: ScanResult[] = [];
 
+  // Tracked content is read from git (design 2026-10-12, section 2): the
+  // index blob in a plain scan, the HEAD tree blob under --trust-base.
+  const blobSource: 'index' | 'head' = options.pullRequest ? 'head' : 'index';
+  const gitEnv = fileSetGitEnv();
+  const content = new GitContentSource(blobSource, gitEnv);
+  const insideGit = (dir: string): boolean => findGitEntryRoot(dir) !== null;
+
+  // Tracked files named on the command line: one listing per repository named
+  // into, before any target is scanned.
+  const namedFiles: string[] = [];
+  for (const targetPath of targetPaths) {
+    try {
+      const lst = await fs.promises.lstat(targetPath);
+      if (lst.isFile() || lst.isSymbolicLink()) namedFiles.push(path.resolve(targetPath));
+    } catch {
+      // Reported per target below.
+    }
+  }
+  if (namedFiles.length > 0) {
+    content.add(listNamedTrackedFiles(namedFiles, blobSource, gitEnv, insideGit));
+  }
+
+  // The pull-request content plan: the HEAD blobs, plus one status and one
+  // check-attr for the repository, so a disk copy that differs from HEAD (or
+  // a filtered file) is scanned as well.
+  let prPlanned = false;
+  const planPullRequest = (): void => {
+    if (prPlanned || !options.pullRequest) return;
+    prPlanned = true;
+    const pr = options.pullRequest;
+    if (!pr.headBlobs || !pr.repoRoot) return;
+    const root = pr.repoRoot;
+    const rels = [...pr.headBlobs.keys()].map(f => path.relative(root, f).split(path.sep).join('/'));
+    const inspection = inspectWorktree(root, ':(literal).', rels, gitEnv);
+    const entries = new Map<string, TrackedEntry>();
+    for (const [file, oid] of pr.headBlobs) {
+      if (namedFiles.includes(file) && content.entryFor(file)) continue;
+      const rel = path.relative(root, file).split(path.sep).join('/');
+      const attrs = inspection.attrs.get(rel) ?? { filter: false };
+      entries.set(file, {
+        repoTop: root,
+        mode: '100644',
+        oid,
+        worktreeAlso: wantsWorktreeCopy('head', inspection.status.get(rel), undefined, attrs.filter),
+        ...(attrs.encoding !== undefined ? { encoding: attrs.encoding } : {}),
+        filtered: attrs.filter,
+      });
+    }
+    content.add(entries);
+  };
+
+  interface Job {
+    targetPath: string;
+    pathRoot: string;
+    excludeRoot?: string;
+    files: string[];
+  }
+  const jobs: Job[] = [];
+
   for (const targetPath of targetPaths) {
     const pathRoot = options.pathRoot ?? resolveContextRoot(targetPath);
     // A target that is not there is a target the run did not check. It used
@@ -661,6 +815,33 @@ export async function scanFilesAsync(
         ctx: { file: targetPath, detail: reason },
       });
     };
+
+    // A TRACKED symlink named on the command line (2.1): its blob, the link
+    // text, is scanned like any blob, and the link is resolved once. A regular
+    // file inside the repository is scanned from disk under the name given;
+    // anything else is not followed, and the run says so without exiting 2,
+    // because the blob was scanned. Directory scans skip links as before.
+    const named = content.entryFor(path.resolve(targetPath));
+    if (named?.mode === '120000') {
+      const abs = path.resolve(targetPath);
+      const resolution = resolveNamedLink(abs, named.repoTop);
+      if (resolution.target !== undefined) {
+        content.add(
+          new Map([[abs, { ...named, worktreeAlso: true, diskPath: resolution.target, filtered: false, encoding: undefined }]]),
+        );
+      } else if (resolution.reason !== undefined) {
+        const message = namedLinkWarning(targetPath, resolution.reason);
+        if (verbose) console.error(chalk.yellow(`Warning: ${message}`));
+        options.bus?.add({
+          code: 'symlink.not_followed',
+          severity: 'warning',
+          ctx: { file: targetPath, reason: resolution.reason, detail: message },
+        });
+      }
+      jobs.push({ targetPath, pathRoot, files: [targetPath] });
+      continue;
+    }
+
     try {
       await fs.promises.access(targetPath);
     } catch {
@@ -683,6 +864,7 @@ export async function scanFilesAsync(
     if (stat.isFile()) {
       filesToScan = [targetPath];
     } else if (stat.isDirectory()) {
+      planPullRequest();
       filesToScan = options.pullRequest
         ? getPullRequestFilesToScan(
             targetPath,
@@ -712,6 +894,7 @@ export async function scanFilesAsync(
     // the directory's entries a second time.
     const prUnreadable = stat.isDirectory() ? (options.pullRequest?.skipped.unreadable ?? []) : [];
     if (plainInfo && options.plainFileSet) mergePlainFileSetInfo(options.plainFileSet, plainInfo);
+    if (plainInfo && stat.isDirectory()) content.add(plainInfo.blobs);
     for (const u of [...prUnreadable, ...(plainInfo?.unreadable ?? [])]) {
       const exclude = excludePatternFor(u.file, targetPath);
       const display = path.relative(process.cwd(), u.file);
@@ -731,7 +914,17 @@ export async function scanFilesAsync(
     // is the root an exclude entry has to be written against. A file named on
     // the command line is never filtered by them: stop naming it instead.
     const excludeRoot = stat.isDirectory() ? targetPath : undefined;
+    jobs.push({ targetPath, pathRoot, ...(excludeRoot ? { excludeRoot } : {}), files: filesToScan });
+  }
 
+  // Sizes and missing objects are known before any content moves: one
+  // `cat-file --batch-check` per repository over every blob the run reads.
+  content.prepare(
+    jobs.flatMap(j => j.files.filter(f => !(skipBinary && isBinaryFile(f))).map(f => path.resolve(f))),
+  );
+
+  try {
+  for (const { pathRoot, excludeRoot, files: filesToScan } of jobs) {
     // Scan each file with proper safeguards (parallel with concurrency limit)
     const scanFile = async (file: string): Promise<void> => {
       try {
@@ -740,44 +933,21 @@ export async function scanFilesAsync(
           if (options.skips) options.skips.binary++;
           return;
         }
-
-        // Check file size
-        const fileStat = await fs.promises.stat(file);
-        if (fileStat.size > maxSize) {
-          recordTooLarge(
-            path.relative(process.cwd(), file),
-            fileStat.size,
-            maxSize,
-            options,
-            excludeRoot ? excludePatternFor(file, excludeRoot) : undefined,
-          );
-          return;
-        }
-
-        if (options.stats) {
-          options.stats.filesScanned += 1;
-          options.stats.bytesScanned += fileStat.size;
-        }
-        options.scannedFiles?.add(file);
-
-        const tScan = Date.now();
-        const hits: IgnoreDirectiveHits = { count: 0, lines: [] };
-        const matches = scanner.scan(file, { ignoreHits: hits, pathRoot });
-        recordInlineSuppression(hits, path.relative(process.cwd(), file), options);
-        const elapsed = Date.now() - tScan;
-        if (matches.length > 0) {
-          results.push({ file, matches });
-        }
-        if (elapsed > scanBudgetMs) {
-          recordBudgetExceeded(
-            path.relative(process.cwd(), file),
-            elapsed,
-            scanBudgetMs,
-            options,
-            excludeRoot ? excludePatternFor(file, excludeRoot) : undefined,
-          );
-        }
+        const r = await scanOneFile(
+          scanner,
+          file,
+          path.relative(process.cwd(), file),
+          excludeRoot ? excludePatternFor(file, excludeRoot) : undefined,
+          pathRoot,
+          content,
+          options,
+          maxSize,
+          scanBudgetMs,
+        );
+        if (r) results.push(r);
       } catch (error) {
+        // A git failure while reading tracked content is could-not-run.
+        if (error instanceof GitError) throw error;
         const exclude = excludeRoot ? excludePatternFor(file, excludeRoot) : undefined;
         options.unreadable?.push({
           kind: 'read_error',
@@ -819,6 +989,11 @@ export async function scanFilesAsync(
     if (progress && filesToScan.length > 10) {
       process.stderr.write('\r');
     }
+  }
+  } finally {
+    // Wait, bounded, for the readers' git processes to exit, so none outlives
+    // the scan. Never rejects, so an earlier error and the exit code stand.
+    await content.closeAndWait();
   }
 
   return results;
@@ -965,16 +1140,17 @@ export function displayScanResults(
     );
   }
 
-  for (const { file, matches } of results) {
+  for (const { file, matches, bothCopies } of results) {
     const relativePath = relativeForDisplay(file, base);
 
     for (const match of matches) {
       const severityColor = getSeverityColor(match.severity);
       const emoji = getSeverityEmoji(match.severity);
       const location = `${relativePath}:${match.line}:${match.column + 1}`;
+      const label = bothCopies ? copyLabel(match, bothCopies) : '';
 
       console.log(
-        `  ${emoji} ${chalk.cyan(location)}  ${severityColor(match.severity)}  ${chalk.white(match.type)}  ${chalk.gray(match.value)}`
+        `  ${emoji} ${chalk.cyan(location)}  ${severityColor(match.severity)}  ${chalk.white(match.type)}  ${chalk.gray(match.value)}${label}`
       );
     }
   }
@@ -983,6 +1159,20 @@ export function displayScanResults(
   if (willBlock) {
     console.log(chalk.red.bold('❌ BLOCKED:'), chalk.white('Commit blocked -- remove secrets before pushing\n'));
   }
+}
+
+/**
+ * Which copy a finding came from, printed only for a file whose disk copy was
+ * scanned as well as its blob (a clean tree prints exactly what it did).
+ */
+export function copyLabel(match: ScanResult['matches'][number], blobSide: 'index' | 'head'): string {
+  if (match.source === 'worktree') {
+    return blobSide === 'head' ? ' (working tree, not committed)' : ' (working tree, not in the index)';
+  }
+  if (match.source === 'head') return ' (head commit)';
+  if (match.stage === 2) return ' (index, ours)';
+  if (match.stage === 3) return ' (index, theirs)';
+  return ' (index)';
 }
 
 /** Relative to `base` when inside it, absolute otherwise. Matches scan-output behaviour. */

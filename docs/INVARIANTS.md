@@ -621,6 +621,13 @@ and, in `silent-passes.test.ts`, `directory mode finds a key in a UTF-16LE
 notes.txt` and its UTF-16BE, `src/a.ts` and `--staged` variants.
 
 **Scope: supported encodings.** The decoder handles UTF-8 and UTF-16 with a BOM.
+Tracked files inside a git repository are read from their blobs, so
+`working-tree-encoding` cannot turn one into BOM-less UTF-16. The BOM-only
+rule still governs untracked files and files outside git. The disk copy of
+a tracked file that is scanned in addition to its blob is decoded by its
+BOM first, then by its declared `working-tree-encoding` through an explicit
+label map; an encoding outside the map is scanned as UTF-8 and reported as
+a coverage line.
 Text in any other encoding is read as UTF-8. Legacy encodings such as Latin-1 and
 Shift-JIS keep ASCII key material intact, so key-shaped strings in them are still
 matched. UTF-16 is recognised by its BOM only: guessing it from NUL density would
@@ -640,9 +647,13 @@ sits.
 `LOW_PRECISION_PATH_DOWNGRADE_IDS` (`password-in-code`, `api-key-generic`,
 `secret-generic`, `bearer-token`, the four connection-string rules,
 `ssh-private-key`, `jwt-token`). There is no vendor list to downgrade from. One
-further ruling: `ssh-private-key` is downgraded on test, fixture and locale paths
-(throwaway PEMs live there) but NOT on documentation or markdown paths
-(`CLAUDE.md`, `docs/`). That ruling is only as good as the body check that
+further ruling: `ssh-private-key` is downgraded on test and fixture paths
+(throwaway PEMs live there) but NOT on documentation, markdown or locale paths.
+A locale path is one with a `locales`, `locale`, `translations`, `translation`,
+`i18n`, `lang` or `langs` directory on it; a two-letter file name alone is not.
+On a locale path only `password-in-code`, `api-key-generic`, `secret-generic`
+and `bearer-token` are downgraded; the connection-string rules,
+`ssh-private-key` and `jwt-token` keep their severity. That ruling is only as good as the body check that
 decides a hit is a key rather than prose naming the header
 (`isPemHeaderWithoutBody`, `packages/core/src/utils/placeholder.ts`). The rule
 reports a hit only when, in the text between the header and the END marker that
@@ -667,9 +678,12 @@ halves green. A documentation line that is itself a lone 40+ character
 mixed-case base64-looking token right after a header counts as a body.
 
 **Enforced by:** `packages/core/src/utils/path-downgrade-ids.ts` no longer
-exports a docs vendor set, and `applyPathAwareSeverity` consults only the
-low-precision set, skipping `DOCS_EXEMPT_IDS` (`ssh-private-key`) when the path
-is documentation and neither a test nor a locale path. Tests:
+exports a docs vendor set and defines `LOCALE_PATH_DOWNGRADE_IDS`, the
+four rules a locale path may downgrade; `applyPathAwareSeverity`
+downgrades a match when any context the path is in allows its rule: the
+low-precision set on a test path, that set without `ssh-private-key`
+(`DOCS_EXEMPT_IDS`) on a documentation path, and
+`LOCALE_PATH_DOWNGRADE_IDS` on a locale path. Tests:
 `silent-passes.test.ts` `a vendor key in NOTES.md still blocks`, `a vendor key in
 CLAUDE.md still blocks`, `a vendor key in docs/x.md still blocks`, `a full-body
 PEM private key in CLAUDE.md still blocks`, `a full-body PEM private key in
@@ -687,7 +701,11 @@ README.md and CLAUDE.md variants), `a copy of the CHANGELOG paragraph about the
 PGP header is not critical`, `a real full-body PEM in docs/runbook.md still
 blocks` (and CLAUDE.md), `a key embedded in JSON with escaped newlines still
 blocks`, `a lowercase-only or letters-only 40+ run is not a body`, `a
-whitespace-separated sentence is not a body`.
+whitespace-separated sentence is not a body`; `path-severity.test.ts` (`U14:
+two-letter basenames outside a locale directory keep full severity`, `U14:
+DSN, PEM and JWT rules are never downgraded on a locale path`, `U14: a PEM
+under docs/locales is not downgraded`) and `dogfood-fp.test.ts` (`does not
+treat src/en.json as a locale path`).
 
 ## Exit 1 means findings only
 
@@ -898,3 +916,144 @@ in pull-request mode raises its own question of which base ref applies.
 (gitlinks never enter the list); `plain-git-file-set.test.ts` (`T7a: a key
 inside a checked-out submodule is found`) for the plain side. No test pins the
 pull-request side.
+
+## Tracked content comes from git, never through a checkout transform
+
+Inside a git repository a tracked file's content is read from its blob by
+object id: the HEAD tree entry under `--trust-base`, the index (stage 0)
+entry in a plain scan and under `--staged`. `.gitattributes` transforms
+(`working-tree-encoding`, `eol`, `filter`, `ident`) therefore cannot change
+what is judged. The disk copy of a tracked file is scanned as well when
+`git status` says it differs from that blob, when the file has a `filter`
+attribute, or, in a plain scan, when the index marks it assume-unchanged
+or skip-worktree and it is present on disk; it can add findings and never
+removes one. A disk copy's BOM always decides its encoding; otherwise a
+declared `working-tree-encoding` is used only through an explicit label
+map, and an unsupported one is a reported coverage gap on that copy, not
+a failure. Untracked files have no blob and are read from disk, so
+BOM-less UTF-16 in an untracked file is still not detected. Blob reads use
+at most two `git cat-file` processes per repository, and a blob's bytes are
+released once the last path that reads it has been scanned, so memory is
+bounded by the read window, not by the total tracked size. A git failure while
+reading tracked content, or a blob missing from the object store, is exit
+2 naming the file or quoting git; there is no fall back to the disk copy
+alone.
+
+**Enforced by:** `blob-reader.ts` and the content source in
+`scan-utils.ts`; `blob-content-source.test.ts` (`F1: a head-side
+working-tree-encoding does not hide a key under --trust-base`, `F2: the same
+attribute does not hide a key in a plain scan`, `F6: a staged key whose
+working copy was reverted is found by a plain scan`, `F5: an unstaged edit
+that adds a key is found and labelled worktree`, `F5: under --trust-base a
+disk copy edited after checkout is scanned and labelled worktree`, `F7: a
+key behind a filter
+driver is found from the working-tree copy`, `F8: a missing blob is exit 2
+naming the file`, `F9: a failing cat-file is exit 2 quoting git`, `F18: a
+key in a skip-worktree or assume-unchanged file is found from disk`, `F21:
+an unsupported working-tree encoding is a coverage line, not exit 2`, `U1:
+blob reads use at most two cat-file processes per repository`, `U21: a BOM
+decides a disk copy's encoding before its declared label`);
+`blob-reader.test.ts` (`holds no more blobs than the read window at once,
+and none after the run`).
+
+## Reading the blob does not move a fingerprint for an untransformed file
+
+For a tracked file whose checkout applies no transform, the positional
+fingerprint, the content fingerprint and the header-only `file_digest` are
+the same whether computed from the blob or from the disk copy. Where a
+transform applies, the baseline writer and reader both take `file_digest`
+from the bytes kept from the scan, keyed by path and source, never from a
+fresh read.
+
+**Enforced by:** `blob-content-source.test.ts` (`U9: fingerprints from the
+blob equal fingerprints from disk for an untransformed tree`, `U10: a
+header-only entry written on a CRLF checkout matches on the next scan`);
+`bench/real-repos/2026-10-12-1.10.0.json` (fingerprint sets per
+repository).
+
+## `.gitattributes` is a pull-request control file
+
+Under `--trust-base` any added, removed, modified or retyped
+`.gitattributes`, at any depth, between the base ref and HEAD is reported
+as `Proposed, not applied: .gitattributes changed in this pull request`
+with up to three paths, in text, JSON `trustBase.proposals` and SARIF
+notifications. It never changes the exit code. Content is read from blobs,
+so the head's attributes cannot change what was scanned.
+
+**Enforced by:** `trust-base.ts` (the attributes diff-tree);
+`trust-base.test.ts` (`F1: a head-side .gitattributes change is reported as
+a proposal`, `F3: a nested .gitattributes change is reported`, `U13: a
+symlinked .gitattributes at the head is reported as a shape change`, `U13:
+an attributes proposal does not change the exit code`).
+
+## Control files on disk are never read or written through a link
+
+`.vault-guard.baseline.json`, `.vault-guard.json` and
+`.vault-guard.local.json` are opened without following a symlink and must
+be regular files; anything else, a dangling link included, is refused
+naming the path: exit 2 from `scan` and `baseline` before any file is
+scanned, exit 1 from `config validate`. No existence check runs first, so
+a refused link stops the search walk instead of letting a parent
+directory's file take over. `baseline --write` refuses a non-regular file
+at its output path and writes by temporary file and rename, so it never
+writes through a link. No `JSON.parse` message reaches a warning, JSON,
+SARIF or `config validate` output; a baseline parse failure says `could
+not be parsed as JSON` and the path, a config parse failure adds only a
+line and column.
+
+**Enforced by:** `readRegularFileNoFollow` in core; `baseline-writer.test.ts`
+(`F10: baseline --write refuses a symlinked baseline and leaves the target
+untouched`, `F10b: baseline --write replaces a link planted before the
+rename instead of writing through it`, `F12: baseline --write refuses a
+dangling symlink`); `baseline-symlink.test.ts` (`F11: scan refuses a
+symlinked baseline with exit 2 and prints none of the target`, `F13: scan
+refuses a symlinked config with exit 2`, `F14: a baseline parse error never
+echoes file content`, `F19: a dangling config or baseline link is refused,
+not treated as absent`); `config-validate.test.ts` (`F20: config validate
+refuses a symlinked config and echoes none of it`); `read-no-follow.test.ts`
+(`U15: a symlink fails at open, not at a separate lstat`).
+
+## The hook installer never writes through a link
+
+Every read of a hook file the installer may write (`.husky/pre-commit`, the
+native `pre-commit` and `pre-commit.cmd`, `lefthook-local.yml`,
+`.pre-commit-config.yaml`), in the installer and in `init`'s plan alike,
+goes through the no-follow reader, and every write, create or append, goes
+through the temporary-file-and-rename writer, keeping the file mode. A
+link, a dangling one included, or a hook directory that is itself a link,
+fails that installer step with a message naming the path and changes
+nothing; `init` reports it as a `linked_hook` conflict and writes nothing.
+
+**Enforced by:** `readHookFile` and `writeFileAtomically` in
+`packages/core/src/scanners/pre-commit-hook.ts`, and `foreignHookConflict`
+in `packages/cli/src/commands/init.ts`;
+`pre-commit-hook-symlink.test.ts` (one link-to-an-outside-file case and one
+dangling-link case per write site, and `a husky directory that is itself a
+link is refused`); `init.test.ts` (a dangling and an outside link per
+manager, for example `a dangling link at .husky/pre-commit is a linked_hook
+conflict and nothing is written through it`).
+
+## File-set git calls run with a clean git environment; `--staged` does not
+
+Every git call that builds the plain or pull-request file set or reads its
+content, for the outer repository as well as any submodule or nested
+repository, runs with git's local-repository variables removed
+(`GIT_INDEX_FILE`, `GIT_DIR`, `GIT_WORK_TREE` and the rest of `git rev-parse
+--local-env-vars`, except `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`,
+which carry configuration such as `safe.directory`) and
+`GIT_OPTIONAL_LOCKS=0`, and with `GIT_NO_REPLACE_OBJECTS=1` so a
+`refs/replace` substitute never stands in for a listed object. `--staged`
+keeps the inherited environment for
+every git call, `cat-file` included, because in a hook the inherited index
+is what will be committed and a repository reached through `GIT_DIR` is
+only reachable that way.
+
+**Enforced by:** `cleanGitEnv` in core, and the blob reader's `env`
+parameter; `hook-environment.test.ts` (`F16: a plain scan from a pre-commit
+hook reads a submodule's own index`, `F17: a hook in one repository that
+scans another lists the other repository through its own index`, which
+pins the outer-listing rule with no submodule involved, `U17: --staged in
+a commit -a hook still reads the hook's index`, `U20: --staged in a
+GIT_DIR-only repository reads blobs through GIT_DIR`); `git-env.test.ts`
+(`U16: the stripped list covers git rev-parse --local-env-vars except the
+two config variables`).

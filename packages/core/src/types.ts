@@ -19,7 +19,19 @@ export interface SecretMatch {
    * scanner; only this digest does.
    */
   valueDigest?: string;
+  /**
+   * Which copy of the file the match came from: `index` (the staged blob),
+   * `head` (the HEAD tree blob, pull-request mode), `worktree` (the copy on
+   * disk of a tracked file), or `file` (an untracked file, a run outside git,
+   * a single named file). Absent on matches from a bare `scanContent` call.
+   */
+  source?: MatchSource;
+  /** For a conflicted path: 2 for the ours stage blob, 3 for theirs. */
+  stage?: 2 | 3;
 }
+
+/** Where a match's bytes were read from. See {@link SecretMatch.source}. */
+export type MatchSource = 'index' | 'head' | 'worktree' | 'file';
 
 export interface TokenReport {
   totalTokens: number;

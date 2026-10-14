@@ -736,3 +736,47 @@ describe('vault-guard init', () => {
   });
 
 });
+
+/**
+ * Design 2026-10-12, section 13: init never reads or writes a hook through a
+ * link. planInit reads every hook file with the no-follow reader, so a linked
+ * hook file is a `linked_hook` conflict naming the path, nothing is written,
+ * and the link's target is neither read into a decision nor created.
+ */
+describe('vault-guard init and a linked hook file', () => {
+  const itPosix = process.platform === 'win32' ? it.skip : it;
+  const CASES: Array<{ manager: 'husky' | 'lefthook' | 'precommit' | 'native'; rel: string }> = [
+    { manager: 'husky', rel: '.husky/pre-commit' },
+    { manager: 'lefthook', rel: 'lefthook-local.yml' },
+    { manager: 'precommit', rel: '.pre-commit-config.yaml' },
+    { manager: 'native', rel: '.git/hooks/pre-commit' },
+  ];
+
+  for (const { manager, rel } of CASES) {
+    for (const kind of ['dangling', 'outside'] as const) {
+      itPosix(`a ${kind} link at ${rel} is a linked_hook conflict and nothing is written through it`, () => {
+        const parent = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vg-init-link-')));
+        try {
+          const repo = path.join(parent, 'repo');
+          fs.mkdirSync(repo);
+          git(['init', '-q'], repo);
+          fs.mkdirSync(path.dirname(path.join(repo, rel)), { recursive: true });
+          const target = path.join(parent, 'shell-rc');
+          // A foreign-looking target would otherwise decide the plan through the link.
+          if (kind === 'outside') fs.writeFileSync(target, 'vault-guard scan --staged\n');
+          fs.symlinkSync(target, path.join(repo, rel));
+          const plan = planInit({ cwd: repo, manager });
+          expect(plan.ok).toBe(false);
+          expect(plan.conflicts).toEqual([{ path: rel, reason: 'linked_hook' }]);
+          const result = applyInit(plan, { cwd: repo, manager });
+          expect(result.ok).toBe(false);
+          if (kind === 'outside') expect(fs.readFileSync(target, 'utf8')).toBe('vault-guard scan --staged\n');
+          else expect(fs.existsSync(target)).toBe(false);
+          expect(fs.existsSync(path.join(repo, '.vault-guard.json'))).toBe(false);
+        } finally {
+          fs.rmSync(parent, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+});

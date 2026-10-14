@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { PreCommitHook, type HookManager } from '@vaultcompass/vault-guard-core';
+import { PreCommitHook, readRegularFileNoFollow, type HookManager } from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
 import {
   MANAGED_FILE_PATHS,
@@ -31,7 +31,8 @@ export interface InitConflict {
     | 'foreign_manifest'
     | 'manifest_mismatch'
     | 'not_a_git_repository'
-    | 'foreign_hook';
+    | 'foreign_hook'
+    | 'linked_hook';
 }
 
 export interface InitAdvisory {
@@ -111,36 +112,61 @@ function foreignHookConflict(
 ): InitConflict | undefined {
   const hook = new PreCommitHook();
 
+  // Every hook file is read without following a link (design 2026-10-12,
+  // section 13). A link, a dangling one included, or anything that is not a
+  // regular file is a conflict naming the path: init never reads through it,
+  // and the installer would refuse to write through it.
+  type Read = { kind: 'absent' } | { kind: 'file'; text: string } | { kind: 'linked' };
+  const read = (filePath: string): Read => {
+    try {
+      const dirIsLink = fs.lstatSync(path.dirname(filePath)).isSymbolicLink();
+      if (dirIsLink) return { kind: 'linked' };
+    } catch {
+      // The directory does not exist yet.
+    }
+    try {
+      const r = readRegularFileNoFollow(filePath);
+      if (r.kind === 'refused') return { kind: 'linked' };
+      return r;
+    } catch {
+      return { kind: 'linked' };
+    }
+  };
+  const linked = (filePath: string): InitConflict => ({ path: hookRelativePath(cwd, filePath), reason: 'linked_hook' });
+
   // Manager-specific paths first -- lefthook/precommit do not use getPreCommitHookPath
   // (that helper still resolves the native hooks dir for non-husky managers).
   if (manager === 'lefthook') {
     const localPath = path.join(cwd, 'lefthook-local.yml');
-    if (!fs.existsSync(localPath)) return undefined;
-    const content = readFileIfExists(localPath) ?? '';
-    if (content.includes('vault-guard scan --staged')) return undefined;
+    const r = read(localPath);
+    if (r.kind === 'linked') return linked(localPath);
+    if (r.kind === 'absent') return undefined;
+    if (r.text.includes('vault-guard scan --staged')) return undefined;
     return { path: 'lefthook-local.yml', reason: 'foreign_hook' };
   }
   if (manager === 'precommit') {
     const configPath = path.join(cwd, '.pre-commit-config.yaml');
-    if (!fs.existsSync(configPath)) return undefined;
-    const content = readFileIfExists(configPath) ?? '';
-    if (content.includes('vault-guard scan --staged')) return undefined;
+    const r = read(configPath);
+    if (r.kind === 'linked') return linked(configPath);
+    if (r.kind === 'absent') return undefined;
+    if (r.text.includes('vault-guard scan --staged')) return undefined;
     return { path: '.pre-commit-config.yaml', reason: 'foreign_hook' };
   }
   if (manager === 'husky') {
     const hookPath = hook.getPreCommitHookPath(cwd, 'husky');
-    if (!fs.existsSync(hookPath)) return undefined;
-    if (hook.isInstalled({ cwd, manager: 'husky' })) return undefined;
-    const content = readFileIfExists(hookPath) ?? '';
-    if (content.includes('vault-guard')) return undefined;
+    const r = read(hookPath);
+    if (r.kind === 'linked') return linked(hookPath);
+    if (r.kind === 'absent') return undefined;
+    if (r.text.includes('vault-guard')) return undefined;
     return { path: hookRelativePath(cwd, hookPath), reason: 'foreign_hook' };
   }
 
   // native: POSIX hook and optional Windows companion
   const hookPath = hook.getPreCommitHookPath(cwd, 'native');
-  if (fs.existsSync(hookPath) && !hook.isInstalled({ cwd, manager: 'native' })) {
-    const content = readFileIfExists(hookPath) ?? '';
-    if (content.trim().length > 0) {
+  const hookRead = read(hookPath);
+  if (hookRead.kind === 'linked') return linked(hookPath);
+  if (hookRead.kind === 'file' && !(hookRead.text.includes('vault-guard') && hookRead.text.includes('scan --staged'))) {
+    if (hookRead.text.trim().length > 0) {
       return { path: hookRelativePath(cwd, hookPath), reason: 'foreign_hook' };
     }
   }
@@ -151,11 +177,14 @@ function foreignHookConflict(
   // file left inside .husky/_ can never be misread as a foreign hook --
   // no separate isHuskyGeneratedHooksDir guard needed here.
   const cmdPath = hook.getPreCommitCmdPath(cwd);
-  if (cmdPath && fs.existsSync(cmdPath)) {
-    const content = readFileIfExists(cmdPath) ?? '';
-    const isOurs = content.includes('vault-guard') && content.includes('scan --staged');
-    if (content.trim().length > 0 && !isOurs) {
-      return { path: hookRelativePath(cwd, cmdPath), reason: 'foreign_hook' };
+  if (cmdPath) {
+    const r = read(cmdPath);
+    if (r.kind === 'linked') return linked(cmdPath);
+    if (r.kind === 'file') {
+      const isOurs = r.text.includes('vault-guard') && r.text.includes('scan --staged');
+      if (r.text.trim().length > 0 && !isOurs) {
+        return { path: hookRelativePath(cwd, cmdPath), reason: 'foreign_hook' };
+      }
     }
   }
 
@@ -257,6 +286,8 @@ function conflictGuidance(c: InitConflict): string {
         return 'Merge a local vault-guard hook into repos: (see `vault-guard install-hook --manager precommit` error output for a snippet).';
       }
       return 'An existing pre-commit hook is present without vault-guard. Merge `vault-guard scan --staged` manually, or remove the foreign hook if unused.';
+    case 'linked_hook':
+      return 'This hook file (or its directory) is a symlink or not a regular file; vault-guard does not read or write through a link. Replace the link with the file itself, then re-run vault-guard init.';
     default:
       return 'Resolve manually, then re-run vault-guard init.';
   }

@@ -153,12 +153,15 @@ vault-guard baseline --write         # write .vault-guard.baseline.json at the r
 **What a directory scan looks at.** Inside a git repository a plain scan takes
 its files from git, so it scans the same tracked files pull-request mode does:
 
-| Run | File set |
-|---|---|
-| `scan .` outside git | Filesystem walk; `.gitignore` and vendored directory names (`node_modules`, `vendor`, `dist`, `build`, ...) are skipped at any depth. |
-| `scan .` inside git | Tracked files, **whatever `.gitignore` says**, plus untracked files `.gitignore` does not exclude. Vendored names are skipped only as a direct child of the scan root for tracked files, at any depth for untracked ones. Checked-out submodules and untracked nested repositories are scanned the same way. |
-| `scan --staged` | The files in the index, read from the index. |
-| `scan . --trust-base <ref>` | The HEAD tree (`git ls-tree -r HEAD`). |
+| Run | File set | Content read from |
+|---|---|---|
+| `scan .` outside git | Filesystem walk; `.gitignore` and vendored directory names (`node_modules`, `vendor`, `dist`, `build`, ...) are skipped at any depth. | Disk. |
+| `scan .` inside git | Tracked files, **whatever `.gitignore` says**, plus untracked files `.gitignore` does not exclude. Vendored names are skipped only as a direct child of the scan root for tracked files, at any depth for untracked ones. Checked-out submodules and untracked nested repositories are scanned the same way. | Tracked files: the index (staged) blob, plus the disk copy when it differs, has a `filter` attribute, or is marked skip-worktree or assume-unchanged. Untracked files: disk. |
+| `scan --staged` | The files in the index, read from the index. | The index blob. |
+| `scan . --trust-base <ref>` | The HEAD tree (`git ls-tree -r HEAD`). | The HEAD blob, plus the disk copy when it differs from HEAD or has a `filter` attribute. |
+
+Tracked content is read from git, so a `.gitattributes` transform
+(`working-tree-encoding`, `eol`, `filter`) cannot change what is judged.
 
 `.gitignore` controls what git will add, not what is already committed, so a
 committed `.env` is scanned in every mode. Only `.gitignore` files are read for
@@ -609,6 +612,17 @@ vault-guard baseline src/ --write # accept only under src/ (run from the root)
   `--staged` are refused.
 - Nothing else writes the file: not `scan`, not `check`, not `init`, not the
   hook, not the Action.
+- **Never through a link.** A `.vault-guard.baseline.json` (or
+  `.vault-guard.json`, `.vault-guard.local.json`) that is a symlink, even one
+  pointing nowhere, is refused: `scan` and `baseline` exit 2 before scanning,
+  `config validate` exits 1. `baseline --write` writes a temporary file beside
+  the baseline and renames it into place, so a link is replaced, never written
+  through. Replace a linked baseline with the file itself.
+- **Accepted from the committed content.** Inside git the baseline accepts
+  findings in the index (staged) version of each tracked file; a finding that
+  exists only in an uncommitted edit is listed as `uncommitted working-tree
+  edits with findings: N` and not accepted. Marker-only entries take their
+  `file_digest` over the committed bytes.
 
 **The baseline pull request is itself red.** Under `--trust-base` the baseline
 comes from the base branch, so the pull request that adds it is judged without

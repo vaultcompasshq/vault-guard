@@ -42,7 +42,7 @@
  *    can be told apart from a broken ref.
  */
 
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -50,6 +50,7 @@ import { ConfigError } from './errors';
 import { listConfigSearchDirs, parseConfigText, type VaultGuardConfig } from './config';
 import { BASELINE_FILENAME, parseBaselineText, type BaselineEntry } from './baseline';
 import { DEFAULT_FAIL_ON, isFailOnThreshold, type FailOnThreshold } from './utils/fail-on';
+import { fileSetGitEnv } from './utils/git-env';
 
 /**
  * Repository config that must never decide what vault-guard reads, prepended
@@ -78,6 +79,13 @@ export const CONFIG_PROPOSAL_LINE = 'config changed in this pull request';
 /** The one line a report prints when the head proposes a different baseline. */
 export const BASELINE_PROPOSAL_LINE = 'baseline changed in this pull request';
 
+/** The proposal line for any `.gitattributes` change between the base ref and HEAD. */
+export const ATTRIBUTES_PROPOSAL_LINE = '.gitattributes changed in this pull request';
+
+/** The grey line text output prints after the first attributes proposal. */
+export const ATTRIBUTES_NOTE_LINE =
+  'Committed content is read from git, so attribute changes do not alter what this run scanned.';
+
 /** The head carries a config the base ref does not. The run uses its defaults. */
 export const CONFIG_ADDED_LINE = 'config added in this pull request';
 
@@ -86,11 +94,14 @@ export const BASELINE_ADDED_LINE = 'baseline added in this pull request';
 
 function runGit(cwd: string, args: string[]): string | null {
   try {
+    // A clean git environment: a pull-request run judges a real checkout,
+    // never a repository reached through GIT_DIR (design 2026-10-12, 6).
     return execFileSync('git', [...FORCED_GIT_CONFIG, ...args], {
       cwd,
+      env: fileSetGitEnv(),
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      maxBuffer: 64 * 1024 * 1024,
+      maxBuffer: HEAD_TREE_LISTING_MAX_BYTES,
     });
   } catch {
     return null;
@@ -575,6 +586,77 @@ export interface TrustedControls {
    * head added cannot remove a committed file from it.
    */
   headTreeFiles: string[];
+  /** The HEAD tree blob of each file in {@link headTreeFiles}: what the run reads. */
+  headBlobs: Map<string, string>;
+  /** True when any `.gitattributes`, at any depth, differs between the base ref and HEAD. */
+  attributesChanged: boolean;
+  /** Those paths, sorted, root-relative. */
+  attributesPaths: string[];
+}
+
+/** A path for a proposal line: JSON-escaped when it holds a control character. */
+function printablePath(p: string): string {
+  // eslint-disable-next-line no-control-regex
+  return /[\u0000-\u001f\u007f]/.test(p) ? JSON.stringify(p) : p;
+}
+
+/**
+ * Every `.gitattributes` the head added, removed, modified or retyped against
+ * the base commit (design 2026-10-12, section 3). `**` matches zero or more
+ * directories, so the root file is included; `icase` errs toward reporting a
+ * `.GitAttributes` a case-insensitive checkout would honour. Throws
+ * {@link TrustBaseError} when git fails: a run that cannot tell is could-not-run.
+ */
+function attributesChanges(
+  repoRoot: string,
+  ref: string,
+): Array<{ path: string; newMode: string; status: string }> {
+  const base = resolve(repoRoot, ref, 'commit');
+  const argv = [
+    '-c', 'core.quotePath=false',
+    'diff-tree', '-r', '-z', '--raw', '--no-abbrev', '--no-renames',
+    base ?? ref, 'HEAD', '--', ':(glob,icase)**/.gitattributes',
+  ];
+  const r = spawnSync('git', argv, {
+    cwd: repoRoot,
+    env: fileSetGitEnv(),
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    maxBuffer: HEAD_TREE_LISTING_MAX_BYTES,
+  });
+  if (r.error !== undefined || r.status !== 0) {
+    const stderr = typeof r.stderr === 'string' ? r.stderr.trim() : '';
+    throw new TrustBaseError(
+      `vault-guard: could not compare .gitattributes between base ref "${ref}" and HEAD: ` +
+        `${stderr.length > 0 ? stderr : String(r.error ?? `git exited with status ${String(r.status)}`)}. ` +
+        'Nothing was scanned.',
+    );
+  }
+  const parts = r.stdout.split('\0');
+  const out: Array<{ path: string; newMode: string; status: string }> = [];
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const meta = parts[i];
+    if (!meta.startsWith(':')) break;
+    const fields = meta.slice(1).split(' ');
+    out.push({ path: parts[i + 1], newMode: fields[1] ?? '', status: fields[4] ?? '' });
+  }
+  return out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+}
+
+/** The proposal lines for the attributes changes, or none. */
+function attributesProposals(changes: Array<{ path: string; newMode: string }>): string[] {
+  if (changes.length === 0) return [];
+  const names = changes.slice(0, 3).map(c => printablePath(c.path));
+  const more = changes.length > 3 ? `, and ${changes.length - 3} more` : '';
+  const lines = [
+    `${ATTRIBUTES_PROPOSAL_LINE} (${changes.length} file${changes.length === 1 ? '' : 's'}: ${names.join(', ')}${more})`,
+  ];
+  for (const c of changes) {
+    if (c.newMode === '000000' || isRegularFileMode(c.newMode)) continue;
+    const input = `.gitattributes at ${printablePath(c.path)}`;
+    lines.push(shapeProposal(input, c.newMode === '120000' ? 'symlink' : 'not-a-file'));
+  }
+  return lines;
 }
 
 /**
@@ -601,16 +683,66 @@ export interface TrustedControls {
  * exist. Each record is `<mode> SP <type> SP <object> TAB <path>`.
  */
 export function listHeadTreeFiles(repoRoot: string): string[] {
-  const out = runGit(repoRoot, ['ls-tree', '-r', '-z', 'HEAD']);
-  if (out === null) return [];
-  const files: string[] = [];
-  for (const record of out.split('\0')) {
+  return [...listHeadTreeBlobs(repoRoot).keys()];
+}
+
+/** The `maxBuffer` of the HEAD tree listing, the same 512 MiB the plain file set allows. */
+export const HEAD_TREE_LISTING_MAX_BYTES = 512 * 1024 * 1024;
+
+/**
+ * {@link listHeadTreeFiles} with each file's blob object id, which is what a
+ * pull-request run reads its content from (design 2026-10-12, 2.3).
+ *
+ * Throws {@link TrustBaseError} when `ls-tree` fails, including output over
+ * its buffer. It used to return `[]`, and only the zero-files backstop turned
+ * that into exit 2, and only when no other target scanned a file.
+ *
+ * `options.maxBytes` is internal: production always uses
+ * {@link HEAD_TREE_LISTING_MAX_BYTES}; the tests pass a small limit so the
+ * overflow case does not need half a gigabyte of listing.
+ */
+export function listHeadTreeBlobs(
+  repoRoot: string,
+  options: { maxBytes?: number } = {},
+): Map<string, string> {
+  const maxBytes = options.maxBytes ?? HEAD_TREE_LISTING_MAX_BYTES;
+  // Read as bytes and parsed record by record: a listing near the buffer
+  // limit is longer than the longest string the engine can build, so the
+  // whole output is never turned into one string.
+  const r = spawnSync('git', [...FORCED_GIT_CONFIG, 'ls-tree', '-r', '-z', 'HEAD'], {
+    cwd: repoRoot,
+    env: fileSetGitEnv(),
+    stdio: ['ignore', 'pipe', 'pipe'],
+    maxBuffer: maxBytes,
+  });
+  if ((r.error as NodeJS.ErrnoException | undefined)?.code === 'ENOBUFS') {
+    const limit = maxBytes >= 1024 * 1024 ? `${Math.round(maxBytes / 1024 / 1024)} MiB` : `${maxBytes} bytes`;
+    throw new TrustBaseError(
+      'vault-guard: the HEAD tree listing (git ls-tree -r HEAD) was too large to read: it ' +
+        `is over ${limit}. Nothing was scanned.`,
+    );
+  }
+  if (r.error !== undefined || r.status !== 0) {
+    const stderr = Buffer.isBuffer(r.stderr) ? r.stderr.toString('utf-8').trim() : '';
+    throw new TrustBaseError(
+      `vault-guard: could not list the HEAD tree (git ls-tree -r HEAD): ` +
+        `${stderr.length > 0 ? stderr : String(r.error ?? `git exited with status ${String(r.status)}`)}. ` +
+        'Nothing was scanned.',
+    );
+  }
+  const out = r.stdout;
+  const files = new Map<string, string>();
+  for (let start = 0; start < out.length; ) {
+    let end = out.indexOf(0, start);
+    if (end === -1) end = out.length;
+    const record = out.toString('utf-8', start, end);
+    start = end + 1;
     if (!record) continue;
     const tab = record.indexOf('\t');
     if (tab === -1) continue;
-    const [mode, type] = record.slice(0, tab).split(' ');
+    const [mode, type, oid] = record.slice(0, tab).split(' ');
     if (type !== 'blob' || !isRegularFileMode(mode)) continue;
-    files.push(path.resolve(repoRoot, record.slice(tab + 1)));
+    files.set(path.resolve(repoRoot, record.slice(tab + 1)), oid);
   }
   return files;
 }
@@ -629,6 +761,7 @@ export function listHeadTreeFiles(repoRoot: string): string[] {
 export function loadTrustedControls(startDir: string, ref: string): TrustedControls {
   const repoRoot = repoRootOf(startDir, ref);
   assertTrustBaseResolvable(repoRoot, ref);
+  const attributes = attributesChanges(repoRoot, ref);
 
   const searchDirs = searchDirsRelativeToRoot(startDir, repoRoot);
 
@@ -684,7 +817,9 @@ export function loadTrustedControls(startDir: string, ref: string): TrustedContr
     );
   }
   if (baselineShapeChange !== null) proposals.push(shapeProposal('baseline', baselineShapeChange));
+  proposals.push(...attributesProposals(attributes));
 
+  const headBlobs = listHeadTreeBlobs(repoRoot);
   return {
     ref,
     repoRoot,
@@ -699,7 +834,10 @@ export function loadTrustedControls(startDir: string, ref: string): TrustedContr
     configShapeChange,
     baselineShapeChange,
     proposals,
-    headTreeFiles: listHeadTreeFiles(repoRoot),
+    headTreeFiles: [...headBlobs.keys()],
+    headBlobs,
+    attributesChanged: attributes.length > 0,
+    attributesPaths: attributes.map(a => a.path),
   };
 }
 

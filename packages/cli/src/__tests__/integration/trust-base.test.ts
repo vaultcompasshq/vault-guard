@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { scanCommand } from '../../commands/scan';
+import * as fx from './git-fixture';
 
 /**
  * Pull-request mode, end to end: every muting change a pull request can make
@@ -579,5 +580,128 @@ describe('pull-request mode (--trust-base)', () => {
         '',
       ]);
     });
+  });
+});
+
+/**
+ * `.gitattributes` is a pull-request control file (design 2026-10-12,
+ * section 3): every added, removed, modified or retyped one, at any depth, is
+ * reported as a proposal and never changes the exit code.
+ */
+describe('.gitattributes proposals', () => {
+  const originalCwd = process.cwd();
+  const itPosix = process.platform === 'win32' ? it.skip : it;
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  /** A repository with a `base` branch; `head` edits it into the head commit. */
+  function repo(head: (dir: string) => void, withKey = true): string {
+    const dir = fx.tmpDir('vg-attrs-');
+    dirs.push(dir);
+    fx.initRepo(dir);
+    fx.write(dir, 'app.ts', 'export const a = 1;\n');
+    fx.commitAll(dir, 'base');
+    fx.git(dir, ['branch', 'base']);
+    if (withKey) fx.write(dir, 'src/leak.ts', `export const k = "${fx.AWS_KEY}";\n`);
+    fx.write(dir, 'notes.md', 'head commit\n');
+    fx.commitAll(dir, 'head content');
+    // The attributes go in their own commit, added by name, so git never
+    // re-reads an already-committed file under the new attribute.
+    head(dir);
+    fx.git(dir, ['add', '-A', '-f', '--', '.', ':(exclude)src/leak.ts']);
+    fx.git(dir, ['commit', '-q', '--allow-empty', '-m', 'head attributes']);
+    return dir;
+  }
+
+  const PROPOSAL = 'Proposed, not applied: .gitattributes changed in this pull request';
+
+  itPosix('F1: a head-side .gitattributes change is reported as a proposal', async () => {
+    const dir = repo(d => fx.write(d, '.gitattributes', 'src/leak.ts working-tree-encoding=UTF-16LE\n'));
+    process.chdir(dir);
+    const text = await fx.capture(() => scanCommand('.', 'text', false, undefined, 'base'));
+    expect(text.code).toBe(1);
+    expect(text.log).toContain(`${PROPOSAL} (1 file: .gitattributes)`);
+    expect(text.log).toContain(
+      '   Committed content is read from git, so attribute changes do not alter what this run scanned.',
+    );
+    expect(text.log).not.toContain('Proposed, not applied: none');
+    const doc = fx.parse((await fx.capture(() => scanCommand('.', 'json', false, undefined, 'base'))).stdout);
+    expect(doc.trustBase?.attributesChanged).toBe(true);
+    expect(doc.trustBase?.attributesPaths).toEqual(['.gitattributes']);
+    expect(doc.trustBase?.proposals).toContain('.gitattributes changed in this pull request (1 file: .gitattributes)');
+  });
+
+  itPosix('F3: a nested .gitattributes change is reported', async () => {
+    const dir = repo(d => fx.write(d, 'src/.gitattributes', 'leak.ts working-tree-encoding=UTF-16LE\n'));
+    process.chdir(dir);
+    const text = await fx.capture(() => scanCommand('.', 'text', false, undefined, 'base'));
+    expect(text.log).toContain(`${PROPOSAL} (1 file: src/.gitattributes)`);
+  });
+
+  itPosix('U13: four changed files name three and count the rest', async () => {
+    const dir = repo(d => {
+      for (const p of ['.gitattributes', 'a/.gitattributes', 'b/.gitattributes', 'c/.gitattributes']) {
+        fx.write(d, p, '*.md linguist-documentation\n');
+      }
+    });
+    process.chdir(dir);
+    const text = await fx.capture(() => scanCommand('.', 'text', false, undefined, 'base'));
+    expect(text.log).toContain(
+      `${PROPOSAL} (4 files: .gitattributes, a/.gitattributes, b/.gitattributes, and 1 more)`,
+    );
+    const doc = fx.parse((await fx.capture(() => scanCommand('.', 'json', false, undefined, 'base'))).stdout);
+    expect(doc.trustBase?.attributesPaths).toEqual([
+      '.gitattributes', 'a/.gitattributes', 'b/.gitattributes', 'c/.gitattributes',
+    ]);
+  });
+
+  itPosix('U13: a symlinked .gitattributes at the head is reported as a shape change', async () => {
+    const dir = repo(d => {
+      fx.write(d, 'docs/attrs.txt', '* text\n');
+      fs.symlinkSync('attrs.txt', path.join(d, 'docs', '.gitattributes'));
+    });
+    process.chdir(dir);
+    const text = await fx.capture(() => scanCommand('.', 'text', false, undefined, 'base'));
+    expect(text.log).toContain(`${PROPOSAL} (1 file: docs/.gitattributes)`);
+    expect(text.log).toContain(
+      'Proposed, not applied: .gitattributes at docs/.gitattributes is a symlink at the head commit, not a regular file',
+    );
+  });
+
+  itPosix('U13: a path with a newline is printed escaped', async () => {
+    const dir = repo(d => fx.write(d, 'we\nird/.gitattributes', '* text\n'));
+    process.chdir(dir);
+    const doc = fx.parse((await fx.capture(() => scanCommand('.', 'json', false, undefined, 'base'))).stdout);
+    const line = doc.trustBase?.proposals.find(p => p.startsWith('.gitattributes changed'));
+    expect(line).toBe('.gitattributes changed in this pull request (1 file: "we\\nird/.gitattributes")');
+    expect(line).not.toContain('\n');
+  });
+
+  itPosix('U13: no attributes change, no attributes line', async () => {
+    const dir = repo(() => undefined);
+    process.chdir(dir);
+    const text = await fx.capture(() => scanCommand('.', 'text', false, undefined, 'base'));
+    expect(text.log).not.toContain('.gitattributes');
+    const doc = fx.parse((await fx.capture(() => scanCommand('.', 'json', false, undefined, 'base'))).stdout);
+    expect(doc.trustBase?.attributesChanged).toBe(false);
+    expect(doc.trustBase?.attributesPaths).toEqual([]);
+  });
+
+  itPosix('U13: an attributes proposal does not change the exit code', async () => {
+    for (const withKey of [true, false]) {
+      const changed = repo(d => fx.write(d, '.gitattributes', '* text\n'), withKey);
+      const same = repo(() => undefined, withKey);
+      process.chdir(changed);
+      const a = await fx.capture(() => scanCommand('.', 'sarif', false, undefined, 'base'));
+      expect(a.stdout).toContain('vault-guard/trust-base/proposal');
+      expect(a.stdout).toContain('.gitattributes changed in this pull request');
+      process.chdir(same);
+      const b = await fx.capture(() => scanCommand('.', 'sarif', false, undefined, 'base'));
+      expect({ withKey, code: a.code }).toEqual({ withKey, code: b.code });
+    }
   });
 });

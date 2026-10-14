@@ -1,9 +1,15 @@
 import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
-import type { SecretMatch } from './types';
+import type { MatchSource, SecretMatch } from './types';
 import type { FileScanResult } from './scan-output';
 import { listConfigSearchDirs } from './config';
+import {
+  ControlFileReadError,
+  readRegularFileNoFollow,
+  refusalWhat,
+  type NoFollowRead,
+} from './utils/read-no-follow';
 import {
   fingerprintForMatch,
   contentFingerprintForMatch,
@@ -137,11 +143,8 @@ export function parseBaselineText(raw: string): ParsedBaseline {
     const v = (parsed as { version?: unknown }).version;
     const fps = (parsed as { fingerprints?: unknown }).fingerprints;
     if (v !== 1) {
-      return {
-        fingerprints: new Set(),
-        entries: null,
-        parseError: `unsupported version (expected 1, got ${String(v)})`,
-      };
+      // The found value is not echoed: it is file content.
+      return { fingerprints: new Set(), entries: null, parseError: 'unsupported version (expected 1)' };
     }
     if (!Array.isArray(fps)) {
       return { fingerprints: new Set(), entries: null, parseError: 'fingerprints must be an array' };
@@ -162,35 +165,53 @@ export function parseBaselineText(raw: string): ParsedBaseline {
       entries,
       ...(warnings.length > 0 ? { parseError: warnings.join('; ') } : {}),
     };
-  } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
-    return { fingerprints: new Set(), entries: null, parseError: `JSON: ${detail}` };
+  } catch {
+    // Never the engine's message: on Node 22 it quotes the start of the input,
+    // and a baseline path can be made to hold anything (design 2026-10-12, 4.2).
+    return { fingerprints: new Set(), entries: null, parseError: 'could not be parsed as JSON' };
+  }
+}
+
+/**
+ * The baseline path is a link, or not a regular file. A scan or a write that
+ * meets one is could-not-run (exit 2): vault-guard never follows a link on a
+ * control file.
+ */
+export class BaselineRefusedError extends Error {
+  constructor(
+    readonly filePath: string,
+    readonly what: 'symlink' | 'not-a-file',
+  ) {
+    super(
+      `Cannot read the baseline: ${BASELINE_FILENAME} at ${filePath} ${refusalWhat(what)}. ` +
+        'vault-guard never follows a link on a control file, because a committed link can point ' +
+        'anywhere on this machine. Replace it with the file itself (git rm the link, then run ' +
+        'vault-guard baseline --write). Nothing was scanned.',
+    );
+    this.name = 'BaselineRefusedError';
   }
 }
 
 /**
  * Walk the same directories as {@link loadConfig} and load the nearest
- * `.vault-guard.baseline.json`.
+ * `.vault-guard.baseline.json`, never through a link: a link (a dangling one
+ * included) throws {@link BaselineRefusedError}. No existence check runs
+ * first, so a refused link stops the walk.
  */
 export function loadBaseline(startDir: string = process.cwd()): LoadBaselineOutcome {
   const dirs = listConfigSearchDirs(startDir);
   for (const dir of dirs) {
     const filePath = path.join(dir, BASELINE_FILENAME);
-    if (!fs.existsSync(filePath)) continue;
-
-    let raw: string;
+    let r: NoFollowRead;
     try {
-      raw = fs.readFileSync(filePath, 'utf-8');
+      r = readRegularFileNoFollow(filePath);
     } catch (e) {
-      const detail = e instanceof Error ? e.message : String(e);
-      return {
-        sourcePath: filePath,
-        fingerprints: new Set(),
-        parseError: `read failed: ${detail}`,
-      };
+      const code = e instanceof ControlFileReadError ? e.code : 'EUNKNOWN';
+      return { sourcePath: filePath, fingerprints: new Set(), parseError: `read failed (${code})` };
     }
-
-    return { sourcePath: filePath, ...parseBaselineText(raw) };
+    if (r.kind === 'absent') continue;
+    if (r.kind === 'refused') throw new BaselineRefusedError(filePath, r.what);
+    return { sourcePath: filePath, ...parseBaselineText(r.text) };
   }
 
   return { fingerprints: new Set() };
@@ -231,12 +252,13 @@ export interface BaselineMatchContext {
    */
   isValueBearing: (ruleId: string) => boolean;
   /**
-   * The bytes that were SCANNED for a file, for a header-only entry's
-   * `file_digest`. Defaults to the file on disk; a `--staged` run passes the
-   * index blob, so the digest is never over different bytes from the ones the
-   * finding came from.
+   * The bytes that were SCANNED for one copy of a file, for a header-only
+   * entry's `file_digest`: the blob for a blob match, the disk copy for a
+   * `worktree` match. Defaults to the file on disk. The scan keeps these
+   * bytes, so the digest is never over different bytes from the ones the
+   * finding came from, and nothing is re-read after the scan.
    */
-  readBytes?: (file: string) => Buffer;
+  readBytes?: (file: string, source?: MatchSource, stage?: 2 | 3) => Buffer;
 }
 
 /**
@@ -286,10 +308,15 @@ export function applyBaseline(
     list.push({ entry, left: entry.count });
     byKey.set(entry.fingerprint, list);
   }
+  // Keyed by path AND source, so a blob and its disk copy never share a digest.
   const digests = new Map<string, string | null>();
-  const digestOf = (file: string): string | null => {
-    if (!digests.has(file)) digests.set(file, fileDigest(file, ctx.readBytes));
-    return digests.get(file) ?? null;
+  const digestOf = (file: string, m: SecretMatch): string | null => {
+    const k = `${file}\0${m.source ?? 'file'}\0${m.stage ?? ''}`;
+    if (!digests.has(k)) {
+      const read = ctx.readBytes;
+      digests.set(k, fileDigest(file, read ? f => read(f, m.source, m.stage) : undefined));
+    }
+    return digests.get(k) ?? null;
   };
 
   let suppressed = 0;
@@ -308,7 +335,7 @@ export function applyBaseline(
           c.entry.severity !== null &&
           SEVERITY_RANK[m.severity] <= SEVERITY_RANK[c.entry.severity] &&
           (valueBearing ||
-            (c.entry.file_digest !== undefined && c.entry.file_digest === digestOf(r.file))),
+            (c.entry.file_digest !== undefined && c.entry.file_digest === digestOf(r.file, m))),
       );
       if (slot) {
         slot.left--;

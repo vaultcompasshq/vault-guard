@@ -69,14 +69,18 @@ const worktreeRootCache = new Map<string, string>();
  * mis-resolves every staged path, which is exactly the failure this function
  * exists to prevent.
  */
-export function getGitWorkTreeRoot(cwd: string = process.cwd()): string {
-  const cached = worktreeRootCache.get(cwd);
+export function getGitWorkTreeRoot(cwd: string = process.cwd(), env?: NodeJS.ProcessEnv): string {
+  // Keyed by environment too: a plain run's clean lookup and a staged run's
+  // inherited one may answer differently in the same process.
+  const key = `${env === undefined ? 'inherited' : 'given'}\0${cwd}`;
+  const cached = worktreeRootCache.get(key);
   if (cached !== undefined) return cached;
   const args = [...FORCED_GIT_CONFIG, 'rev-parse', '--show-toplevel'];
   let out: string;
   try {
     out = execFileSync('git', args, {
       cwd,
+      ...(env !== undefined ? { env } : {}),
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -97,7 +101,7 @@ export function getGitWorkTreeRoot(cwd: string = process.cwd()): string {
     );
   }
   const resolved = canonicalDir(root);
-  worktreeRootCache.set(cwd, resolved);
+  worktreeRootCache.set(key, resolved);
   return resolved;
 }
 
@@ -117,11 +121,15 @@ export const STAGED_DIFF_ARGV: readonly string[] = [
   ...FORCED_GIT_CONFIG,
   'diff',
   '--cached',
-  '--name-only',
+  // `--raw --no-abbrev`, not `--name-only`: each record then carries the new
+  // side's mode and full object id, so the blob is read by object id with no
+  // second listing (design 2026-10-12, 2.3).
+  '--raw',
+  '--no-abbrev',
   '--diff-filter=ACMRT',
   // A staged submodule pointer bump is listed here as an ordinary path,
   // but its index entry is a gitlink (mode 160000) rather than a blob, so
-  // `git show :<path>` answers "fatal: bad object". There is no content
+  // there is no blob behind it to read. There is no content
   // behind a gitlink for this scanner to read, and treating one as an
   // unreadable file made every routine submodule bump block the commit
   // with a message about detected secrets. Dropping the entry is correct,
@@ -130,6 +138,39 @@ export const STAGED_DIFF_ARGV: readonly string[] = [
   '--ignore-submodules=all',
   '-z',
 ];
+
+/** One staged path, with the new side's mode and blob object id. */
+export interface StagedEntry {
+  /** Absolute path, resolved against the worktree root. */
+  path: string;
+  mode: string;
+  oid: string;
+}
+
+/**
+ * Parse `git diff --raw -z` output: `:<old mode> <new mode> <old id> <new id>
+ * <status>` NUL `<path>` NUL, with a second path for a rename or copy (the
+ * destination, which is what is staged).
+ */
+export function parseStagedRaw(out: string, root: string): StagedEntry[] {
+  const parts = out.split('\0');
+  const entries: StagedEntry[] = [];
+  for (let i = 0; i < parts.length; ) {
+    const meta = parts[i];
+    if (!meta || !meta.startsWith(':')) {
+      i++;
+      continue;
+    }
+    const fields = meta.slice(1).split(' ');
+    const status = fields[4] ?? '';
+    const twoPaths = status.startsWith('R') || status.startsWith('C');
+    const rel = twoPaths ? parts[i + 2] : parts[i + 1];
+    i += twoPaths ? 3 : 2;
+    if (rel === undefined || rel.length === 0) continue;
+    entries.push({ path: path.resolve(root, rel), mode: fields[1], oid: fields[3] });
+  }
+  return entries;
+}
 
 /**
  * Return absolute paths of files staged for commit (cached index vs HEAD).
@@ -152,6 +193,16 @@ export const STAGED_DIFF_ARGV: readonly string[] = [
  * staged" result in pre-commit, letting secrets through undetected.
  */
 export function getGitStagedFilePaths(cwd: string = process.cwd()): string[] {
+  return getGitStagedEntries(cwd).map(e => e.path);
+}
+
+/**
+ * {@link getGitStagedFilePaths} with each path's staged mode and blob object
+ * id. Runs with the INHERITED environment on purpose: in a `git commit -a`
+ * hook `GIT_INDEX_FILE` names the index that will be committed, and in a
+ * repository reached only through `GIT_DIR` that is the only way to it.
+ */
+export function getGitStagedEntries(cwd: string = process.cwd()): StagedEntry[] {
   const root = getGitWorkTreeRoot(cwd);
   const args = [...STAGED_DIFF_ARGV];
   let out: string;
@@ -160,6 +211,7 @@ export function getGitStagedFilePaths(cwd: string = process.cwd()): string[] {
       cwd: root,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 512 * 1024 * 1024,
     });
   } catch (err) {
     throw new GitError(
@@ -173,10 +225,7 @@ export function getGitStagedFilePaths(cwd: string = process.cwd()): string[] {
   // exactly as git produced them. Trimming here would corrupt the legal (if
   // unusual) filename with leading or trailing whitespace into a path that
   // does not exist.
-  return out
-    .split('\0')
-    .filter(Boolean)
-    .map((rel) => path.resolve(root, rel));
+  return parseStagedRaw(out, root);
 }
 
 /**

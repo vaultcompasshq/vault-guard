@@ -49,6 +49,19 @@ describe('staged diff argv', () => {
   it('excludes submodule gitlinks, which have no blob to scan', () => {
     expect(STAGED_DIFF_ARGV).toContain('--ignore-submodules=all');
   });
+
+  // Design 2026-10-12, 2.3: the listing carries each staged path's object id
+  // (`--raw --no-abbrev` in place of `--name-only`), so the blob is read by
+  // id with no second listing. Every other argument is unchanged.
+  it('pins the staged listing argv: --raw --no-abbrev, every safety flag kept', () => {
+    expect([...STAGED_DIFF_ARGV]).toEqual([
+      '-c', 'diff.relative=false',
+      '-c', 'core.quotePath=false',
+      'diff', '--cached', '--raw', '--no-abbrev', '--diff-filter=ACMRT',
+      '--ignore-submodules=all', '-z',
+    ]);
+    expect(STAGED_DIFF_ARGV).not.toContain('--name-only');
+  });
 });
 
 describe('git-utils staged index', () => {

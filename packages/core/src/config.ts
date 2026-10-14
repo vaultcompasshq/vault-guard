@@ -4,6 +4,12 @@ import { SecretMatch } from './types';
 import { ConfigError } from './errors';
 import { validateVaultGuardConfig } from './config-validate';
 import type { FailOnThreshold } from './utils/fail-on';
+import {
+  ControlFileReadError,
+  readRegularFileNoFollow,
+  refusalWhat,
+  type NoFollowRead,
+} from './utils/read-no-follow';
 
 /**
  * Shape of .vault-guard.json in a repository root.
@@ -117,10 +123,54 @@ export function findVaultGuardConfigPath(startDir: string = process.cwd()): stri
   for (const dir of dirs) {
     for (const filename of CONFIG_FILENAMES) {
       const filePath = path.join(dir, filename);
-      if (fs.existsSync(filePath)) return filePath;
+      // No existence check: a dangling link is present-and-refused, never
+      // absent, so it stops the walk instead of letting a parent's file win.
+      let r: NoFollowRead;
+      try {
+        r = readRegularFileNoFollow(filePath);
+      } catch {
+        return filePath;
+      }
+      if (r.kind !== 'absent') return filePath;
     }
   }
   return null;
+}
+
+/**
+ * The refusal sentence for a linked or non-regular control file, the same in
+ * `scan`, `baseline` and `config validate`.
+ */
+export function controlFileRefusal(name: string, filePath: string, what: 'symlink' | 'not-a-file'): string {
+  return (
+    `${name} at ${filePath} ${refusalWhat(what)}. vault-guard never follows a link on a ` +
+    'control file, because a committed link can point anywhere on this machine. Replace ' +
+    'it with the file itself.'
+  );
+}
+
+/**
+ * The JSON parse failure for a config, without the engine's message: that
+ * message quotes the start of the input. Only a line and column are kept,
+ * taken as digits, because that is how a user finds a typo and it holds no
+ * file content.
+ */
+export function configParseFailure(raw: string, error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  // The engine's message can quote the start of the input, so these patterns
+  // could pick digits out of quoted file content (a config holding the text
+  // "line 7 column 9"). What is printed is still digits only, never text.
+  const lc = /line (\d+) column (\d+)/.exec(message);
+  if (lc) return `could not be parsed as JSON (line ${lc[1]}, column ${lc[2]})`;
+  const pos = /position (\d+)/.exec(message);
+  if (pos) {
+    const offset = Math.min(Number.parseInt(pos[1], 10), raw.length);
+    const before = raw.slice(0, offset);
+    const line = before.split('\n').length;
+    const column = offset - (before.lastIndexOf('\n') + 1) + 1;
+    return `could not be parsed as JSON (line ${line}, column ${column})`;
+  }
+  return 'could not be parsed as JSON';
 }
 
 /**
@@ -145,9 +195,8 @@ export function parseConfigText(raw: string, sourceLabel: string): VaultGuardCon
   try {
     parsed = JSON.parse(raw);
   } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
     throw new ConfigError(
-      `Failed to parse Vault Guard config at ${sourceLabel}: ${detail}`,
+      `Failed to parse Vault Guard config at ${sourceLabel}: ${configParseFailure(raw, e)}`,
       sourceLabel,
     );
   }
@@ -168,20 +217,21 @@ export function loadConfig(startDir: string = process.cwd()): VaultGuardConfig {
   for (const dir of dirs) {
     for (const filename of CONFIG_FILENAMES) {
       const filePath = path.join(dir, filename);
-      if (!fs.existsSync(filePath)) continue;
-
-      let raw: string;
+      // Opened without following a link, and with no existence check first:
+      // a dangling link is refused, not skipped (design 2026-10-12, 4.1).
+      let r: NoFollowRead;
       try {
-        raw = fs.readFileSync(filePath, 'utf-8');
+        r = readRegularFileNoFollow(filePath);
       } catch (e) {
-        const detail = e instanceof Error ? e.message : String(e);
-        throw new ConfigError(
-          `Failed to read Vault Guard config at ${filePath}: ${detail}`,
-          filePath,
-        );
+        const code = e instanceof ControlFileReadError ? e.code : 'EUNKNOWN';
+        throw new ConfigError(`Failed to read Vault Guard config at ${filePath} (${code})`, filePath);
+      }
+      if (r.kind === 'absent') continue;
+      if (r.kind === 'refused') {
+        throw new ConfigError(`${controlFileRefusal(filename, filePath, r.what)} Nothing was scanned.`, filePath);
       }
 
-      return parseConfigText(raw, filePath);
+      return parseConfigText(r.text, filePath);
     }
   }
 

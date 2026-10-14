@@ -1,9 +1,15 @@
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { GitError, SecretScanner } from '@vaultcompass/vault-guard-core';
 import { scanWorkspaceDirectory } from '../workspace-scan';
+
+/** Child processes of this test process, as `pgrep -P` lists them (pgrep excludes itself). */
+function childrenOfThisProcess(): string {
+  const p = spawnSync('pgrep', ['-P', String(process.pid)], { encoding: 'utf-8' });
+  return (p.stdout ?? '').trim();
+}
 
 describe('scanWorkspaceDirectory', () => {
   it('returns empty when no secrets in temp workspace', async () => {
@@ -131,5 +137,117 @@ describe('scanWorkspaceDirectory', () => {
       fs.writeFileSync(path.join(dir, 'ok.txt'), 'hello\n');
       await expect(scanWorkspaceDirectory(dir, new SecretScanner())).rejects.toThrow(GitError);
     });
+  });
+});
+
+/**
+ * Design 2026-10-12, U19: the MCP workspace scan reads tracked content from
+ * the index blob, as a plain CLI scan does, so a head-side working-tree-
+ * encoding cannot hide a key from an editor any more than from CI.
+ */
+describe('scanWorkspaceDirectory reads tracked content from git (U19)', () => {
+  const itPosix = process.platform === 'win32' ? it.skip : it;
+  const key = ['AKIA', 'Q7MZR2XVB9', 'NTD4WH'].join('');
+  const run = (cwd: string, args: string[]): string =>
+    execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+
+  itPosix('U19: scan_workspace on a re-encoding clone returns the finding', async () => {
+    const src = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-u19-src-')));
+    const parent = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-u19-')));
+    try {
+      run(src, ['init', '-q', '-b', 'main']);
+      run(src, ['config', 'user.email', 'test@example.invalid']);
+      run(src, ['config', 'user.name', 'Test']);
+      fs.mkdirSync(path.join(src, 'src'));
+      fs.writeFileSync(path.join(src, 'src', 'leak.ts'), `export const k = "${key}";\n`);
+      run(src, ['add', '-A']);
+      run(src, ['commit', '-q', '-m', 'one']);
+      fs.writeFileSync(path.join(src, '.gitattributes'), 'src/leak.ts working-tree-encoding=UTF-16LE\n');
+      run(src, ['add', '.gitattributes']);
+      run(src, ['commit', '-q', '-m', 'two']);
+      run(parent, ['clone', '-q', src, 'c']);
+      const clone = path.join(parent, 'c');
+      expect(fs.readFileSync(path.join(clone, 'src', 'leak.ts'))[1]).toBe(0);
+      const { results } = await scanWorkspaceDirectory(clone, new SecretScanner());
+      expect(results.map(r => path.relative(clone, r.file))).toEqual([path.join('src', 'leak.ts')]);
+      expect(results[0].matches[0].source).toBe('index');
+      // The scan waited for its git processes: none is alive when it returns.
+      expect(childrenOfThisProcess()).toBe('');
+    } finally {
+      fs.rmSync(src, { recursive: true, force: true });
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  /** A small committed repository with one tracked file. */
+  function repoWithFile(prefix: string): string {
+    const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+    run(dir, ['init', '-q', '-b', 'main']);
+    run(dir, ['config', 'user.email', 'test@example.invalid']);
+    run(dir, ['config', 'user.name', 'Test']);
+    fs.writeFileSync(path.join(dir, 'app.ts'), 'export const a = 1;\n');
+    run(dir, ['add', '-A']);
+    run(dir, ['commit', '-q', '-m', 'one']);
+    return dir;
+  }
+
+  itPosix('an untracked file that cannot be read is listed as not scanned, never as clean', async () => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return;
+    const dir = repoWithFile('vgmcp-unread-');
+    const locked = path.join(dir, 'notes.txt');
+    fs.writeFileSync(locked, `key = ${key}\n`);
+    fs.chmodSync(locked, 0o000);
+    try {
+      const { unscannable, results } = await scanWorkspaceDirectory(dir, new SecretScanner());
+      expect(results).toEqual([]);
+      expect(unscannable.map(u => [path.basename(u.file), u.kind])).toEqual([['notes.txt', 'read_error']]);
+    } finally {
+      fs.chmodSync(locked, 0o644);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('a tracked blob missing from the object store is listed as not scanned', async () => {
+    const dir = repoWithFile('vgmcp-missing-');
+    try {
+      const oid = run(dir, ['rev-parse', 'HEAD:app.ts']).trim();
+      fs.rmSync(path.join(dir, '.git', 'objects', oid.slice(0, 2), oid.slice(2)));
+      const { unscannable } = await scanWorkspaceDirectory(dir, new SecretScanner());
+      expect(unscannable.map(u => [path.basename(u.file), u.kind])).toEqual([['app.ts', 'read_error']]);
+      expect(unscannable[0].reason).toContain('not in the local object store');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('a git failure while reading tracked content rejects with GitError and closes the reader', async () => {
+    const dir = repoWithFile('vgmcp-catfile-');
+    const binDir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-stub-')));
+    const realGit = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf-8' }).trim();
+    // A git stub that passes everything to real git except cat-file --batch.
+    fs.writeFileSync(
+      path.join(binDir, 'git'),
+      [
+        `#!${process.execPath}`,
+        "const { spawnSync } = require('child_process');",
+        'const args = process.argv.slice(2);',
+        "if (args.includes('--batch')) { process.stderr.write('fatal: stubbed batch failure\\n'); process.exit(128); }",
+        `const r = spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });`,
+        'process.exit(r.status === null ? 1 : r.status);',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ''}`;
+    try {
+      await expect(scanWorkspaceDirectory(dir, new SecretScanner())).rejects.toThrow(GitError);
+      // The error still propagated, and the readers were waited for first.
+      expect(childrenOfThisProcess()).toBe('');
+    } finally {
+      process.env.PATH = originalPath;
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(binDir, { recursive: true, force: true });
+    }
   });
 });
