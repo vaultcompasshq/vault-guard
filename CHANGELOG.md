@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- The release workflow now installs, builds, tests and packs in a job that
+  has no npm publish token, then publishes the packed tarballs from a
+  separate job that holds the token and does not install this repository's
+  dependencies. The scope is the token only: the tarballs are still built
+  where dependency install scripts run, so the split keeps those scripts
+  away from the token and does not by itself guarantee the integrity of
+  what was built.
+
 ## [1.10.0] - 2026-10-14
 
 **Minor.** Plain scans inside git take their file set from git, and a new
