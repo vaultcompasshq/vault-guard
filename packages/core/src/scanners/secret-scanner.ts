@@ -1,6 +1,15 @@
 import fs from 'fs';
 import { createHash } from 'crypto';
-import { SecretMatch } from '../types';
+import { SecretMatch, type ContentDemotion } from '../types';
+import {
+  GROUP_MIN,
+  RunIndex,
+  dataShape,
+  encodedPayloadDemotion,
+  groupSlot,
+  hasSlots,
+  isBase64Char,
+} from '../utils/data-shape';
 import { VaultGuardConfig } from '../config';
 import { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from '../utils/entropy';
 import { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, isShortDockerPatExample } from '../utils/placeholder';
@@ -750,12 +759,97 @@ export class SecretScanner {
 
     // Applied after dedupe so the severity ranking that resolves overlapping
     // matches sees the rules' declared severities, exactly as it did before
-    // in-file test context existed.
-    return this.applyInlineTestSeverity(
-      this.deduplicateMatches(raw),
-      content,
-      opts?.filePath,
-    );
+    // in-file test context existed. The content demotion runs after both, for
+    // the same reason, and returns what dedupe displaced from a winner it
+    // demoted (design 2026-10-17 data files, section 4.4).
+    const { kept, displaced } = this.deduplicateTracked(raw);
+    const tested = this.applyInlineTestSeverity(kept, content, opts?.filePath);
+    const demoted = this.applyContentDemotion(tested, displaced, content, opts?.filePath);
+    return this.assignGroupSlots(demoted, content);
+  }
+
+  /**
+   * The encoded-payload demotion (design 2026-10-17 data files, sections 3
+   * and 4). A match is lowered to `low`, with a record of why, only when
+   * {@link encodedPayloadDemotion} confirms all four conditions on the bytes
+   * around it. A match already at `low` is left alone and carries no record.
+   *
+   * When a demoted match had won an overlap in dedupe, every match it
+   * displaced that would NOT itself be demoted is restored at its own
+   * severity, so demoting the winner never reports less than dedupe alone
+   * did. Restored matches are deduped among themselves by the existing rule,
+   * and a restored match that overlaps a kept match that was not demoted is
+   * then dropped: the kept match always wins, so every match dedupe kept is
+   * still reported with its own rule, fingerprint and baseline identity.
+   */
+  private applyContentDemotion(
+    matches: SecretMatch[],
+    displaced: SecretMatch[][],
+    content: string,
+    filePath: string | undefined,
+  ): SecretMatch[] {
+    if (matches.length === 0) return matches;
+    let index: RunIndex | undefined;
+    const runs = (): RunIndex => (index ??= new RunIndex(content));
+    const demotable = (m: SecretMatch): Omit<ContentDemotion, 'from'> | undefined => {
+      // The cheap form of C2 first, so a copy with no payload never sweeps.
+      const before = m.offset - 1;
+      const after = m.offset + m.matchLength;
+      if (before < 0 || after >= content.length) return undefined;
+      if (!isBase64Char(content.charCodeAt(before)) || !isBase64Char(content.charCodeAt(after))) return undefined;
+      return encodedPayloadDemotion(content, m, runs());
+    };
+
+    let changed = false;
+    const out: SecretMatch[] = [];
+    const notDemoted: SecretMatch[] = [];
+    const restore: SecretMatch[] = [];
+    matches.forEach((m, i) => {
+      const record = m.severity === 'low' ? undefined : demotable(m);
+      if (record === undefined) {
+        out.push(m);
+        notDemoted.push(m);
+        return;
+      }
+      changed = true;
+      out.push({ ...m, severity: 'low', demotion: { from: m.severity as ContentDemotion['from'], ...record } });
+      for (const d of displaced[i] ?? []) {
+        if (demotable(d) === undefined) restore.push(d);
+      }
+    });
+    if (!changed) return matches;
+    if (restore.length === 0) return out;
+
+    // Restored matches get the in-file test step they would have had if kept.
+    const restored = this.applyInlineTestSeverity(restore, content, filePath);
+    const overlapsKept = (r: SecretMatch): boolean =>
+      notDemoted.some(k => r.offset < k.offset + k.matchLength && k.offset < r.offset + r.matchLength);
+    const survivors = this.deduplicateMatches(restored).filter(r => !overlapsKept(r));
+    if (survivors.length === 0) return out;
+    return [...out, ...survivors].sort((a, b) => a.offset - b.offset || a.line - b.line);
+  }
+
+  /**
+   * Set {@link SecretMatch.groupSlot} for grouping (section 5.2). The copy
+   * is classified only when one rule produced at least {@link GROUP_MIN}
+   * matches, so a clean copy, or one with a few findings, pays nothing.
+   */
+  private assignGroupSlots(matches: SecretMatch[], content: string): SecretMatch[] {
+    if (matches.length < GROUP_MIN) return matches;
+    const perRule = new Map<string, number>();
+    let enough = false;
+    for (const m of matches) {
+      const n = (perRule.get(m.type) ?? 0) + 1;
+      perRule.set(m.type, n);
+      if (n >= GROUP_MIN) enough = true;
+    }
+    if (!enough) return matches;
+    const shape = dataShape(content);
+    if (!hasSlots(shape)) return matches;
+    return matches.map(m => {
+      const slot = groupSlot(shape, content, m);
+      return slot === undefined ? m : { ...m, groupSlot: slot };
+    });
   }
 
   /**
@@ -872,17 +966,28 @@ export class SecretScanner {
    * overlap.
    */
   private deduplicateMatches(matches: SecretMatch[]): SecretMatch[] {
-    if (matches.length <= 1) return matches;
+    return this.deduplicateTracked(matches).kept;
+  }
+
+  /**
+   * {@link deduplicateMatches}, also returning, for each kept match (same
+   * index), every match it displaced, directly or through a match it
+   * displaced in turn. The kept list is exactly what the plain dedupe keeps.
+   */
+  private deduplicateTracked(matches: SecretMatch[]): { kept: SecretMatch[]; displaced: SecretMatch[][] } {
+    if (matches.length <= 1) return { kept: matches, displaced: matches.map(() => []) };
 
     // Sort by start offset so we can do a linear sweep.
     const sorted = [...matches].sort((a, b) => a.offset - b.offset || a.line - b.line);
     const kept: SecretMatch[] = [];
+    const displaced: SecretMatch[][] = [];
 
     for (const candidate of sorted) {
       const cStart = candidate.offset;
       const cEnd = cStart + candidate.matchLength;
 
       let dominated = false;
+      const lost: SecretMatch[] = [];
 
       for (let i = kept.length - 1; i >= 0; i--) {
         const existing = kept[i];
@@ -901,18 +1006,24 @@ export class SecretScanner {
 
         if (candidateRank > existingRank) {
           // Candidate is more severe -- replace existing.
+          lost.push(existing, ...displaced[i]);
           kept.splice(i, 1);
+          displaced.splice(i, 1);
         } else {
           // Existing is at least as severe -- drop candidate.
           dominated = true;
+          displaced[i].push(candidate, ...lost);
           break;
         }
       }
 
-      if (!dominated) kept.push(candidate);
+      if (!dominated) {
+        kept.push(candidate);
+        displaced.push(lost);
+      }
     }
 
-    return kept;
+    return { kept, displaced };
   }
 
   /**

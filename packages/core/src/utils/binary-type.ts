@@ -135,21 +135,24 @@ const ROWS: Array<[BinaryFamily, string[], Signature[]]> = [
 ];
 
 /** A map whose mutators throw, so the table cannot be changed at run time. */
-class FrozenMap<K, V> extends Map<K, V> {
+export class FrozenMap<K, V> extends Map<K, V> {
   private sealed = false;
-  constructor(entries: Array<[K, V]>) {
+  constructor(
+    entries: Array<[K, V]>,
+    private readonly what = 'the binary type table',
+  ) {
     super(entries);
     this.sealed = true;
   }
   override set(key: K, value: V): this {
-    if (this.sealed) throw new TypeError('the binary type table is a constant');
+    if (this.sealed) throw new TypeError(`${this.what} is a constant`);
     return super.set(key, value);
   }
   override delete(): boolean {
-    throw new TypeError('the binary type table is a constant');
+    throw new TypeError(`${this.what} is a constant`);
   }
   override clear(): void {
-    throw new TypeError('the binary type table is a constant');
+    throw new TypeError(`${this.what} is a constant`);
   }
 }
 
@@ -265,6 +268,57 @@ export function confirmsBinary(ext: string, head: Uint8Array, declaredEncoding?:
     }
   }
   return false;
+}
+
+/** One format a bare base64 run may be confirmed as. */
+export interface BareRunSignature {
+  /** The binary-table row it stands for. */
+  readonly format: '.png' | '.jpg';
+  readonly family: BinaryFamily;
+  /** Alternatives; any one matching is enough. Every one is binary (has a byte outside printable ASCII). */
+  readonly signatures: readonly Signature[];
+}
+
+/**
+ * The only formats a base64 run with no `data:` prefix is confirmed as
+ * (design 2026-10-17 data files, section 3.2): PNG's 8-byte header, and
+ * JPEG's FF D8 FF followed by one of the marker bytes E0 (JFIF), E1 (Exif),
+ * DB (quantisation table) or EE (Adobe). Random bytes match the first with
+ * probability 2^-64 and the four JPEG headers with probability 4 in 2^32.
+ * The two-byte signatures elsewhere in the table (MP3 and AAC frame syncs,
+ * gzip) match a random head about 9 times in 65536, which is not evidence of
+ * anything without a declared type beside it, so they are not here. A frozen
+ * constant: nothing reads it from config, the environment or the tree.
+ */
+export const BARE_RUN_SIGNATURES: readonly BareRunSignature[] = Object.freeze([
+  Object.freeze({
+    format: '.png' as const,
+    family: 'image' as const,
+    signatures: Object.freeze([one(0, b(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a))]),
+  }),
+  Object.freeze({
+    format: '.jpg' as const,
+    family: 'image' as const,
+    signatures: Object.freeze([0xe0, 0xe1, 0xdb, 0xee].map(marker => one(0, b(0xff, 0xd8, 0xff, marker)))),
+  }),
+]);
+
+/**
+ * The bare-run test of section 3.2: the head begins with a signature in
+ * {@link BARE_RUN_SIGNATURES}, does not start with a byte order mark, and
+ * carries the evidence a binary signature needs in {@link confirmsBinary} (a
+ * NUL, a control byte, or invalid UTF-8). Never iterates the full table.
+ */
+export function confirmsBareRun(head: Uint8Array): { format: '.png' | '.jpg'; family: BinaryFamily } | undefined {
+  const window = head.length > SNIFF_BYTES ? head.subarray(0, SNIFF_BYTES) : head;
+  if (hasBom(window)) return undefined;
+  for (const entry of BARE_RUN_SIGNATURES) {
+    if (!entry.signatures.some(sig => matches(window, sig))) continue;
+    if (hasNul(window) || hasControlByte(window) || !decodes('utf-8', window)) {
+      return { format: entry.format, family: entry.family };
+    }
+  }
+  return undefined;
 }
 
 const LFS_HEADER = Buffer.from('version https://git-lfs.github.com/spec/v1\n', 'latin1');

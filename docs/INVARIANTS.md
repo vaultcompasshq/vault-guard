@@ -720,6 +720,11 @@ or more characters with a lowercase letter, an uppercase letter and a digit or
 characters. Newlines written as `\n`, `\r\n`, XML character references
 (`&#xA;`, `&#10;`, `&#13;`), `<br>` tags or `\u000a` / `\u000d` split lines. The END marker is not required.
 
+This is a rule about path context. The one content step that lowers a
+vendor-anchored rule is the encoded-payload demotion (see 'A content
+demotion lowers a finding, never removes it, and says why'), which reads
+only the bytes around the match and never the path.
+
 This is a heuristic, not a proof. The earlier text here ("a real key body line
 essentially always passes") was not true of the previous rule, and the rewrite
 replaced it, with the shapes it now handles pinned as tests. The corpus that pins
@@ -1215,4 +1220,109 @@ differed`, `A17a: per-thread, wall 10 s and CPU 50 ms: exit 0 on findings, no
 re-time`, `A17b: fallback, process CPU 12 s and wall 10 s twice: exit 2,
 elapsed_ms 10000, never 12000`, `U13: an ignore-line directive during a
 re-time is counted once`), and the MCP `binary-and-budget.test.ts` (`the
-budget re-time applies through the same seam`).
+budget re-time applies through the same seam`). "Its matches equal" compares
+each match's rule, line, offset, length and value digest, and from 1.12.0 its
+severity and demotion reason (CLI `data-file-retime.test.ts`, `A23: a
+re-timed copy keeps its demotion`).
+
+## A content demotion lowers a finding, never removes it, and says why
+
+The rule: a match is lowered to low only when every character of it is in
+the base64 alphabet (A-Z, a-z, 0-9, +, /, -, _; not =), it sits strictly
+inside a run of such characters at least 1024 long (at least one run
+character on each side), and the run's first 4096 decoded bytes confirm a
+binary format: for a data: URI, the row its declared media type maps to in
+MEDIA_TYPE_ROWS, through confirmsBinary; for a run with no data: prefix, one
+of the two headers in BARE_RUN_SIGNATURES (PNG's 8 bytes, or JPEG's FF D8 FF
+with an E0, E1, DB or EE marker), never another row. The check is on the
+full match, and a match already at low is not demoted and carries no
+record. The match keeps every fingerprint and carries a demotion record
+(from, reason, family, format, media_type, run_length). The gate is applied
+to the demoted severity: --fail-on low blocks on it, medium, high and
+critical do not. The step runs in SecretScanner.scanContent after the
+in-file test step, so every caller gets it and dedupe still ranks declared
+severities. Nothing reads a file name, a path, a config key, a flag, an
+environment variable or a file in the tree; the thresholds and tables are
+constants. A displaced overlapping match that would not itself be demoted
+is restored when the dedupe winner is demoted, unless it overlaps a match
+dedupe kept that was not demoted: the kept match always wins, so every match
+dedupe kept is still reported. mergeCopies keeps the higher-severity copy of
+a value. A demotion cannot be laundered through the
+baseline: an entries record written at low never suppresses the same match
+at a higher severity; baseline --write leaves demoted matches out of the
+legacy top-level fingerprints list, which has no severity rule; and its
+--include-critical refusal reads demotion.from.
+
+Boundary: a key planted inside a crafted binary payload is reported at low.
+That is a deliberate content change, the same class as encoding the key,
+which no pattern scanner detects.
+
+Enforced by: packages/core/src/utils/data-shape.ts and the call in
+scanContent (applyContentDemotion in secret-scanner.ts); BARE_RUN_SIGNATURES
+and confirmsBareRun in binary-type.ts; mergeCopies in content-source.ts; the
+two writer lines in packages/cli/src/commands/baseline.ts. Tests, by their
+titles: in the CLI `data-file-false-positives.test.ts`, `A1: one
+gcp-api-key in one cell of a 1000-row, 8-column CSV is critical, not
+demoted, not grouped`, `A3: a demoted group never hides a critical key in
+the same column`, `A4: the F17 shape, a one-line 800 KB SVG with an AIza run
+in its PNG payload`, `A5: a key in a plaintext data:text/html URI keeps
+critical`, `A6: a key pasted raw into a data:application/json;base64 payload
+keeps critical`, `A7: data:image/png declared over a payload that decodes to
+ASCII text keeps critical`, `A8: a data:image/svg+xml;base64 payload is never
+demoted`, `A9: a key flush against the end of a PNG payload keeps critical`,
+`A10: a notebook-shaped bare PNG run is demoted under any name`, `A11: a bare
+run of seeded random bytes keeps critical`, `A11b: bare runs with two-byte
+media signatures keep critical`, `A12: printable signatures confirm only
+under a declared type`, `A13: the run length boundary`, `A14: a run mixing +
+and _ is not decoded`, `A16: a demotion cannot be laundered through the
+baseline`, `A17: --trust-base, head control files cannot steer the
+demotion`, `A21: a no-op demotion is not recorded, and the path changes
+nothing`, `A22: every CLI mode gives the same severity and record on A4 and
+A10`, `A24: an inline directive on a payload line tallies the rule
+severity`, `A26: a JPEG under a declared image/png type keeps critical`,
+`A28: data: URIs with parameters and in upper case` and `U14: the merge keeps
+the copy that holds the value at the higher severity`; `data-file-retime.test.ts`
+(`A23: a re-timed copy keeps its demotion`); in the MCP
+`data-file-false-positives.test.ts`, `A22 (MCP): every tool gives the same
+severity and record`; in core, `binary-type-bare-run.test.ts` (`U4:
+confirmsBareRun tests only BARE_RUN_SIGNATURES`), `data-shape.test.ts` (`U1:
+runAround on boundaries`, `U2: the head decode window`, `U3:
+MEDIA_TYPE_ROWS`), `content-demotion.test.ts` (`demotion in scanContent`,
+`U12: dedupe then demote restores a displaced match that would not be
+demoted`, `U13: run starts are found by one lazy linear sweep per copy`) and
+`merge-copies.test.ts` (`U14: mergeCopies keeps the higher-severity copy`).
+
+## Grouping is presentation: every member is a finding
+
+The rule: five or more reported matches of one rule in one copy, in the same
+column of the regular lines of a delimited copy or on lines of 65536
+characters or more, that share one effective severity and one demotion
+status, are shown as one group. The data-file shape is decided on content
+only; a line with exactly two fields and an empty last one is never
+regular, and under the tab delimiter only, neither is a line with an empty
+first field. Every member stays an entry in JSON
+results[].matches[] and a SARIF result, counts toward run.blocking_matches
+and summary.secrets, and decides the exit code as before; a group never
+mixes severities, so its listed locations stand for every member. Groups
+are formed after the baseline, from what it left.
+A group id is never a baseline key: the reader looks up each match by its
+own key, and baseline --write writes one entry per member.
+
+Enforced by: formGroups in packages/core/src/scan-output.ts, used by every
+formatter, by displayScanResults and by the MCP summaries; dataShape and
+groupSlot in packages/core/src/utils/data-shape.ts; applyBaseline unchanged.
+Tests, by their titles: in the CLI `data-file-false-positives.test.ts`, `A2:
+a CSV column of 500 distinct JWTs is one grouped line, 500 matches, 500
+blocking` (with its U7, U8 and U9 cases), `A3: a demoted group never hides a
+critical key in the same column`, `A15: a baselined column reports a new
+value on its own` (with `A15b: a group_id hand-added to entries suppresses
+nothing`), `A18: the data-file trigger is content, never the name`, `A19: one
+200 KB minified JSON line with 30 JWTs is one long-line group`, `A20: quoted
+CSV fields with embedded commas and doubled quotes`, `A27: code that looks
+delimited is not a data file`, `A29: an empty first field is ordinary data
+under the comma` and `U6: group_id does not move with the display root`; in
+core `scan-output-groups.test.ts` (`formGroups`, `JSON and SARIF fields`),
+`data-shape.test.ts` (`U5: dataShape thresholds`, `groupSlot`) and
+`content-demotion.test.ts` (`U11: the data-file classifier costs a clean copy
+nothing`); in the MCP `data-file-false-positives.test.ts` (`U10: MCP
+summaries count matches, and state groups and demotions beside them`).

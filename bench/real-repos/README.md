@@ -124,3 +124,70 @@ outside M and I, a new finding outside X, fewer files scanned than M explains,
 counts that differ from the expected sets, any `scan_budget` entry for the
 branch in the load run, and plain-scan wall time over 1.15 times 1.10.0's on
 the four 1.10.0 repositories or on github/explore.
+
+## 1.12.0: encoded-payload demotion and grouped repeats
+
+`2026-10-17-1.12.0.json` is the release check that section 9 of
+`docs/design/2026-10-17-data-file-false-positives.md` requires. It compares
+the published 1.11.0 with the implementation branch on eleven public
+repositories: the four 1.10.0 repositories at the commits the 1.11.0 run
+used; jakevdp/PythonDataScienceHandbook and fastai/fastbook (notebooks whose
+outputs hold bare base64 PNG runs), plus ageron/handson-ml as the section 9.1
+fallback for fastbook; fivethirtyeight/data (hundreds of CSV files in varied
+dialects); and four chosen by GitHub code search, whose queries the record
+names: Sunbird-Ed/sunbird-perf-tests and
+jcarloshg/BuyingTickets-DistributedRateLimiter (CSV files with a column of
+JWT-shaped values) and tinylibs/tinyspy (an SVG with a `data:image/png`
+payload over 100 KB).
+
+Method, as for 1.11.0, with these additions:
+
+1. `census` applies the branch's own `dataShape` and run sweep to every
+   tracked text file at the clone head: files called delimited (by
+   delimiter) or long-line, and `R_media`, the characters of runs of 1024 or
+   more that decode to binary media, by reason (`data:` payload or bare run)
+   and alphabet. `expected_gcp_coincidences` is section 1.2's rate applied
+   to it (standard alphabet `1.96e-8` per character, URL-safe `5.96e-8`).
+2. `checks` applies the section 9.3 formulas per mode: findings lost or
+   added (keyed by rule, file, line, offset, source and both fingerprints),
+   the restorations (`restored_log`) and copy swaps (`swap_log`) that explain
+   an addition, any severity change outside the demoted set D, every entry
+   of D against 1.11.0's severity, the blocking count formula under the
+   default gate, and the run counts.
+3. `planted` runs the two planted cases of section 9.4 (P1, a key in one cell
+   of a 1000-row CSV beside a JWT column; P2, keys in a `data:text/html` URI
+   and pasted raw into a `data:application/json;base64` payload) in plain,
+   `--trust-base` and `--staged`, built at run time in their own
+   repositories. Through MCP `scan_workspace` the same cases are a test in
+   `packages/mcp`.
+4. `bench/run.cjs --assert` compares every positively labelled fixture's
+   findings and severities with `bench/severities-1.11.0.json`, written from
+   the published 1.11.0 with `--cli <cli-entry.js> --write-severities`.
+
+To regenerate, with both CLIs built or installed:
+
+```
+node bench/real-repos/run.cjs --design-2026-10-17-data-files <dir-with-the-eleven-clones> \
+  bench/real-repos/2026-10-17-1.12.0.json <1.11.0 cli-entry.js> <branch cli-entry.js>
+```
+
+In the recorded run (the eleven repositories above: handson-ml stands in
+for fastbook, whose bare-run R_media is 5.84 MB, and
+BuyingTickets-DistributedRateLimiter was a second JWT-column search because
+sunbird-perf-tests holds only two-line token CSVs; both of the replaced
+repositories stay in the record), every section 9.4 blocker is clear: no
+finding added or lost, no severity change, D empty everywhere (E at most
+0.31), blocking counts unchanged, the planted cases critical in every mode,
+and plain-scan wall time between 0.97 and 1.03 times 1.11.0's on the gated
+repositories. The machine was not quiet: the recorded load average was 8.46
+at the start on 8 cores (4.08 at the end), and the two builds were
+interleaved run by run, three runs each, so the load fell on both alike. One
+group forms, the JWT column of `login-results.csv` (63 members). The
+record's `demotion_explanations`, `group_explanations` and
+`fallbacks_and_choices` hold the hand checks.
+
+The census and the checks use the branch's own code, so they prove
+consistency, not correctness. The independent evidence is
+`demotion_explanations` (each demoted run decoded outside vault-guard with
+`base64 -d` and identified with `file -`) and `group_explanations` (each
+grouped file read by hand), added after reading the files.

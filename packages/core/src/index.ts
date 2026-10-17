@@ -11,11 +11,25 @@ export {
   confirmsBinary,
   isControlByte,
   isLfsPointer,
+  BARE_RUN_SIGNATURES,
+  confirmsBareRun,
   type BinaryFamily,
   type BinaryTypeRow,
   type Signature,
   type SignaturePart,
 } from './utils/binary-type';
+export {
+  MIN_RUN,
+  GROUP_MIN,
+  GROUP_LISTED,
+  LONG_LINE,
+  MEDIA_TYPE_ROWS,
+  dataShape,
+  encodedPayloadDemotion,
+  groupSlot,
+  runAround,
+  type DataShape,
+} from './utils/data-shape';
 export {
   THREAD_CPU_STABLE_NODE,
   defaultScanClock,

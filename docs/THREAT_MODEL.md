@@ -104,6 +104,7 @@ Vault Guard does not, and will not, claim to defend against:
 | Repository git config   | `diff.relative` shrinks the staged file list        | Config forced off per invocation (`git -c diff.relative=false ...`); staged paths resolved against the worktree root, never the caller's cwd. |
 | Git index, files on disk | A file the scanner cannot read, one over the 32 MiB limit, a tracked file missing on disk | Counted in `run.unscannable_files`; staged, directory and pull-request scans exit **2** and print no success line (see "Fail-closed behaviour"). |
 | File contents (matched) | Token-leak surface on output                        | `maskValue` reduces to 4-char prefix + length tag; SARIF message omits value. |
+| File contents (encoded media) | A demotion as a hiding place: a key planted inside a fake image payload to be lowered | A demotion needs every character of the match in the base64 alphabet, the match strictly inside a run of at least 1024 characters, and the run decoding to a binary format header (the declared one for a data: URI, otherwise PNG or JPEG only). It lowers to low, never removes, records the reason, and --fail-on low blocks on it. Nothing in the tree configures it. |
 
 #### What the binary skip guarantees, and its boundary
 
@@ -119,6 +120,21 @@ outside the text set (ISO-2022-KR text, which uses SO and SI, is the known
 case) and is named `.bin` with no declared `working-tree-encoding` is skipped.
 Design: `docs/design/2026-10-17-media-skip-budget-retime-upgrade-note.md`,
 section 2.
+
+#### What the content demotion guarantees, and its boundary
+
+A finding is lowered only on the bytes around it, never on a file name, a
+path or a value from the scanned tree, and it is lowered, never removed. A
+key that stands alone or is delimited keeps its severity wherever it sits.
+The boundary: an author who builds a fake binary header around a key inside
+a long base64 run gets that key reported at low instead of at its rule's
+severity. That is a deliberate change to the content, the same class as
+base64-encoding the key, which hides it from every pattern scanner
+completely and costs less; the demoted finding is still reported with its
+reason and still blocks under --fail-on low. Grouping changes no severity
+and no verdict; accepting a group into the baseline accepts each member,
+and a reviewer cannot tell a real member from a decoy by its shape.
+Design: docs/design/2026-10-17-data-file-false-positives.md, section 2.
 
 #### Fail-closed behaviour
 
