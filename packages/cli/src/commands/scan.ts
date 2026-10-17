@@ -26,6 +26,7 @@ import {
   ATTRIBUTES_NOTE_LINE,
   newPlainFileSetInfo,
   listTrackedIgnoredFiles,
+  BINARY_FAMILIES,
   type FailOnThreshold,
   type PullRequestSkips,
   type TrustBaseReport,
@@ -45,7 +46,7 @@ import {
   formatExcludeEntry,
   excludeEntryNote,
   newContentReport,
-  type RunSkipCounts,
+  newRunSkipCounts,
   type UnreadableFile,
 } from '../utils/scan-utils';
 import type { Diagnostic } from '@vaultcompass/vault-guard-core';
@@ -112,12 +113,35 @@ export function resolveContentRoot(anchor: string, staged = false): string {
  * scanned but slowly enough that the result is not trusted, and a too-large file
  * was refused before it was read.
  */
-function reportIncomplete(
-  unreadable: UnreadableFile[],
+/** A path for a stderr line: JSON-escaped when it holds a control character. */
+function printablePath(p: string): string {
+  // eslint-disable-next-line no-control-regex
+  return /[\u0000-\u001f\u007f]/.test(p) ? JSON.stringify(p) : p;
+}
+
+/** A path of more than 60 characters shortened in the middle to 60, with `...`. */
+export function shortenMiddle(p: string, max = 60): string {
+  if (p.length <= max) return p;
+  const keep = max - 3;
+  const front = Math.ceil(keep / 2);
+  return `${p.slice(0, front)}...${p.slice(p.length - (keep - front))}`;
+}
+
+/**
+ * The INCOMPLETE block's first line (design 2026-10-17, section 7): the label,
+ * then the first unscannable file in sorted order, then the counts, so a
+ * wrapper that quotes the first stderr line and caps it at 160 characters
+ * keeps the name and only ever loses counts.
+ */
+export function reportIncomplete(
+  unreadableIn: UnreadableFile[],
   staged: boolean,
   trustBase: TrustBaseReport | undefined,
   between?: () => void,
 ): void {
+  // Sorted, so the first file named is the same on every run (entries are
+  // pushed in completion order from concurrent batches).
+  const unreadable = [...unreadableIn].sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
   const unread = unreadable.filter(u => u.kind !== 'scan_budget' && u.kind !== 'too_large');
   const overBudget = unreadable.filter(u => u.kind === 'scan_budget');
   const tooLarge = unreadable.filter(u => u.kind === 'too_large');
@@ -134,7 +158,8 @@ function reportIncomplete(
   if (tooLarge.length > 0) {
     parts.push(`${tooLarge.length} ${what} over the 32 MiB scan limit were not scanned`);
   }
-  console.error(chalk.red.bold('❌ INCOMPLETE:'), chalk.white(`${parts.join('; ')}\n`));
+  const first = unreadable.length > 0 ? `First: ${shortenMiddle(printablePath(unreadable[0].file))}. ` : '';
+  console.error(chalk.red.bold('❌ INCOMPLETE:'), chalk.white(`${first}${parts.join('; ')}\n`));
   const ignoreWhere = trustBase
     ? `"ignore.paths" in .vault-guard.json on the base ref "${trustBase.ref}" (a change made in this pull request is only a proposal)`
     : '"ignore.paths" in .vault-guard.json';
@@ -369,14 +394,25 @@ export async function scanCommand(
     });
   }
 
+  // Advisory stderr lines of the run, collected rather than printed, so that
+  // on a run that cannot complete the INCOMPLETE line is the first thing on
+  // stderr (design 2026-10-17, section 7). On a complete run they are printed
+  // as soon as the scan is known to be complete, in their old order.
+  const deferred: string[] = [];
+  const defer = (line: string): void => {
+    deferred.push(line);
+  };
+  const flushDeferred = (): void => {
+    for (const line of deferred.splice(0)) console.error(line);
+  };
+
   if (extraPatternDiagnostics.length > 0 && format === 'text') {
     for (const ctx of extraPatternDiagnostics) {
-      console.error(
-        chalk.yellow('⚠️  extra_pattern rejected:'),
-        chalk.white(`${ctx.patternId} (${ctx.reason}) -- ${ctx.detail}`),
+      defer(
+        `${chalk.yellow('⚠️  extra_pattern rejected:')} ${chalk.white(`${ctx.patternId} (${ctx.reason}) -- ${ctx.detail}`)}`,
       );
     }
-    console.error(
+    defer(
       chalk.gray(
         '   Set "extra_patterns_unsafe": true in .vault-guard.json only if ' +
           'you have audited every pattern.\n',
@@ -407,7 +443,10 @@ export async function scanCommand(
   // What the run skipped without opening: the walk's type filter, the config's
   // own `ignore` list (a declared skip) and binary extensions. On a
   // pull-request directory scan the first two are counted into `prSkips`.
-  const skips: RunSkipCounts = { typeFiltered: 0, configIgnored: 0, binary: 0 };
+  const skips = newRunSkipCounts();
+  // Progress is for a person watching a terminal. In a pipe or a CI log it is
+  // noise, and its carriage return would join the next stderr line to it.
+  const showProgress = format === 'text' && process.stderr.isTTY === true;
   // Files the run reached but could not vouch for: unreadable, over the scan
   // budget, or a named target that is not there. Fatal (exit 2) on every path.
   const unreadable: UnreadableFile[] = [];
@@ -428,6 +467,7 @@ export async function scanCommand(
     if (staged) {
       if (!isInsideGitWorkTree(cwd)) {
         console.error(chalk.red('❌ Error:'), chalk.white('Not a git repository (or outside a work tree).'));
+        flushDeferred();
         return COULD_NOT_RUN_EXIT;
       }
 
@@ -455,6 +495,7 @@ export async function scanCommand(
                 '   Refusing to produce a ✅ result that may be incorrect.\n',
             ),
           );
+          flushDeferred();
           return 2;
         }
         throw e;
@@ -464,6 +505,7 @@ export async function scanCommand(
         console.log(chalk.blue('🔍 Scanning'), chalk.cyan('git staged files'));
         if (stagedFiles.length === 0) {
           console.log(chalk.green.bold('✅ SUCCESS:'), chalk.white('Nothing staged -- nothing to scan\n'));
+          flushDeferred();
           return 0;
         }
         console.log(chalk.gray(`   ${stagedFiles.length} file(s) in the index\n`));
@@ -472,7 +514,8 @@ export async function scanCommand(
       results = await scanFileListAsync(stagedFiles, scanner, {
         verbose: format === 'text',
         skipBinary: true,
-        progress: format === 'text',
+        progress: showProgress,
+        warn: defer,
         bus,
         stats,
         unreadable,
@@ -495,7 +538,8 @@ export async function scanCommand(
       results = await scanFilesAsync(targetPaths, scanner, {
         verbose: format === 'text',
         skipBinary: true,
-        progress: format === 'text',
+        progress: showProgress,
+        warn: defer,
         bus,
         stats,
         unreadable,
@@ -555,11 +599,17 @@ export async function scanCommand(
             'that the action runs at the repository root.',
         ),
       );
+      flushDeferred();
       return COULD_NOT_RUN_EXIT;
     }
 
     // Merge bus diagnostics
     diagnostics.push(...bus.drain());
+
+    // Computed before any advisory stderr is written (design 2026-10-17, 7).
+    // A file vault-guard could not read, or whose scan blew the budget, or a
+    // named target that is not there, is a file it did not check; see below.
+    const scanIncomplete = unreadable.length > 0;
 
     // In pull-request mode the baseline is the base ref's, already read and
     // parsed with the config. A baseline the head rewrote is a proposal, not a
@@ -580,13 +630,16 @@ export async function scanCommand(
         ctx: { path: baselineLoad.sourcePath ?? '', detail: baselineLoad.parseError },
       });
       if (format === 'text') {
-        console.error(
-          chalk.yellow('⚠️  Baseline file invalid:'),
-          chalk.white(baselineLoad.parseError),
-          chalk.gray(baselineLoad.sourcePath ? `(${baselineLoad.sourcePath})` : ''),
+        defer(
+          `${chalk.yellow('⚠️  Baseline file invalid:')} ${chalk.white(baselineLoad.parseError)} ` +
+            chalk.gray(baselineLoad.sourcePath ? `(${baselineLoad.sourcePath})` : ''),
         );
       }
     }
+    // A complete run prints what it collected here, where those lines used to
+    // appear relative to the rest of stderr. An incomplete one prints them
+    // after the INCOMPLETE block.
+    if (!scanIncomplete) flushDeferred();
 
     // Baseline entries and content fingerprints are keyed relative to the
     // repository root inside git, so a baseline written at the root matches a
@@ -649,6 +702,7 @@ export async function scanCommand(
       trackedNestedVendoredScanned = countScanned(plainFileSet.trackedNestedVendored);
     }
     const plainVendoredNames = [...plainFileSet.vendoredDirNames].sort();
+    const mismatches = [...skips.typeMismatch].sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
     const trackedCounts =
       fileSetKind === 'git' || fileSetKind === 'head-tree'
         ? {
@@ -684,6 +738,12 @@ export async function scanCommand(
       // Both are stated every run, even at zero: a skip by extension or by the
       // project's own ignore list is a decision the run must say it made.
       binary_files_skipped: skips.binary,
+      // Design 2026-10-17, section 5: every one always present, zero included.
+      binary_files_skipped_by_family: { ...skips.binaryByFamily },
+      binary_worktree_copies_skipped: skips.binaryWorktreeCopies,
+      binary_type_mismatch_scanned: mismatches.length,
+      binary_type_mismatch: mismatches,
+      scan_budget_retimed: skips.retimed,
       config_ignored_files: configIgnored,
       ...(unreadable.length > 0
         ? {
@@ -718,7 +778,7 @@ export async function scanCommand(
     // repository and cannot be read is exactly the file nobody checked. The way
     // out is deliberate rather than silent: fix the file, or list it under
     // `ignore.paths` in the config, which is then counted and reported.
-    const scanIncomplete = unreadable.length > 0;
+    // (`scanIncomplete` is computed above, before any advisory stderr.)
     // Exit 2 is already this CLI's "cannot vouch for the result" code -- the
     // GitError branch above uses it for the same reason. Exit 1 means
     // "scanned fine, found something", which this run did not establish.
@@ -730,7 +790,10 @@ export async function scanCommand(
     // block, and the user never chose a threshold), say so once on stderr  -- 
     // stderr so JSON/SARIF stdout stays parseable, and only for the implicit
     // default so setting `fail_on` anywhere silences it for good.
-    if (gateIsImplicitDefault && totalMatches > 0 && blocking === 0) {
+    // Never on a run that exits 2 (design 2026-10-17, section 8): the note
+    // describes a verdict, and such a run has none. Wrappers quote the first
+    // stderr line as the reason, and this note became that reason.
+    if (!scanIncomplete && gateIsImplicitDefault && totalMatches > 0 && blocking === 0) {
       console.error(
         chalk.yellow(
           `note: earlier vault-guard versions failed on any finding; since 1.4.0 the default gate is "medium".`,
@@ -755,6 +818,7 @@ export async function scanCommand(
         // stdout carries the document; the reason and the remedy go to stderr,
         // so the Action and any wrapper that shows stderr can say why.
         reportIncomplete(unreadable, staged, trustBase);
+        flushDeferred();
         return INCOMPLETE_SCAN_EXIT;
       }
       return blocking === 0 ? 0 : 1;
@@ -771,17 +835,22 @@ export async function scanCommand(
       );
       if (scanIncomplete) {
         reportIncomplete(unreadable, staged, trustBase);
+        flushDeferred();
         return INCOMPLETE_SCAN_EXIT;
       }
       return blocking === 0 ? 0 : 1;
     }
 
-    // Text mode: print one-line diagnostic summary when any non-fatal issues occurred
-    if (diagnostics.length > 0) {
-      console.error(
-        chalk.yellow(`⚠️  ${diagnostics.length} warning(s) -- run with --json for details`),
-      );
-    }
+    // Text mode: print one-line diagnostic summary when any non-fatal issues
+    // occurred. On an incomplete run it follows the INCOMPLETE block instead.
+    const warningSummary = (): void => {
+      if (diagnostics.length > 0) {
+        console.error(
+          chalk.yellow(`⚠️  ${diagnostics.length} warning(s) -- run with --json for details`),
+        );
+      }
+    };
+    if (!scanIncomplete) warningSummary();
 
     // Pull-request mode states what it read and what it refused to apply,
     // every run, including the run where the answer is "nothing". A reviewer
@@ -904,8 +973,27 @@ export async function scanCommand(
         chalk.gray(`Excluded by config ignore: ${configIgnored} (declared in the config "ignore" list)`),
       );
     }
+    // Binary skips by content agreement (design 2026-10-17, section 5), each
+    // line only when non-zero, so a clean run with no binary files prints
+    // byte for byte what it printed before.
     if (skips.binary > 0) {
-      console.log(chalk.gray(`Binary files skipped: ${skips.binary}`));
+      const families = BINARY_FAMILIES.filter(f => skips.binaryByFamily[f] > 0)
+        .map(f => `${f} ${skips.binaryByFamily[f]}`)
+        .join(', ');
+      console.log(chalk.gray(`Binary files skipped: ${skips.binary} (content matched the extension: ${families})`));
+    }
+    if (skips.binaryWorktreeCopies > 0) {
+      console.log(chalk.gray(`Working-tree copies skipped as binary, blob scanned: ${skips.binaryWorktreeCopies}`));
+    }
+    if (mismatches.length > 0) {
+      const named = mismatches.slice(0, 3).map(m => printablePath(m.file)).join(', ');
+      const more = mismatches.length > 3 ? ` and ${mismatches.length - 3} more` : '';
+      console.log(
+        chalk.yellow(`Files named as binary but holding text, scanned as text: ${mismatches.length} (${named}${more})`),
+      );
+    }
+    if (skips.retimed > 0) {
+      console.log(chalk.gray(`Files re-timed after a slow first scan, then trusted: ${skips.retimed}`));
     }
 
     if (scanIncomplete) {
@@ -917,6 +1005,9 @@ export async function scanCommand(
           displayScanResults(results, blocking, outputBase);
         }
       });
+      // Everything else this run had to say on stderr follows the block.
+      flushDeferred();
+      warningSummary();
       return INCOMPLETE_SCAN_EXIT;
     }
 
@@ -947,9 +1038,11 @@ export async function scanCommand(
       // Inside a git work tree the file set comes from git; a git failure there
       // is could-not-run, never a quiet fall back to the walk.
       console.error(chalk.red('❌ Git error:'), chalk.white(error.message));
+      flushDeferred();
       return COULD_NOT_RUN_EXIT;
     }
     console.error(chalk.red('❌ Fatal error:'), chalk.white(String(error)));
+    flushDeferred();
     return COULD_NOT_RUN_EXIT;
   }
 }

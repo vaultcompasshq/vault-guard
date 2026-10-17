@@ -1,5 +1,4 @@
 import fs from 'fs';
-import path from 'path';
 import {
   getFilesToScanAsync,
   newPlainFileSetInfo,
@@ -7,24 +6,20 @@ import {
   GitContentSource,
   GitError,
   MAX_SCAN_FILE_BYTES,
+  BINARY_FAMILIES,
   dropHeaderOnlyTwins,
   fileSetGitEnv,
   scanFileContent,
   SecretScanner,
+  type BinaryFamily,
   type FileScanResult,
+  type ScanClock,
 } from '@vaultcompass/vault-guard-core';
 
-const BINARY_EXTENSIONS = new Set([
-  '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip',
-  '.tar', '.gz', '.exe', '.dll', '.so', '.dylib', '.bin',
-]);
-
-function isBinaryFile(filePath: string): boolean {
-  return BINARY_EXTENSIONS.has(path.extname(filePath).toLowerCase());
-}
-
 /**
- * Per-file scan budget (ms) for the MCP surface, matching the CLI default.
+ * Per-file scan budget (ms of CPU time) for the MCP surface, matching the CLI
+ * default. Measured and re-timed once in core, exactly as for the CLI
+ * (design 2026-10-17, section 6), so the two cannot drift apart.
  *
  * Like the CLI's, this is a **post-hoc** check, not a wall-clock bound: Node's
  * regex engine is **synchronous** and cannot be interrupted, so a runaway scan
@@ -39,6 +34,7 @@ export interface OverBudgetFile {
   file: string;
   elapsed_ms: number;
   budget_ms: number;
+  reason?: string;
 }
 
 export interface WorkspaceScanOutcome {
@@ -49,6 +45,15 @@ export interface WorkspaceScanOutcome {
   overBudget: OverBudgetFile[];
   /** Files that were not scanned at all (over the size limit, or unreadable). */
   unscannable: UnscannableFile[];
+  /** Files skipped because their extension and their first bytes agree on a binary format. */
+  binaryFilesSkipped: number;
+  binaryFilesSkippedByFamily: Record<BinaryFamily, number>;
+  /** Disk copies confirmed binary whose file was otherwise scanned. */
+  binaryWorktreeCopiesSkipped: number;
+  /** Files with a binary extension whose bytes are text, scanned as text; sorted by file. */
+  binaryTypeMismatch: Array<{ file: string; family: BinaryFamily }>;
+  /** Files re-timed after a slow first scan, then trusted. */
+  scanBudgetRetimed: number;
 }
 
 export interface UnscannableFile {
@@ -64,6 +69,8 @@ export async function scanWorkspaceDirectory(
   concurrency = 10,
   configIgnorePatterns: string[] = [],
   scanBudgetMs: number = MCP_SCAN_BUDGET_MS,
+  /** The budget clock seam; the core default when absent. */
+  clock?: ScanClock,
 ): Promise<WorkspaceScanOutcome> {
   // Inside git the file set comes from git (tracked plus untracked files that
   // are not ignored), the same set the CLI scans, so an editor and CI agree.
@@ -80,25 +87,43 @@ export async function scanWorkspaceDirectory(
   }));
   let filesScanned = 0;
   let bytesScanned = 0;
+  let binaryFilesSkipped = 0;
+  const binaryFilesSkippedByFamily = Object.fromEntries(BINARY_FAMILIES.map(f => [f, 0])) as Record<
+    BinaryFamily,
+    number
+  >;
+  let binaryWorktreeCopiesSkipped = 0;
+  const binaryTypeMismatch: Array<{ file: string; family: BinaryFamily }> = [];
+  let scanBudgetRetimed = 0;
 
   // Tracked content is read from the index blob, exactly as a plain CLI scan
   // reads it (design 2026-10-12, 2.8), so an editor and CI agree. A git
-  // failure while reading it throws, as the file-set failures do.
+  // failure while reading it throws, as the file-set failures do. Every file
+  // is prepared: a binary candidate's blob is read for its head.
   const content = new GitContentSource('index', fileSetGitEnv(), info.blobs);
-  content.prepare(files.filter(f => !isBinaryFile(f)));
+  content.prepare(files);
 
   const scanOne = async (file: string): Promise<void> => {
     try {
-      if (isBinaryFile(file)) return;
       const entry = content.entryFor(file);
       if (!entry) {
         const st = await fs.promises.stat(file);
         if (!st.isFile()) return;
       }
+      // The core classifier and budget, the same as every CLI mode
+      // (design 2026-10-17, 4.6).
       const outcome = await scanFileContent(scanner, file, entry, entry ? content : undefined, {
         pathRoot: root,
         maxBytes: MAX_SCAN_FILE_BYTES,
+        classify: true,
+        budgetMs: scanBudgetMs,
+        ...(clock ? { clock } : {}),
       });
+      if (outcome.skippedByType) {
+        binaryFilesSkipped += 1;
+        binaryFilesSkippedByFamily[outcome.skippedByType.family] += 1;
+        return;
+      }
       if (outcome.failure) {
         unscannable.push({
           file,
@@ -117,8 +142,16 @@ export async function scanWorkspaceDirectory(
       if (outcome.matches.length > 0) {
         results.push({ file, matches: outcome.matches });
       }
-      if (outcome.elapsedMs > scanBudgetMs) {
-        overBudget.push({ file, elapsed_ms: outcome.elapsedMs, budget_ms: scanBudgetMs });
+      if (outcome.typeMismatch) binaryTypeMismatch.push({ file, family: outcome.typeMismatch.family });
+      binaryWorktreeCopiesSkipped += outcome.binaryCopiesSkipped;
+      if (outcome.retimed) scanBudgetRetimed += 1;
+      if (outcome.untrusted) {
+        overBudget.push({
+          file,
+          elapsed_ms: outcome.untrusted.elapsedMs,
+          budget_ms: scanBudgetMs,
+          reason: outcome.untrusted.reason,
+        });
       }
     } catch (error) {
       if (error instanceof GitError) throw error;
@@ -144,5 +177,17 @@ export async function scanWorkspaceDirectory(
     await content.closeAndWait();
   }
 
-  return { results: dropHeaderOnlyTwins(results), filesScanned, bytesScanned, overBudget, unscannable };
+  binaryTypeMismatch.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+  return {
+    results: dropHeaderOnlyTwins(results),
+    filesScanned,
+    bytesScanned,
+    overBudget,
+    unscannable,
+    binaryFilesSkipped,
+    binaryFilesSkippedByFamily,
+    binaryWorktreeCopiesSkipped,
+    binaryTypeMismatch,
+    scanBudgetRetimed,
+  };
 }

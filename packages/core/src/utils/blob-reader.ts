@@ -101,9 +101,14 @@ export function batchCheckBlobs(
 
 interface Pending {
   oid: string;
+  /** A head read: keep only this many leading bytes of the body. */
+  head?: number;
   resolve: (b: Buffer) => void;
   reject: (e: Error) => void;
 }
+
+/** The shared-entry key of a head read, apart from the full read of the same object. */
+const headKey = (oid: string, n: number): string => `${oid}\0head\0${n}`;
 
 /**
  * A streaming `git cat-file --batch` for one repository.
@@ -125,7 +130,16 @@ export class BlobBatchReader {
   private stderr = '';
   private failed: GitError | null = null;
   private readonly shared = new Map<string, Promise<Buffer>>();
+  /** Head keys per object id, so release() forgets them with the full read. */
+  private readonly headKeys = new Map<string, Set<string>>();
+  /** Discard mode (design 2026-10-17, 4.2): the kept head, and body bytes consumed so far. */
+  private headKeep: Buffer | null = null;
+  private bodyConsumed = 0;
   private readonly argv = [...BATCH_ARGS, '--batch'];
+  /** The most bytes buffered from git at once, for the memory-bound test. */
+  maxBuffered = 0;
+  /** Body bytes piped through for head reads (the whole object crosses the pipe). */
+  headReadBytes = 0;
   /** Processes started, for the call-count tests. */
   spawned = 0;
   /** Object ids written to git, for the call-count tests. */
@@ -148,7 +162,26 @@ export class BlobBatchReader {
 
   /** The bytes of one blob. Rejects with {@link GitError} on any failure. */
   read(oid: string): Promise<Buffer> {
-    const hit = this.shared.get(oid);
+    return this.request(oid, oid, undefined);
+  }
+
+  /**
+   * The first `n` bytes of one blob (design 2026-10-17, 4.2). git has no
+   * ranged read, so the whole body still crosses the pipe, but it is consumed
+   * as it arrives and only `n` bytes are kept. The same `cat-file --batch`
+   * process and window as a full read; shared separately from a full read of
+   * the same object, and released with it.
+   */
+  readHead(oid: string, n: number): Promise<Buffer> {
+    const key = headKey(oid, n);
+    const keys = this.headKeys.get(oid) ?? new Set<string>();
+    keys.add(key);
+    this.headKeys.set(oid, keys);
+    return this.request(key, oid, n);
+  }
+
+  private request(key: string, oid: string, head: number | undefined): Promise<Buffer> {
+    const hit = this.shared.get(key);
     if (hit !== undefined) return hit;
     const p = new Promise<Buffer>((resolve, reject) => {
       if (this.failed) {
@@ -159,10 +192,10 @@ export class BlobBatchReader {
         reject(readFailure(this.repoTop, 'read after the reader was closed', `git ${this.argv.join(' ')}`));
         return;
       }
-      this.queue.push({ oid, resolve, reject });
+      this.queue.push({ oid, ...(head !== undefined ? { head } : {}), resolve, reject });
       this.pump();
     });
-    this.shared.set(oid, p);
+    this.shared.set(key, p);
     this.maxHeld = Math.max(this.maxHeld, this.shared.size);
     return p;
   }
@@ -170,10 +203,13 @@ export class BlobBatchReader {
   /**
    * Forget a blob's bytes once every path that shares it has been scanned.
    * Without this every blob stays referenced for the whole run, and memory
-   * grows with the total tracked size instead of with the read window.
+   * grows with the total tracked size instead of with the read window. A head
+   * read of the same object is forgotten with it.
    */
   release(oid: string): void {
     this.shared.delete(oid);
+    for (const k of this.headKeys.get(oid) ?? []) this.shared.delete(k);
+    this.headKeys.delete(oid);
   }
 
   /** Blobs currently held, for the memory-bound test. */
@@ -315,9 +351,44 @@ export class BlobBatchReader {
     return head;
   }
 
+  /**
+   * Discard mode for the head read at the front of the queue: copy the first
+   * bytes of the body into the kept head, count and drop the rest (and the
+   * trailing newline) as it arrives, never holding the body. True once the
+   * object has been answered.
+   */
+  private consumeHead(): boolean {
+    const total = this.bodySize + 1;
+    const keep = this.headKeep as Buffer;
+    while (this.bodyConsumed < total && this.chunks.length > 0) {
+      const c = this.chunks[0];
+      const k = Math.min(c.length, total - this.bodyConsumed);
+      if (this.bodyConsumed < keep.length) {
+        c.copy(keep, this.bodyConsumed, 0, Math.min(k, keep.length - this.bodyConsumed));
+      }
+      if (this.bodyConsumed + k === total && c[k - 1] !== 0x0a) {
+        this.fail('git cat-file --batch output lost its framing (no newline after an object)');
+        return false;
+      }
+      this.bodyConsumed += k;
+      if (k === c.length) this.chunks.shift();
+      else this.chunks[0] = c.subarray(k);
+      this.buffered -= k;
+    }
+    if (this.bodyConsumed < total) return false;
+    this.headReadBytes += this.bodySize;
+    this.bodySize = -1;
+    this.headKeep = null;
+    const done = this.inflight.shift() as Pending;
+    done.resolve(keep);
+    this.pump();
+    return true;
+  }
+
   private onData(chunk: Buffer): void {
     this.chunks.push(chunk);
     this.buffered += chunk.length;
+    this.maxBuffered = Math.max(this.maxBuffered, this.buffered);
     while (!this.failed) {
       if (this.bodySize < 0) {
         const joined = this.chunks.length === 1 ? this.chunks[0] : Buffer.concat(this.chunks, this.buffered);
@@ -351,6 +422,14 @@ export class BlobBatchReader {
           return;
         }
         this.bodySize = size;
+        if (expected.head !== undefined) {
+          this.headKeep = Buffer.alloc(Math.min(size, expected.head));
+          this.bodyConsumed = 0;
+        }
+      }
+      if ((this.inflight[0] as Pending).head !== undefined) {
+        if (!this.consumeHead()) return;
+        continue;
       }
       if (this.buffered < this.bodySize + 1) return;
       const body = this.take(this.bodySize + 1);

@@ -58,16 +58,18 @@ describe('scanWorkspaceDirectory', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-budget-'));
     try {
       fs.writeFileSync(path.join(dir, 'slow.txt'), 'nothing to see\n', 'utf8');
-      const busy = (ms: number): void => {
-        const end = Date.now() + ms;
-        while (Date.now() < end) { /* deliberately synchronous */ }
-      };
-      const slowScanner = {
-        scanContent: () => { busy(60); return []; },
-        scan: () => { busy(60); return []; },
+      const scanner = {
+        scanContent: () => [],
+        scan: () => [],
       } as unknown as SecretScanner;
+      // The budget is CPU time with one re-time (design 2026-10-17, section
+      // 6): a busy-wait is descheduled on a loaded machine and no longer
+      // reliably goes over, so the clock seam makes every span 30 ms, over
+      // twice the 10 ms budget.
+      let t = 0;
+      const clock = { measure: 'thread-cpu' as const, cpuMs: () => (t += 30), wallMs: () => t };
 
-      const { overBudget } = await scanWorkspaceDirectory(dir, slowScanner, 10, [], 10);
+      const { overBudget } = await scanWorkspaceDirectory(dir, scanner, 10, [], 10, clock);
 
       expect(overBudget).toHaveLength(1);
       expect(overBudget[0].file).toContain('slow.txt');

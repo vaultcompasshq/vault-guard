@@ -73,6 +73,17 @@ describe('silent-pass fixes', () => {
     fs.rmSync(base, { recursive: true, force: true });
   });
 
+  /** The JSON document a run writes to stdout (the captured stdout since this call). */
+  const captureStdout = async (
+    fn: () => Promise<number>,
+  ): Promise<{ run: Record<string, unknown> & { binary_files_skipped_by_family: Record<string, number> } }> => {
+    const from = cap.out.length;
+    await fn();
+    return JSON.parse(cap.out.slice(from).join('')) as {
+      run: Record<string, unknown> & { binary_files_skipped_by_family: Record<string, number> };
+    };
+  };
+
   const write = (root: string, rel: string, content: string | Buffer): void => {
     const full = path.join(root, rel);
     fs.mkdirSync(path.dirname(full), { recursive: true });
@@ -277,9 +288,14 @@ describe('silent-pass fixes', () => {
       const code = await scanCommand('.', 'text', true);
 
       expect(code).toBe(0);
+      // U11 (design 2026-10-17): its bytes carry the wOF2 signature and a NUL,
+      // so it is skipped by content agreement and counted as a font.
+      const json = await captureStdout(() => scanCommand('.', 'json', true));
+      expect(json.run.binary_files_skipped).toBe(1);
+      expect(json.run.binary_files_skipped_by_family.font).toBe(1);
     });
 
-    it('a staged binary-extension file (.png) with NUL is still skipped, as in directory mode', async () => {
+    it('a staged .png too short for the 8-byte PNG signature is a mismatch, scanned as text, and still exits 0', async () => {
       gitInit(base);
       write(base, 'img/logo.png', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02]));
       stage(base, 'img/logo.png');
@@ -288,6 +304,20 @@ describe('silent-pass fixes', () => {
       const code = await scanCommand('.', 'text', true);
 
       expect(code).toBe(0);
+      const json = await captureStdout(() => scanCommand('.', 'json', true));
+      expect(json.run.binary_files_skipped).toBe(0);
+      expect(json.run.binary_type_mismatch).toEqual([{ file: 'img/logo.png', family: 'image' }]);
+    });
+
+    it('a staged .png with the full signature is skipped', async () => {
+      gitInit(base);
+      write(base, 'img/logo.png', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02]));
+      stage(base, 'img/logo.png');
+      process.chdir(base);
+
+      const json = await captureStdout(() => scanCommand('.', 'json', true));
+      expect(json.run.binary_files_skipped).toBe(1);
+      expect(json.run.binary_files_skipped_by_family.image).toBe(1);
     });
   });
 

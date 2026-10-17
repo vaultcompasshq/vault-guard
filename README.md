@@ -206,7 +206,7 @@ directory, pull-request and `--staged` scans alike:
 |-------|-----------------|
 | A file could not be read (permissions). In pull-request mode this includes a tracked file under a directory that cannot be entered | Fix the file, or declare it in `ignore.paths` |
 | The file is over the 32 MiB whole-file limit (judged on the raw bytes on disk or in the index) | Declare it in `ignore.paths` |
-| The file's scan took longer than the per-file time budget (5000 ms), so its result is not trusted | Fix the file, or declare it in `ignore.paths` |
+| The file's scan used more than 5000 ms of CPU time on two passes, so its result is not trusted | Fix the file, or declare it in `ignore.paths` |
 | A tracked file is missing on disk, as a sparse checkout produces (pull-request mode) | Check out the file, or declare it in `ignore.paths` |
 | A path named to the `check` command, which takes several, does not exist (`check a.ts missing.ts`) | Check the path, or stop passing it |
 
@@ -224,16 +224,41 @@ The entry is relative to the scanned directory (the repository root for
 there first; a pull request that adds its own exclude only proposes it. A file
 excluded this way is never opened and is counted, not hidden.
 
-A staged blob containing a NUL byte is scanned as text, like any file; UTF-16
-files that carry a byte order mark are decoded and scanned, while UTF-16
-without a BOM is not detected.
+vault-guard skips a file as binary only when its extension names an image,
+document, video, audio, font, archive or library format AND its first bytes
+carry that format's signature. A file with a binary extension and text inside
+is scanned as text and listed (`binary_type_mismatch`), so renaming a file
+never hides it. Content alone never causes a skip: a text file containing a
+NUL byte is scanned. A `.bin` file has no signature, so it is skipped only
+when its first bytes contain a control byte that text does not use; NUL
+bytes and non-UTF-8 bytes never count, so NUL-separated text (an `env -0`
+dump) and text in a legacy codepage (Latin-1, Windows-1252, Shift-JIS) are
+scanned. A format whose signature is plain letters (Ogg, PDF, BMP, the MP4
+and QuickTime atoms) also needs a NUL or control byte before it is skipped.
+UTF-16 files that carry a byte order mark are decoded and
+scanned, while UTF-16 without a BOM is not detected. A binary file is skipped
+at any size; anything scanned as text is limited to 32 MiB. Two known limits
+remain: a file whose first bytes are a valid binary header followed by text is
+skipped (that is a change to the content, like encoding a secret), and
+ISO-2022-KR text, which uses the SO and SI control bytes, is skipped when named
+`.bin` with no declared `working-tree-encoding`. See
+[docs/THREAT_MODEL.md](./docs/THREAT_MODEL.md), "What the binary skip
+guarantees, and its boundary".
 
 Every JSON and SARIF run states what it declined to open, even at zero:
 `config_ignored_files` (excluded by the config's `ignore` list),
-`binary_files_skipped` (skipped by a binary extension) and, on a directory or
-pull-request scan, `type_filtered_files` (dropped by the walk's extension,
-lockfile and generated-file filters). Text mode prints each of these lines when
-it is non-zero. When a file was not scanned, JSON adds `run.unscannable_files`
+`binary_files_skipped` (skipped because the extension and the file's first
+bytes agree on a binary format, with a per-format breakdown in
+`binary_files_skipped_by_family`), `binary_type_mismatch_scanned` (files with
+a binary extension whose bytes are text, scanned as text),
+`binary_worktree_copies_skipped` (working-tree copies confirmed binary whose
+file was otherwise scanned; it counts disk copies only, and a skipped blob
+beside a scanned disk copy is counted as a mismatch, not a skipped copy),
+`scan_budget_retimed`
+(files re-timed once after a slow first scan, then trusted) and, on a
+directory or pull-request scan, `type_filtered_files` (dropped by the walk's
+extension, lockfile and generated-file filters). Text mode prints each of these
+lines when it is non-zero. When a file was not scanned, JSON adds `run.unscannable_files`
 and `run.unscannable` (each entry has `file`, `kind` of `read_error`,
 `too_large` or `scan_budget`, and `exclude` when a config entry can name the
 file); SARIF adds `unscannable_files` and marks the invocation
@@ -752,7 +777,7 @@ own exit code. An integrator gating on `summary.secrets` will fail builds that v
 considers passing.
 
 **Also check `run.unscannable_files`.** It is the number of files the run should have scanned
-and did not vouch for: unreadable, over the 32 MiB limit, over the per-file time budget, a
+and did not vouch for: unreadable, over the 32 MiB limit, over the per-file CPU-time budget twice, a
 tracked file missing on disk, or a path named to `check` that does not exist. `run.unscannable` lists
 each one with its `kind` and, where possible, the `ignore.paths` entry that would declare it.
 When it is present the process exits 2, and a `blocking_matches` of 0 means "nothing found in

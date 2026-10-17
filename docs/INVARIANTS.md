@@ -573,36 +573,89 @@ root is each file's own git work tree (memoised per directory), through
 the repository, not from an ancestor cwd`) pins it. `scanFiles` (sync) has no
 production caller.
 
-## The staged path skips a blob by extension only, never by content
+## A binary skip needs the extension and the bytes to agree
 
-`--staged` reads each blob from the index. A blob containing a NUL byte was
-skipped with a bare `return`: nothing recorded, nothing raised, so a `.ts` file
-holding a key and one NUL byte printed "No secrets found" and exited 0.
-Refusing such blobs (exit 2) was tried and rejected, because it broke ordinary
-commits of fonts, images and lockfiles whose extension is not on the binary list.
+History. `--staged` reads each blob from the index. A blob containing a NUL
+byte was skipped with a bare `return`: nothing recorded, nothing raised, so a
+`.ts` file holding a key and one NUL byte printed "No secrets found" and
+exited 0. Refusing such blobs (exit 2) was tried and rejected, because it broke
+ordinary commits of fonts, images and lockfiles whose extension is not on the
+binary list. Until 1.10.0 the skip that replaced it was by extension only, so
+a text file named `credentials.png` or `dump.bin` was skipped unread in every
+mode (design 2026-10-17, section 1.3). Until 1.9.1 it was also silent; from
+1.9.1 it was counted (`run.binary_files_skipped`, and `run.type_filtered_files`
+for the walk's type filter on a plain directory run).
 
-**The rule:** the staged path and directory mode decide skipping the same way:
-only `BINARY_EXTENSIONS`. Everything else, NUL bytes included, is scanned as
-text. Nothing is skipped on content.
+The rule: a copy of a file (an untracked file, a blob, a disk copy) is
+skipped as binary only when its lowercased extension is in the family table
+in packages/core/src/utils/binary-type.ts, its first 4096 bytes carry one of
+that extension's signatures, and those bytes do not start with a byte order
+mark and carry non-text evidence. A control byte below means a C0 byte
+outside the text set NUL, BEL, BS, tab, LF, VT, FF, CR, SUB and ESC. For a
+binary signature (one
+with a byte outside printable ASCII), the evidence is a NUL, a control byte
+or invalid UTF-8. For a printable signature (OggS, %PDF-, BM, ftyp and the
+other atoms at offset 4, and the rest listed in the design), a NUL or a
+control byte; invalid UTF-8 does not count. For a row with no signature
+(.bin), a control byte only; neither NUL nor invalid UTF-8 counts. A copy
+with a declared working-tree-encoding whose head decodes in that encoding
+with fatal, streaming decoding (a UTF-16 label with no BOM decoded as
+UTF-16, big-endian then little-endian), or whose label is outside the label
+map, is never confirmed. Content never causes a skip on its own: a NUL byte in a .ts
+file is scanned, as the V2 fix required, and NUL-separated text or
+legacy-codepage text named .bin is scanned.
+A copy with a binary extension that fails the check is scanned as text,
+under the size limit and the budget, and counted in
+run.binary_type_mismatch, except a Git LFS pointer, which is scanned and not
+counted. Every mode applies the same classifier: plain, --trust-base,
+--staged, a named target, and the MCP workspace scan. The table is a
+constant; no config key, flag, environment variable or file in the scanned
+tree changes it.
 
-The skip is by extension. Until 1.9.1 it was also silent. It is now COUNTED
-(`run.binary_files_skipped` in JSON and SARIF, and a `Binary files skipped: N`
-line in text when N is not zero), and the walk's own type filter (images,
-archives, lockfiles, `.log`, `.map`, minified bundles) is counted the same way
-in `run.type_filtered_files` on a plain directory run, as it already was in
-pull-request mode. A PNG of any size is removed by the walk filter before any
-size or time budget applies.
+Boundary: a file whose first bytes are a valid binary header followed by
+text is skipped. That is a change to the content, the same class as
+encoding a secret, which no pattern scanner detects. What the rule
+guarantees is that a name alone never removes text from the scan. Known
+limits beside it: a POSIX tar with the ustar magic is skipped although its
+members are stored uncompressed, which is the behaviour of every earlier
+release; and .bin, having no signature, is the weakest row: ISO-2022-KR
+text, which uses SO and SI (0E, 0F), named .bin with no declared
+working-tree-encoding is skipped, and so is any text file with another
+control byte outside the text set. ELF and EBML heads get no evidence
+from their signature bytes and are confirmed only by the bytes after them.
 
-**Enforced by:** the staged branch of `scanFileListAsync` in
-`packages/cli/src/utils/scan-utils.ts` carries no content check; the only skip is
-`isBinaryFile`. The counts are pinned by `directory-pr-fail-closed.test.ts`
-(`a binary extension the walk lets through is counted in the run`, `a PNG removed
-by the walk filter is counted as type-filtered, before any budget`). The
-`.png` case below asserts only exit 0, which does not by itself prove the file
-was skipped; the count test does. Tests, in `silent-passes.test.ts`: `a staged .ts file with a key
-and one NUL byte exits 1 (a finding), not 0`, `a staged .woff2 containing a NUL
-does not exit 2`, and `a staged binary-extension file (.png) with NUL is still
-skipped, as in directory mode`.
+Enforced by: binary-type.ts and the per-copy check in scanFileContent and
+scanTrackedCopies (content-source.ts); `isBinaryFile` and `BINARY_EXTENSIONS`
+are deleted, and `shouldIgnoreFile` (file-utils.ts) no longer lists any binary
+extension. Tests: `binary-type.test.ts` (U1 `%s signature %i: the minimal
+valid header confirms` and `... its first signature byte flipped does not
+confirm`, U2 `the excluded set is never a candidate`, U15 `R4 per signature
+kind`, U3 `the window edge in the declared-label decode`);
+`binary-content-agreement.test.ts`, one `describe` per fixture of the
+2026-10-17 design's section 11.1, by their titles: `A1: config/credentials.mov
+holding a key is scanned in every mode`, `A2: credentials.png holding a key is
+scanned`, `A3: the extension is compared case-insensitively`, `A4: dump.bin of
+UTF-8 text with no NUL is scanned`, `A21: dump.bin of NUL-separated records
+(the env -0 shape) is scanned`, `A24: dump.bin in Windows-1252 (the set >
+dump.bin shape) is scanned`, `A25: a printable signature with only invalid
+UTF-8 after it is scanned`, `A22: a declared working-tree-encoding that
+decodes means text`, `A5: a UTF-16LE notes.bin with a BOM is scanned`, `A6:
+song.ogg of OggS followed by ASCII text is scanned`, `A7: the documented
+boundaries, pinned`, `A8: a 40 MiB real-header .mp4 is skipped at any size`,
+`A9: anything scanned as text over 32 MiB is exit 2, and the first stderr line
+names it`, `A10: the LFS shape, with a local filter driver`, `A11: copies are
+classified per copy`, `A12: no attribute is consulted by the classifier`, `U12:
+a tracked image missing from the working tree`, `U17: skipBinary false scans
+every file as text, with no classification` and `U18: named tracked symlinks,
+each copy judged by the name of the bytes it holds`; `blob-head-read.test.ts` (U5); the U1 call-count test in
+`blob-content-source.test.ts` (U6, with images and videos); `hook-environment.test.ts`
+(`U14 (design 2026-10-17): --staged head reads in a commit -a hook use the hook's
+index`); in `silent-passes.test.ts`, `a staged .ts file with a key and one NUL
+byte exits 1 (a finding), not 0`, `a staged .woff2 containing a NUL does not exit
+2` (now also asserting the font count), `a staged .png too short for the 8-byte
+PNG signature is a mismatch, scanned as text, and still exits 0` and `a staged
+.png with the full signature is skipped` (U11); and, for the MCP workspace scan,
+`binary-and-budget.test.ts` in packages/mcp (U10, U16).
 
 **Text is decoded in one place, and a BOM is honoured.** Skipping nothing on
 content only helps if the content is read as what it is. Read as UTF-8, a UTF-16
@@ -780,10 +833,14 @@ through the `git cat-file` output limit, which `readGitIndexFile` turns into the
 same `FileTooLargeError` a file on disk produces). Above it the file is
 unscannable: exit 2 with the same wording and exclude entry in every mode, never
 partly scanned. `scanTextFileAsync` and
-`scanTextFileSync` throw above it. `DEFAULT_SCAN_BUDGET_MS` is 5000 ms per file, checked after
-the scan returns (the regex engine cannot be interrupted), so it refuses to TRUST
-a slow result rather than bounding time. There is no total-run budget. Binary
-extensions and the walk's type filter are removed before either number applies.
+`scanTextFileSync` throw above it. `DEFAULT_SCAN_BUDGET_MS` is 5000 ms of CPU
+time per copy, checked after the scan returns; a copy over it is scanned once
+more from the same text and is untrusted only when the second pass is over
+too, or the first was over twice the budget (the regex engine cannot be
+interrupted), so it refuses to TRUST a slow result rather than bounding time.
+There is no total-run budget. A copy confirmed binary and the walk's name
+filter are removed before either number applies; a binary extension whose
+bytes are text is subject to both.
 
 **Where the exclude is read from.** `ignore.paths` and `ignore.patterns` in
 `.vault-guard.json`, merged in `scanCommand` and matched with gitignore syntax
@@ -1057,3 +1114,82 @@ a commit -a hook still reads the hook's index`, `U20: --staged in a
 GIT_DIR-only repository reads blobs through GIT_DIR`); `git-env.test.ts`
 (`U16: the stripped list covers git rev-parse --local-env-vars except the
 two config variables`).
+
+## On a run that cannot complete, the reason is the first thing said
+
+The rule: when stderr is not a TTY, in every format (text, JSON, SARIF),
+on a run that exits 2 through the INCOMPLETE path, the INCOMPLETE line is
+the first line on stderr, and it names the first unscannable file, in
+sorted order, right after the label. Every other line (a rejected
+extra_pattern, walk and scan errors, a baseline parse warning, the warning
+summary) is collected and printed after the INCOMPLETE block. A rejected
+extra_pattern is a warning and the run carries on; the exit 2 comes from
+the unscannable file, so that file is the reason to state first.
+Progress output is not written when stderr is not a TTY, so no carriage
+return can join another line to INCOMPLETE. The 1.4.0 upgrade note is
+never printed on a run that exits 2: it describes a verdict, and such a
+run has none. Wrappers quote the first stderr line as the gate's reason,
+so anything printed before it becomes the reason.
+
+Scope: this covers vault-guard's own output. Two kinds of line can still
+precede it and are outside the rule: the unsupported-Node warning
+cli-entry.ts prints before anything runs (the run is on an unsupported
+runtime, and that is the more important thing to say), and warnings Node
+itself writes for the process (deprecations, MaxListeners). vault-guard
+does not install a process warning listener to defer them, because that
+would hide a runtime's own diagnostics from every other reader. One
+source is closed instead of scoped: process.threadCpuUsage is used only
+when it exists and process.versions.node is in a recorded range where it
+is stable, a static rule that never probes the clock; every other line
+takes the process-CPU fallback. Tests: the decision driven by a stubbed
+version string, and a process warning spy asserting a scan emits no
+warning on each supported CI Node line.
+
+Enforced by: scanCommand in packages/cli/src/commands/scan.ts, and the
+collector the walk and scan paths write text-format lines to (`warn` in
+`ScanOptions`, and the `warn` parameter of `getFilesToScanAsync`). Tests, in
+`incomplete-first-line.test.ts`: `A18: the upgrade note is dropped on exit 2,
+and every advisory line follows INCOMPLETE`, `A19: the control, with nothing
+unscannable`, `A20 (a): an exit 2 reached after the scan with findings in hand
+prints no note`, `A23: progress on a pipe`, `A23b: progress on a terminal`,
+`A26: walk-time warnings outside git follow the INCOMPLETE block` and `A27:
+path-not-found and invalid-path lines follow the INCOMPLETE block`; in
+`scan-budget-retime.test.ts`, `A20 (b): the baseline readBytes seam throwing
+after the scan prints no note, exit 2`; `report-incomplete.test.ts` (U9); and
+`scan-clock.test.ts` in core (`the scan clock decision`, `a scan emits no
+process warning`). Each asserts on stderr after the same
+control-character and non-ASCII stripping the umbrella applies, so the
+red-cross prefix does not matter; the first line then begins with
+INCOMPLETE: after optional whitespace.
+
+## The scan budget is CPU time, re-timed once
+
+The rule: the per-file budget is measured in CPU time of the scan of one
+decoded copy, not wall time: the scanning thread's CPU time where Node
+provides it, otherwise the smaller of process CPU time and wall time, so
+the measure is never larger than the wall time 1.10.0 used. A copy over it is scanned a second time from
+the same text, with the second pass's inline tally discarded; it is trusted
+only if the second pass is within the budget and its matches equal the
+first pass's. A first pass over twice the budget is untrusted without a
+second pass. An untrusted copy is INCOMPLETE and exit 2. Both passes scan
+the whole content, so the re-time changes a decision, never coverage.
+
+The per-thread clock is used on the Node lines recorded in
+`THREAD_CPU_STABLE_NODE` (packages/core/src/utils/scan-clock.ts): 22.19.0 and
+later on 22, 23.9.0 and later on 23, and every release of 24, 25 and 26, from
+the Node API documentation of `process.threadCpuUsage` ("Added in: v23.9.0,
+v22.19.0", no stability marking). Node 22.0.0 to 22.18.x, the low end of
+`engines`, takes the fallback.
+
+Enforced by: scanFileContent in content-source.ts and its clock seam
+(scan-clock.ts); the CLI and MCP read the decision from the outcome and
+compare nothing themselves. Tests: `scan-budget-retime.test.ts` in core and in
+the CLI (`A13: 6000 then 100 is trusted on its findings, re-timed, no
+INCOMPLETE`, `A14: 6000 then 6000 is exit 2, the reason says twice, first_ms
+6000`, `A15: 12000 on the first pass is exit 2 with the scanner called once for
+that copy`, `A16: a second pass with one extra match is exit 2, results
+differed`, `A17a: per-thread, wall 10 s and CPU 50 ms: exit 0 on findings, no
+re-time`, `A17b: fallback, process CPU 12 s and wall 10 s twice: exit 2,
+elapsed_ms 10000, never 12000`, `U13: an ignore-line directive during a
+re-time is counted once`), and the MCP `binary-and-budget.test.ts` (`the
+budget re-time applies through the same seam`).

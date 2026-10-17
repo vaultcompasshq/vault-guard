@@ -310,7 +310,7 @@ earn. The action still `tee`s stdout, so the file exists and is **empty**, and
 `results-file` is empty with it.
 
 **The scan was incomplete.** A file it should have scanned was not: unreadable,
-over the 32 MiB limit, over the per-file time budget, a tracked file missing on
+over the 32 MiB limit, over the per-file CPU-time budget twice, a tracked file missing on
 disk (a sparse checkout), or a path named to the `check` command that does not
 exist. Pull-request, directory and staged runs all exit 2 here **with** a SARIF
 document. That

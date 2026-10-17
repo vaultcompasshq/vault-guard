@@ -95,6 +95,15 @@ const WORKTREE_ENCODING_MAP: ReadonlyMap<string, string | null> = (() => {
   return m;
 })();
 
+/**
+ * The WHATWG decoder name for an upper-cased `working-tree-encoding` label:
+ * a name, `null` for a label routed to the BOM sniff, or undefined for a
+ * label outside the map.
+ */
+export function worktreeEncodingName(upperLabel: string): string | null | undefined {
+  return WORKTREE_ENCODING_MAP.get(upperLabel);
+}
+
 /** Every label the map decodes, for the test that constructs each decoder. */
 export function mappedWorktreeEncodings(): ReadonlyMap<string, string | null> {
   return WORKTREE_ENCODING_MAP;

@@ -68,8 +68,11 @@ Vault Guard does not, and will not, claim to defend against:
 
   The per-file budget is **not** an execution-time bound, and must not be read
   as one. Node's regex engine is **synchronous** and cannot be interrupted, so
-  the budget is a **post-hoc** detector: it compares elapsed time *after* the
-  scan of a file has already returned. It cannot abandon, preempt, or otherwise
+  the budget is a **post-hoc** detector: it compares the CPU time of the scan
+  (the scanning thread's where Node provides it, otherwise the smaller of
+  process CPU and wall time) *after* the scan of a file has already returned,
+  and a file over it is scanned once more from the same text before it is
+  called untrusted. It cannot abandon, preempt, or otherwise
   time-bound a runaway scan; a catastrophic pattern still runs to completion and
   still blocks the process for as long as it takes. What the budget does is
   refuse to call that result trustworthy, turning an over-budget file into a
@@ -87,6 +90,7 @@ Vault Guard does not, and will not, claim to defend against:
 | Input source            | Threat                                              | Mitigation                                                                   |
 |-------------------------|-----------------------------------------------------|------------------------------------------------------------------------------|
 | Files on disk           | Pathological filenames, symlink loops               | `realpathSync` for symlink resolution; `seen` set; binary-file skip.          |
+| File names, in every mode | A text file renamed to a binary extension (`credentials.png`, `dump.bin`) to be skipped unread | A binary skip needs the extension AND the copy's own first 4096 bytes to agree (the format's signature plus non-text evidence; for `.bin`, a control byte that text does not use). Anything else is scanned as text and listed in `run.binary_type_mismatch`. The family table is a constant; no config key, attribute or file in the tree changes it. |
 | `.vault-guard.json`     | ReDoS via `extra_patterns`                          | `validateRegexSafety` (length cap 256, quantifier-density cap, shape check). |
 | File contents (built-in)| ReDoS via a catastrophic built-in pattern shape     | Every built-in repeat is bounded; all 59 rules measured linear on adversarial input (1.6.0 sweep), each bound guarded by a timing test. The per-file budget does **not** bound time: Node regexes are synchronous, so it is a **post-hoc** check that turns an over-budget file into a fail-closed verdict (exit 2) on every scan: staged, directory and pull-request. |
 | `.vault-guard.json`     | Cross-trust load from a parent directory            | `loadConfig` walks only between `startDir` and the nearest `.git` root.       |
@@ -101,12 +105,27 @@ Vault Guard does not, and will not, claim to defend against:
 | Git index, files on disk | A file the scanner cannot read, one over the 32 MiB limit, a tracked file missing on disk | Counted in `run.unscannable_files`; staged, directory and pull-request scans exit **2** and print no success line (see "Fail-closed behaviour"). |
 | File contents (matched) | Token-leak surface on output                        | `maskValue` reduces to 4-char prefix + length tag; SARIF message omits value. |
 
+#### What the binary skip guarantees, and its boundary
+
+No extension, by itself, ever removes text content from the scan: renaming
+`credentials.txt` to `credentials.mov` changes no byte and is not enough to
+be skipped. Changing the bytes is a different thing. A file whose first bytes
+are a valid binary header followed by text is skipped, and so is a POSIX tar
+with the `ustar` magic, although its members are stored uncompressed. That is
+a change to the content, the same class as encoding or base64-wrapping a
+secret, which no pattern scanner detects in any mode. `.bin` has no format
+signature and is the weakest row: a text file that holds a control byte
+outside the text set (ISO-2022-KR text, which uses SO and SI, is the known
+case) and is named `.bin` with no declared `working-tree-encoding` is skipped.
+Design: `docs/design/2026-10-17-media-skip-budget-retime-upgrade-note.md`,
+section 2.
+
 #### Fail-closed behaviour
 
 A staged, directory or pull-request scan that did not scan a file it should
 have is **incomplete**, not clean. The causes are a file that could not be
 read, a file over the 32 MiB whole-file limit, a file whose scan exceeded the
-per-file time budget, a tracked file missing on disk (pull-request mode, as a
+per-file CPU-time budget on two passes, a tracked file missing on disk (pull-request mode, as a
 sparse checkout produces), and a path named to the `check` command (which
 takes several) that does not exist. An incomplete run has:
 

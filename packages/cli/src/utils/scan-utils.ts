@@ -24,6 +24,13 @@ import {
   findGitEntryRoot,
   fileSetGitEnv,
   cleanGitEnv,
+  binaryCandidate,
+  confirmsBinary,
+  SNIFF_BYTES,
+  BINARY_FAMILIES,
+  type BinaryFamily,
+  type BudgetUntrusted,
+  type ScanClock,
   type TrackedEntry,
   type JsonOutput,
   type JsonRunMetadata,
@@ -192,7 +199,11 @@ function recordTooLarge(
 }
 
 /**
- * Per-file scan budget (ms). This is a **post-hoc** detector, NOT a wall-clock
+ * Per-file scan budget (ms of CPU time per copy, design 2026-10-17, section
+ * 6: the scanning thread's CPU time where Node provides it, otherwise the
+ * smaller of process CPU and wall time; a copy over it is scanned once more
+ * and is untrusted only when the second pass is over too, or the first was
+ * over twice the budget). This is a **post-hoc** detector, NOT a wall-clock
  * bound, and the distinction is load-bearing:
  *
  * Node's regex engine is **synchronous** and cannot be interrupted from
@@ -211,11 +222,6 @@ function recordTooLarge(
  * shape. Generous on purpose: a normal file scans in single-digit milliseconds.
  */
 const DEFAULT_SCAN_BUDGET_MS = 5000;
-
-const BINARY_EXTENSIONS = [
-  '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip',
-  '.tar', '.gz', '.exe', '.dll', '.so', '.dylib', '.bin'
-];
 
 export type ScanResult = FileScanResult;
 
@@ -258,21 +264,39 @@ function recordInlineSuppression(
  */
 function recordBudgetExceeded(
   displayFile: string,
-  elapsedMs: number,
-  budgetMs: number,
+  u: BudgetUntrusted,
   options: ScanOptions,
   exclude?: string,
 ): void {
   options.unreadable?.push({
     kind: 'scan_budget',
     file: displayFile,
-    reason: `scan exceeded the ${budgetMs}ms budget (took ${Math.round(elapsedMs)}ms)`,
+    reason: u.reason,
     ...(exclude ? { exclude } : {}),
   });
   options.bus?.add({
     code: 'file.scan_timeout',
     severity: 'error',
-    ctx: { file: displayFile, elapsed_ms: Math.round(elapsedMs), budget_ms: budgetMs },
+    ctx: {
+      file: displayFile,
+      // The deciding measurement, so existing readers keep a meaningful number.
+      elapsed_ms: u.elapsedMs,
+      first_ms: u.firstMs,
+      wall_ms: u.wallMs,
+      budget_ms: u.budgetMs,
+      measure: u.measure,
+      retimed: u.retimed,
+    },
+  });
+}
+
+/** A file whose extension names a binary format and whose bytes are text: scanned, and named. */
+function recordTypeMismatch(displayFile: string, family: BinaryFamily, options: ScanOptions): void {
+  options.skips?.typeMismatch?.push({ file: displayFile, family });
+  options.bus?.add({
+    code: 'file.type_mismatch',
+    severity: 'warning',
+    ctx: { file: displayFile, family },
   });
 }
 
@@ -313,8 +337,37 @@ export interface UnreadableFile {
  * extension rule skips at scan time.
  */
 export interface RunSkipCounts extends ScanSkipCounts {
-  /** Files skipped by {@link isBinaryFile} when the scanner reached them. */
+  /** Files skipped because their extension and their first bytes agree on a binary format. */
   binary: number;
+  /** {@link binary} by family, every family present. */
+  binaryByFamily?: Record<BinaryFamily, number>;
+  /** Disk copies confirmed binary whose file was otherwise scanned (the LFS case). */
+  binaryWorktreeCopies?: number;
+  /** Files with a binary extension whose bytes are text, scanned as text. */
+  typeMismatch?: Array<{ file: string; family: BinaryFamily }>;
+  /** Files re-timed after a slow first scan, then trusted. */
+  retimed?: number;
+}
+
+/** A fresh {@link RunSkipCounts} with every count at zero. */
+export function newRunSkipCounts(): Required<RunSkipCounts> {
+  return {
+    typeFiltered: 0,
+    configIgnored: 0,
+    binary: 0,
+    binaryByFamily: Object.fromEntries(BINARY_FAMILIES.map(f => [f, 0])) as Record<BinaryFamily, number>,
+    binaryWorktreeCopies: 0,
+    typeMismatch: [],
+    retimed: 0,
+  };
+}
+
+/** Count one file skipped by type. */
+function recordBinarySkip(family: BinaryFamily, options: ScanOptions): void {
+  const s = options.skips;
+  if (!s) return;
+  s.binary++;
+  if (s.binaryByFamily) s.binaryByFamily[family] = (s.binaryByFamily[family] ?? 0) + 1;
 }
 
 /**
@@ -357,8 +410,23 @@ export function formatExcludeEntry(pattern: string): string {
 export interface ScanOptions {
   verbose?: boolean;
   maxSize?: number;
+  /**
+   * `true` (the default) applies the binary rule of the 2026-10-17 design: a
+   * file is skipped only when its extension names a binary format AND its own
+   * first bytes agree; anything else is scanned as text and a disagreement is
+   * counted. `false` scans every file as text with no classification at all.
+   */
   skipBinary?: boolean;
   progress?: boolean;
+  /**
+   * Where the verbose text-format lines of the walk and the scan go (path not
+   * found, scan errors, walk warnings, a named link not followed). The scan
+   * command collects them so the INCOMPLETE line can be the first thing on
+   * stderr (design 2026-10-17, section 7). Defaults to `console.error`.
+   */
+  warn?: (line: string) => void;
+  /** The clock the scan budget is measured with; the core default when absent. */
+  scanClock?: ScanClock;
   concurrency?: number;
   bus?: DiagnosticBus;
   stats?: ScanTelemetryStats;
@@ -469,11 +537,18 @@ export interface ContentReport {
   kept: Map<string, Buffer>;
   /** Files whose content came from a git blob. */
   blobFiles: number;
+  /** Body bytes piped through `cat-file` for head reads; for the bench, never an output field. */
+  headReadBytes: number;
 }
 
 /** A fresh, empty {@link ContentReport}. */
 export function newContentReport(): ContentReport {
-  return { worktreeCopies: new Set(), undecodable: [], kept: new Map(), blobFiles: 0 };
+  return { worktreeCopies: new Set(), undecodable: [], kept: new Map(), blobFiles: 0, headReadBytes: 0 };
+}
+
+/** The sink for verbose text-format lines: the collector when given, else stderr. */
+function emitter(options: ScanOptions): (line: string) => void {
+  return options.warn ?? ((line: string) => console.error(line));
 }
 
 /**
@@ -499,7 +574,15 @@ async function scanOneFile(
     pathRoot,
     maxBytes: maxSize,
     ignoreHits: hits,
+    // One classifier for every mode (design 2026-10-17, 4.1), applied per copy.
+    classify: options.skipBinary !== false,
+    budgetMs: scanBudgetMs,
+    ...(options.scanClock ? { clock: options.scanClock } : {}),
   });
+  if (outcome.skippedByType) {
+    recordBinarySkip(outcome.skippedByType.family, options);
+    return null;
+  }
   if (outcome.failure?.kind === 'too_large') {
     recordTooLarge(display, outcome.failure.bytes, maxSize, options, exclude);
     return undefined;
@@ -538,9 +621,13 @@ async function scanOneFile(
       ctx: { file: display, encoding: outcome.undecodable },
     });
   }
-  if (outcome.elapsedMs > scanBudgetMs) {
-    recordBudgetExceeded(display, outcome.elapsedMs, scanBudgetMs, options, exclude);
+  if (outcome.typeMismatch) recordTypeMismatch(display, outcome.typeMismatch.family, options);
+  if (outcome.binaryCopiesSkipped > 0 && options.skips) {
+    options.skips.binaryWorktreeCopies = (options.skips.binaryWorktreeCopies ?? 0) + outcome.binaryCopiesSkipped;
   }
+  // The budget is decided in core, so the CLI and MCP cannot drift apart.
+  if (outcome.untrusted) recordBudgetExceeded(display, outcome.untrusted, options, exclude);
+  if (outcome.retimed && options.skips) options.skips.retimed = (options.skips.retimed ?? 0) + 1;
   if (outcome.matches.length === 0) return null;
   return {
     file,
@@ -562,7 +649,6 @@ export async function scanFileListAsync(
   const {
     verbose = false,
     maxSize = MAX_FILE_SIZE,
-    skipBinary = true,
     progress = false,
     concurrency = 10,
     configIgnorePatterns = [],
@@ -570,6 +656,7 @@ export async function scanFileListAsync(
     cwd = process.cwd(),
     scanBudgetMs = DEFAULT_SCAN_BUDGET_MS,
   } = options;
+  const emit = emitter(options);
   // Context (test / docs / locale) is judged relative to this, never on the
   // absolute path: the checkout's own location is not evidence about a file.
   // With no root given it is each file's own git work tree (memoised per
@@ -606,9 +693,11 @@ export async function scanFileListAsync(
 
   // `--staged` reads each file's index blob by the object id the staged
   // listing named, through the shared batch reader, with the INHERITED git
-  // environment (a hook's index, a GIT_DIR-only repository). No content
-  // sniffing: only the extension rule skips a blob. The size limit is on the
-  // raw blob (from `cat-file --batch-check`), never on decoded text.
+  // environment (a hook's index, a GIT_DIR-only repository). A blob is
+  // skipped as binary only when its extension and its own first bytes agree
+  // (design 2026-10-17, 4.4); the head read goes through the same reader and
+  // environment. The size limit is on the raw blob (from `cat-file
+  // --batch-check`), never on decoded text, and applies to anything scanned.
   // The caller builds the content source from the staged listing it already
   // ran (scan.ts does), and closes it, so the blobs are read by exactly the
   // object ids that listing named.
@@ -617,7 +706,8 @@ export async function scanFileListAsync(
     if (content === undefined) {
       throw new Error('scanFileListAsync: fromGitIndex needs options.contentSource built from the staged listing');
     }
-    content.prepare(filteredFiles.filter(f => !(skipBinary && isBinaryFile(f))));
+    // Every file: a candidate's blob is read too, for its head.
+    content.prepare(filteredFiles);
   }
 
   const scanFile = async (file: string): Promise<void> => {
@@ -626,10 +716,6 @@ export async function scanFileListAsync(
     const display = fromGitIndex ? path.relative(cwd, file).split(path.sep).join('/') : path.relative(cwd, file);
     try {
       if (fromGitIndex) {
-        if (skipBinary && isBinaryFile(file)) {
-          if (options.skips) options.skips.binary++;
-          return;
-        }
         if (content?.entryFor(file) === undefined) {
           throw new Error(`No staged (stage 0) blob found for ${display}`);
         }
@@ -637,10 +723,6 @@ export async function scanFileListAsync(
         if (!fs.existsSync(file)) return;
         const st = await fs.promises.stat(file);
         if (!st.isFile()) return;
-        if (skipBinary && isBinaryFile(file)) {
-          if (options.skips) options.skips.binary++;
-          return;
-        }
       }
       const r = await scanOneFile(
         scanner,
@@ -676,8 +758,8 @@ export async function scanFileListAsync(
         });
       }
       if (verbose) {
-        console.error(chalk.red('❌ Error scanning file:'), chalk.white(path.relative(cwd, file)));
-        console.error(chalk.gray(String(error)));
+        emit(`${chalk.red('❌ Error scanning file:')} ${chalk.white(path.relative(cwd, file))}`);
+        emit(chalk.gray(String(error)));
       }
     }
   };
@@ -692,9 +774,12 @@ export async function scanFileListAsync(
     }
   }
 
+  // End the progress line with a newline, so nothing written to stderr after
+  // it lands on the same physical line (design 2026-10-17, section 7).
   if (progress && filteredFiles.length > 10) {
-    process.stderr.write('\r');
+    process.stderr.write('\n');
   }
+  if (options.content && content) options.content.headReadBytes += content.headReadBytes;
 
   return results;
 }
@@ -716,14 +801,6 @@ function mergePlainFileSetInfo(into: PlainFileSetInfo, from: PlainFileSetInfo): 
 }
 
 /**
- * Check if a file is binary based on extension
- */
-export function isBinaryFile(filePath: string): boolean {
-  const ext = path.extname(filePath).toLowerCase();
-  return BINARY_EXTENSIONS.includes(ext);
-}
-
-/**
  * Scan files with proper filtering and error handling (async version)
  * This is the shared scanning logic used by both scan and check commands
  */
@@ -735,11 +812,11 @@ export async function scanFilesAsync(
   const {
     verbose = false,
     maxSize = MAX_FILE_SIZE,
-    skipBinary = true,
     progress = false,
     concurrency = 10, // Scan 10 files at a time by default
     scanBudgetMs = DEFAULT_SCAN_BUDGET_MS,
   } = options;
+  const emit = emitter(options);
 
   const results: ScanResult[] = [];
 
@@ -831,7 +908,7 @@ export async function scanFilesAsync(
         );
       } else if (resolution.reason !== undefined) {
         const message = namedLinkWarning(targetPath, resolution.reason);
-        if (verbose) console.error(chalk.yellow(`Warning: ${message}`));
+        if (verbose) emit(chalk.yellow(`Warning: ${message}`));
         options.bus?.add({
           code: 'symlink.not_followed',
           severity: 'warning',
@@ -845,9 +922,7 @@ export async function scanFilesAsync(
     try {
       await fs.promises.access(targetPath);
     } catch {
-      if (verbose) {
-        console.error(chalk.red('❌ Error:'), chalk.white(`Path not found: ${targetPath}`));
-      }
+      if (verbose) emit(`${chalk.red('❌ Error:')} ${chalk.white(`Path not found: ${targetPath}`)}`);
       recordUnusableTarget('path not found, so nothing under it was scanned');
       continue;
     }
@@ -879,11 +954,10 @@ export async function scanFilesAsync(
             options.configIgnorePatterns ?? [],
             options.skips,
             plainInfo,
+            verbose ? emit : undefined,
           );
     } else {
-      if (verbose) {
-        console.error(chalk.red('❌ Error:'), chalk.white(`Invalid path: ${targetPath}`));
-      }
+      if (verbose) emit(`${chalk.red('❌ Error:')} ${chalk.white(`Invalid path: ${targetPath}`)}`);
       recordUnusableTarget('not a regular file or directory, so nothing was scanned');
       continue;
     }
@@ -919,20 +993,14 @@ export async function scanFilesAsync(
 
   // Sizes and missing objects are known before any content moves: one
   // `cat-file --batch-check` per repository over every blob the run reads.
-  content.prepare(
-    jobs.flatMap(j => j.files.filter(f => !(skipBinary && isBinaryFile(f))).map(f => path.resolve(f))),
-  );
+  // Every file: a binary candidate's blob is read too, for its head.
+  content.prepare(jobs.flatMap(j => j.files.map(f => path.resolve(f))));
 
   try {
   for (const { pathRoot, excludeRoot, files: filesToScan } of jobs) {
     // Scan each file with proper safeguards (parallel with concurrency limit)
     const scanFile = async (file: string): Promise<void> => {
       try {
-        // Skip binary files
-        if (skipBinary && isBinaryFile(file)) {
-          if (options.skips) options.skips.binary++;
-          return;
-        }
         const r = await scanOneFile(
           scanner,
           file,
@@ -963,11 +1031,8 @@ export async function scanFilesAsync(
           });
         }
         if (verbose) {
-          console.error(
-            chalk.red('❌ Error scanning file:'),
-            chalk.white(path.relative(process.cwd(), file))
-          );
-          console.error(chalk.gray(String(error)));
+          emit(`${chalk.red('❌ Error scanning file:')} ${chalk.white(path.relative(process.cwd(), file))}`);
+          emit(chalk.gray(String(error)));
         }
         // Continue scanning other files
       }
@@ -985,18 +1050,39 @@ export async function scanFilesAsync(
       }
     }
 
-    // Clear progress line if used
+    // End the progress line with a newline, so nothing written to stderr
+    // after it lands on the same physical line (design 2026-10-17, 7).
     if (progress && filesToScan.length > 10) {
-      process.stderr.write('\r');
+      process.stderr.write('\n');
     }
   }
   } finally {
     // Wait, bounded, for the readers' git processes to exit, so none outlives
     // the scan. Never rejects, so an earlier error and the exit code stand.
     await content.closeAndWait();
+    if (options.content) options.content.headReadBytes += content.headReadBytes;
   }
 
   return results;
+}
+
+/** The binary rule with a synchronous head read, for the synchronous {@link scanFiles}. */
+function confirmedBinarySync(file: string): boolean {
+  const cand = binaryCandidate(file);
+  if (!cand) return false;
+  const fd = fs.openSync(file, 'r');
+  try {
+    const head = Buffer.alloc(SNIFF_BYTES);
+    let got = 0;
+    while (got < SNIFF_BYTES) {
+      const n = fs.readSync(fd, head, got, SNIFF_BYTES - got, got);
+      if (n === 0) break;
+      got += n;
+    }
+    return confirmsBinary(cand.ext, head.subarray(0, got));
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 /**
@@ -1047,8 +1133,10 @@ export function scanFiles(
     // Scan each file with proper safeguards
     for (const file of filesToScan) {
       try {
-        // Skip binary files
-        if (skipBinary && isBinaryFile(file)) {
+        // Skip a file only when its extension and its first bytes agree on a
+        // binary format (design 2026-10-17, 4.6); anything else is scanned.
+        if (skipBinary && confirmedBinarySync(file)) {
+          if (options.skips) options.skips.binary++;
           continue;
         }
 
