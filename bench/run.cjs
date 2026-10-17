@@ -10,6 +10,14 @@
  * Usage:
  *   node bench/run.cjs [--gitleaks] [--verbose]
  *   node bench/run.cjs --assert [--min-precision 1.0] [--min-recall 0.95]
+ *   node bench/run.cjs --cli <cli-entry.js> --write-severities <file>
+ *
+ * `--assert` also checks that every positively labelled fixture reports the
+ * same findings, at the same severities, as the release recorded in
+ * bench/severities-1.11.0.json (design 2026-10-17 data files, section 9.4):
+ * no real secret in the corpus may lose its blocking severity. That file is
+ * written with `--write-severities` from the published 1.11.0 CLI; when it
+ * is missing, `--assert` fails.
  */
 'use strict';
 
@@ -45,6 +53,18 @@ function readFlagValue(flag, fallback) {
 const MIN_PRECISION = readFlagValue('--min-precision', 1.0);
 const MIN_RECALL    = readFlagValue('--min-recall', 0.95);
 
+function readStringFlag(flag) {
+  const i = args.indexOf(flag);
+  if (i === -1) return undefined;
+  const raw = args[i + 1];
+  if (raw === undefined || raw.startsWith('--')) throw new Error(`Missing value for ${flag}`);
+  return raw;
+}
+
+const CLI_OVERRIDE      = readStringFlag('--cli');
+const WRITE_SEVERITIES  = readStringFlag('--write-severities');
+const SEVERITIES_FILE   = path.join(BENCH_DIR, 'severities-1.11.0.json');
+
 // Generate synthetic secret fixtures at runtime (stored as fragments in
 // generate-fixtures.cjs so no contiguous secret pattern lives in git history).
 require('./generate-fixtures.cjs');
@@ -54,6 +74,7 @@ require('./generate-fixtures.cjs');
 // ---------------------------------------------------------------------------
 
 function resolveVaultGuard() {
+  if (CLI_OVERRIDE) return `node "${path.resolve(CLI_OVERRIDE)}"`;
   // Prefer the local build so we always benchmark what's in this repo.
   if (fs.existsSync(BUILT_CLI)) return `node "${BUILT_CLI}"`;
   // Fall back to globally installed binary.
@@ -78,6 +99,8 @@ function scanFile(cmd, filePath) {
     results.ruleIds = new Set(
       results.flatMap(r => (r.matches || []).map(m => m.type)),
     );
+    // Every finding as rule:severity, sorted, for the per-fixture severity check.
+    results.severities = results.flatMap(r => (r.matches || []).map(m => `${m.type}:${m.severity}`)).sort();
     return results;
   } catch {
     return [];
@@ -168,6 +191,8 @@ console.log('='.repeat(64) + '\n');
 
 /** @type {{ name: string, precision: number, recall: number, f1Score: number } | null} */
 let vaultGuardMetrics = null;
+/** Positively labelled fixture to its findings as sorted rule:severity, for vault-guard. */
+const positiveSeverities = {};
 
 for (const tool of tools) {
   let TP = 0, FP = 0, FN = 0, TN = 0;
@@ -184,6 +209,9 @@ for (const tool of tools) {
 
     const findings = tool.scan(filePath);
     const detected = Array.isArray(findings) && findings.length > 0;
+    if (tool.name === 'vault-guard' && label.shouldDetect) {
+      positiveSeverities[relPath] = Array.isArray(findings.severities) ? findings.severities : [];
+    }
 
     // Detecting *something* is not enough. A fixture must fire the rule it was
     // written for: a 48-character Groq key once satisfied this harness through
@@ -270,12 +298,38 @@ if (DO_GL) {
 }
 console.log();
 
+if (WRITE_SEVERITIES) {
+  fs.writeFileSync(
+    WRITE_SEVERITIES,
+    `${JSON.stringify({ _comment: 'Per positively labelled fixture, its findings as sorted rule:severity, from the CLI named with --cli. Written by bench/run.cjs --write-severities; --assert compares against it.', ...positiveSeverities }, null, 2)}\n`,
+  );
+  console.log(`[bench] wrote ${Object.keys(positiveSeverities).length} fixture severities to ${WRITE_SEVERITIES}`);
+}
+
 if (ASSERT) {
   if (!vaultGuardMetrics) {
     console.error('[bench] --assert requires vault-guard metrics but none were collected.');
     process.exit(1);
   }
   const failures = [];
+  // Section 9.4 of the 2026-10-17 data-file design: no positively labelled
+  // fixture may report a different finding set or severity than 1.11.0 did.
+  // A missing record fails the assert: skipping the check would pass silently.
+  if (!fs.existsSync(SEVERITIES_FILE)) {
+    failures.push(`${path.relative(REPO_ROOT, SEVERITIES_FILE)} is missing, so the per-fixture severity check cannot run`);
+  } else {
+    const recorded = JSON.parse(fs.readFileSync(SEVERITIES_FILE, 'utf-8'));
+    for (const [fixture, sevs] of Object.entries(recorded)) {
+      if (fixture.startsWith('_')) continue;
+      const now = positiveSeverities[fixture];
+      if (JSON.stringify(now) !== JSON.stringify(sevs)) {
+        failures.push(`${fixture}: severities ${JSON.stringify(now)} differ from 1.11.0's ${JSON.stringify(sevs)}`);
+      }
+    }
+    for (const fixture of Object.keys(positiveSeverities)) {
+      if (!(fixture in recorded)) failures.push(`${fixture}: no 1.11.0 severity recorded`);
+    }
+  }
   if (vaultGuardMetrics.precision < MIN_PRECISION) {
     failures.push(
       `precision ${(vaultGuardMetrics.precision * 100).toFixed(1)}% < floor ${(MIN_PRECISION * 100).toFixed(1)}%`,

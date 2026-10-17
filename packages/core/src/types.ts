@@ -28,7 +28,43 @@ export interface SecretMatch {
   source?: MatchSource;
   /** For a conflicted path: 2 for the ours stage blob, 3 for theirs. */
   stage?: 2 | 3;
+  /**
+   * Set when the match was lowered to `low` because it is a slice of encoded
+   * media (design 2026-10-17 data files, section 4.2). `severity` is already
+   * the demoted one; `from` is what it was before.
+   */
+  demotion?: ContentDemotion;
+  /**
+   * Where the match sits in a data-shaped copy (design 2026-10-17 data files,
+   * section 5.2): one column of the regular lines of a delimited copy, or a
+   * line of 65536 characters or more. Presentation only: grouping reads it,
+   * nothing that decides a severity or the exit does.
+   */
+  groupSlot?: GroupSlot;
 }
+
+/** Why a match was demoted. See {@link SecretMatch.demotion}. */
+export type DemotionReason = 'data-uri-binary-payload' | 'base64-binary-run';
+
+/** The record a demoted match carries. Field names are the JSON output's. */
+export interface ContentDemotion {
+  /** The severity before demotion. */
+  from: 'critical' | 'high' | 'medium';
+  reason: DemotionReason;
+  /** The binary family the decoded head confirmed (`image`, `font`, ...). */
+  family: string;
+  /** The binary-table row that confirmed it (`.png`, `.woff2`, ...). */
+  format: string;
+  /** The declared media type, for a `data:` payload only. */
+  media_type?: string;
+  /** Characters in the base64 run. */
+  run_length: number;
+}
+
+/** See {@link SecretMatch.groupSlot}. */
+export type GroupSlot =
+  | { basis: 'column'; delimiter: string; column: number }
+  | { basis: 'long-line' };
 
 /** Where a match's bytes were read from. See {@link SecretMatch.source}. */
 export type MatchSource = 'index' | 'head' | 'worktree' | 'file';

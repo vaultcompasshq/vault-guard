@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
-import { SecretScanner, loadConfig, ConfigError } from '@vaultcompass/vault-guard-core';
+import { SecretScanner, loadConfig, ConfigError, demotionText } from '@vaultcompass/vault-guard-core';
 
 const collection = vscode.languages.createDiagnosticCollection('vault-guard');
 
@@ -41,9 +41,12 @@ function refreshDocument(doc: vscode.TextDocument): void {
     const endChar = Math.min(line.text.length, m.column + Math.max(1, m.matchLength));
     const startChar = Math.min(line.text.length, m.column);
     const range = new vscode.Range(lineIdx, startChar, lineIdx, endChar);
+    // A demoted match arrives at low; its reason is given in the same words as
+    // the CLI's text line (design 2026-10-17 data files, section 8.5).
+    const reason = m.demotion ? `; ${demotionText(m.demotion)}` : '';
     return new vscode.Diagnostic(
       range,
-      `Possible secret (${m.type}, ${m.severity})`,
+      `Possible secret (${m.type}, ${m.severity}${reason})`,
       mapSeverity(m.severity),
     );
   });

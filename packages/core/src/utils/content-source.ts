@@ -456,6 +456,10 @@ interface CopyScan {
   retimed: boolean;
 }
 
+// Severity and the demotion reason are compared too (design 2026-10-17 data
+// files, A23): the content demotion reads only the text, so two passes over
+// the same text agree, and a pass that did not would be untrusted rather than
+// reported at whichever severity the first pass happened to give.
 const sameMatches = (a: SecretMatch[], b: SecretMatch[]): boolean =>
   a.length === b.length &&
   a.every(
@@ -464,7 +468,9 @@ const sameMatches = (a: SecretMatch[], b: SecretMatch[]): boolean =>
       m.line === b[i].line &&
       m.offset === b[i].offset &&
       m.matchLength === b[i].matchLength &&
-      m.valueDigest === b[i].valueDigest,
+      m.valueDigest === b[i].valueDigest &&
+      m.severity === b[i].severity &&
+      m.demotion?.reason === b[i].demotion?.reason,
   );
 
 /**
@@ -608,37 +614,50 @@ const identityKey = (m: SecretMatch): string =>
  * the blob side. The same secret in both is reported once, from the blob; a
  * second copy that exists only on disk is still reported. Header-only matches
  * are all kept here; {@link dropHeaderOnlyTwins} runs after the baseline.
+ *
+ * Of two copies paired this way the one with the HIGHER severity is kept, in
+ * the position of the earlier one; a tie keeps the earlier (blob, or lower
+ * stage) copy, as before (design 2026-10-17 data files, section 6.5). The
+ * same key bytes can be demoted in one copy and not in another, and a value
+ * that is critical in any copy is reported critical, from that copy.
  */
 export function mergeCopies(blobSides: SecretMatch[][], disk: SecretMatch[]): SecretMatch[] {
   const blob: SecretMatch[] = [];
-  const counts = new Map<string, number>();
-  const take = (m: SecretMatch): boolean => {
+  // For each value key, the positions in `blob` not yet paired with a later copy.
+  const open = new Map<string, number[]>();
+  const rank = (m: SecretMatch): number => MERGE_SEVERITY_RANK[m.severity];
+  /** Pair `m` with an open earlier copy: true when one existed (then `m` is merged into it). */
+  const pair = (m: SecretMatch, from: Map<string, number[]>): boolean => {
     if (m.valueDigest === undefined) return false;
-    const k = valueKey(m);
-    const n = counts.get(k) ?? 0;
-    if (n === 0) return false;
-    counts.set(k, n - 1);
+    const list = from.get(valueKey(m));
+    if (list === undefined || list.length === 0) return false;
+    // The lowest-severity open copy first, so a higher copy is never wasted on a critical one.
+    let at = 0;
+    for (let j = 1; j < list.length; j++) if (rank(blob[list[j]]) < rank(blob[list[at]])) at = j;
+    const pos = list[at];
+    list.splice(at, 1);
+    if (rank(m) > rank(blob[pos])) blob[pos] = m;
     return true;
   };
   blobSides.forEach((side, i) => {
-    const before = new Map(counts);
+    // A later stage is deduplicated only against the earlier stages.
+    const before = new Map([...open].map(([k, v]) => [k, [...v]]));
     for (const m of side) {
-      // A later stage is deduplicated only against the earlier stages.
-      if (i > 0 && m.valueDigest !== undefined) {
-        const k = valueKey(m);
-        const n = before.get(k) ?? 0;
-        if (n > 0) {
-          before.set(k, n - 1);
-          continue;
-        }
-      }
+      if (i > 0 && pair(m, before)) continue;
       blob.push(m);
-      if (m.valueDigest !== undefined) counts.set(valueKey(m), (counts.get(valueKey(m)) ?? 0) + 1);
+      if (m.valueDigest !== undefined) {
+        const k = valueKey(m);
+        const list = open.get(k) ?? [];
+        list.push(blob.length - 1);
+        open.set(k, list);
+      }
     }
   });
-  const kept = disk.filter(m => !take(m));
+  const kept = disk.filter(m => !pair(m, open));
   return [...blob, ...kept];
 }
+
+const MERGE_SEVERITY_RANK: Record<SecretMatch['severity'], number> = { low: 1, medium: 2, high: 3, critical: 4 };
 
 /**
  * 2.5, step 3, run AFTER the baseline: a disk-copy header-only match is

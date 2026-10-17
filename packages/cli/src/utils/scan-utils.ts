@@ -28,6 +28,12 @@ import {
   confirmsBinary,
   SNIFF_BYTES,
   BINARY_FAMILIES,
+  GROUP_LISTED,
+  LONG_LINE,
+  contentRunCounts,
+  demotionText,
+  formGroups,
+  type MatchGroup,
   type BinaryFamily,
   type BudgetUntrusted,
   type ScanClock,
@@ -1220,34 +1226,89 @@ export function displayScanResults(
   // "BLOCKED" over a run that is about to exit 0.
   const willBlock = blocking === undefined || blocking > 0;
 
+  // Grouping is presentation only (design 2026-10-17 data files, section 5):
+  // the same pure function every formatter uses, on the same post-baseline
+  // results. Each element below is printed only when it applies, so a run
+  // with no demotion and no group prints exactly what 1.11.0 printed.
+  const formed = formGroups(results);
+  const counts = contentRunCounts(results, formed);
+  const groupedClause =
+    counts.match_groups > 0
+      ? ` (${counts.grouped_matches} of them in ${counts.match_groups} group${counts.match_groups > 1 ? 's' : ''})`
+      : '';
+
   if (willBlock) {
-    console.log(chalk.red.bold('🚨 BLOCKED:'), chalk.white(`Found ${totalSecrets} secret${totalSecrets > 1 ? 's' : ''}\n`));
+    console.log(
+      chalk.red.bold('🚨 BLOCKED:'),
+      chalk.white(`Found ${totalSecrets} secret${totalSecrets > 1 ? 's' : ''}${groupedClause}\n`),
+    );
   } else {
     console.log(
       chalk.yellow.bold('⚠️  REPORT:'),
-      chalk.white(`Found ${totalSecrets} finding${totalSecrets > 1 ? 's' : ''} below the fail threshold\n`),
+      chalk.white(`Found ${totalSecrets} finding${totalSecrets > 1 ? 's' : ''} below the fail threshold${groupedClause}\n`),
     );
   }
 
-  for (const { file, matches, bothCopies } of results) {
+  results.forEach(({ file, matches, bothCopies }, fi) => {
     const relativePath = relativeForDisplay(file, base);
+    const printed = new Set<MatchGroup>();
 
-    for (const match of matches) {
-      const severityColor = getSeverityColor(match.severity);
-      const emoji = getSeverityEmoji(match.severity);
-      const location = `${relativePath}:${match.line}:${match.column + 1}`;
-      const label = bothCopies ? copyLabel(match, bothCopies) : '';
-
-      console.log(
-        `  ${emoji} ${chalk.cyan(location)}  ${severityColor(match.severity)}  ${chalk.white(match.type)}  ${chalk.gray(match.value)}${label}`
-      );
-    }
-  }
+    matches.forEach((match, mi) => {
+      const group = formed.memberOf[fi][mi];
+      if (group !== undefined) {
+        // One line in place of the members, at the group's first member.
+        if (printed.has(group)) return;
+        printed.add(group);
+        const first = [...matches.keys()]
+          .filter(i => formed.memberOf[fi][i] === group)
+          .map(i => matches[i])
+          .sort((a, b) => a.line - b.line || a.column - b.column)[0];
+        console.log(findingLine(relativePath, first, bothCopies) + chalk.gray(groupPhrase(group)));
+        return;
+      }
+      const reason = match.demotion ? chalk.gray(`  (${demotionText(match.demotion)})`) : '';
+      console.log(findingLine(relativePath, match, bothCopies) + reason);
+    });
+  });
 
   console.log('');
+  if (counts.demoted_matches > 0) {
+    console.log(
+      chalk.gray(
+        `${counts.demoted_matches} finding(s) were demoted to low because they sit inside encoded media; --fail-on low blocks on them.`,
+      ),
+    );
+  }
+  if (counts.match_groups > 0) {
+    console.log(chalk.gray(`Grouped findings show their first ${GROUP_LISTED} lines; --format json lists every match.`));
+  }
+  if (counts.demoted_matches > 0 || counts.match_groups > 0) console.log('');
   if (willBlock) {
     console.log(chalk.red.bold('❌ BLOCKED:'), chalk.white('Commit blocked -- remove secrets before pushing\n'));
   }
+}
+
+/** One finding's line: `<icon> <path>:<line>:<col>  <severity>  <rule>  <masked>[copy label]`. */
+function findingLine(relativePath: string, match: ScanResult['matches'][number], bothCopies: ScanResult['bothCopies']): string {
+  const severityColor = getSeverityColor(match.severity);
+  const emoji = getSeverityEmoji(match.severity);
+  const location = `${relativePath}:${match.line}:${match.column + 1}`;
+  const label = bothCopies ? copyLabel(match, bothCopies) : '';
+  return `  ${emoji} ${chalk.cyan(location)}  ${severityColor(match.severity)}  ${chalk.white(match.type)}  ${chalk.gray(match.value)}${label}`;
+}
+
+/** What a group line adds after its first member (section 8.1). */
+function groupPhrase(g: MatchGroup): string {
+  const where =
+    g.basis === 'column'
+      ? `in column ${(g.column ?? 0) + 1} of this delimited file`
+      : `on lines over ${LONG_LINE} characters`;
+  const lines = g.first.map(f => String(f.line)).join(', ') + (g.members > g.first.length ? ', ...' : '');
+  const demoted = g.demoted ? ', each demoted to low because it sits inside encoded media' : '';
+  return (
+    `  and ${g.members - 1} more ${where} ` +
+    `(${g.members} matches, ${g.distinct_values} distinct value${g.distinct_values === 1 ? '' : 's'}; lines ${lines})${demoted}`
+  );
 }
 
 /**

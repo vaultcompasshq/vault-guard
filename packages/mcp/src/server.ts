@@ -9,10 +9,21 @@ import {
   TokenCounter,
   formatJson,
   formatSarif,
+  formGroups,
+  contentRunCounts,
   type FileScanResult,
   type JsonRunMetadata,
   type VaultGuardConfig,
 } from '@vaultcompass/vault-guard-core';
+
+/**
+ * The two content counts a tool summary carries (design 2026-10-17 data
+ * files, section 8.4). `total_matches` keeps counting matches, never groups.
+ */
+function contentSummary(results: FileScanResult[], contentRoot: string | undefined): { demoted_matches: number; match_groups: number } {
+  const c = contentRunCounts(results, formGroups(results, { contentRoot }));
+  return { demoted_matches: c.demoted_matches, match_groups: c.match_groups };
+}
 import { TelemetryStore, TelemetryUnavailableError } from '@vaultcompass/vault-guard-telemetry';
 import { scanWorkspaceDirectory, MCP_SCAN_BUDGET_MS } from './workspace-scan';
 
@@ -231,6 +242,7 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
         summary: {
           files_with_secrets: results.length,
           total_matches: results.reduce((n, r) => n + r.matches.length, 0),
+          ...contentSummary(results, dir),
           // Post-hoc: these files WERE scanned, but took long enough that the
           // result is not trusted. Surfaced so an agent is not handed a silent
           // "clean" for a file whose scan behaved pathologically.
@@ -294,6 +306,7 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
         summary: {
           files_with_secrets: results.length,
           total_matches: matches.length,
+          ...contentSummary(results, workspaceRoot),
           ...(overBudget ? { over_scan_budget: true } : {}),
         },
         ...(overBudget
@@ -344,7 +357,7 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
         patterns_active: scanner.getActivePatternCount(),
       };
       return toolPayload({
-        summary: { total_matches: matches.length },
+        summary: { total_matches: matches.length, ...contentSummary(results, undefined) },
         // virtual_path is a label, not a real path; skip relativization to preserve it verbatim.
         json: JSON.parse(formatJson(results, { cwd: null, run })) as unknown,
         sarif: formatSarif(results, { cwd: null, run }),

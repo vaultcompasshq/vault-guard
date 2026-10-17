@@ -1,7 +1,15 @@
 import path from 'path';
-import type { SecretMatch } from './types';
+import { createHash } from 'crypto';
+import type { ContentDemotion, DemotionReason, SecretMatch } from './types';
 import type { Diagnostic } from './diagnostics';
-import { fingerprintForMatch, contentFingerprintForMatch } from './match-fingerprint';
+import {
+  fingerprintForMatch,
+  contentFingerprintForMatch,
+  contentFingerprint,
+  contentRelPath,
+  rootPositionalFingerprint,
+} from './match-fingerprint';
+import { GROUP_LISTED, GROUP_MIN } from './utils/data-shape';
 
 /** One file's scan outcome -- shared by CLI, MCP, and SARIF/JSON formatters. */
 export interface FileScanResult {
@@ -147,6 +155,183 @@ export interface JsonRunMetadata {
    * decode; each was scanned as UTF-8. The blob was always scanned.
    */
   worktree_undecodable?: Array<{ file: string; encoding: string }>;
+  /**
+   * Reported matches carrying a demotion record (design 2026-10-17 data
+   * files, section 8.2). Filled in by the formatters from the results, so
+   * every surface states the same number, zero included.
+   */
+  demoted_matches?: number;
+  /** {@link demoted_matches} by reason, both keys always present. */
+  demoted_by_reason?: Record<DemotionReason, number>;
+  /** Groups formed (presentation only; every member is still a match). */
+  match_groups?: number;
+  /** Matches that are members of a group. */
+  grouped_matches?: number;
+}
+
+/** One grouped finding (design 2026-10-17 data files, section 5.3). */
+export interface MatchGroup {
+  group_id: string;
+  rule: string;
+  basis: 'column' | 'long-line';
+  delimiter?: string;
+  /** 0-based field index, like a match's `column`. */
+  column?: number;
+  source?: string;
+  stage?: 2 | 3;
+  members: number;
+  distinct_values: number;
+  severity: SecretMatch['severity'];
+  demoted: boolean;
+  /** The first {@link GROUP_LISTED} member locations, in file order. */
+  first: Array<{ line: number; column: number }>;
+  members_digest: string;
+}
+
+/** {@link formGroups}'s answer, parallel to the results it was given. */
+export interface FormedGroups {
+  /** The groups of each file entry. */
+  byFile: MatchGroup[][];
+  /** For each file entry, the group of each match (same index), or undefined. */
+  memberOf: Array<Array<MatchGroup | undefined>>;
+}
+
+/** The slot as one string, for the group key and id. */
+function slotKey(m: SecretMatch): string | undefined {
+  const s = m.groupSlot;
+  if (s === undefined) return undefined;
+  return s.basis === 'column' ? `column:${s.delimiter}:${s.column}` : 'long-line';
+}
+
+/**
+ * Group the post-baseline results (design 2026-10-17 data files, section
+ * 5.2). Within one file entry, matches with the same rule, effective
+ * severity, demotion status, copy (`source`, `stage`) and slot form a group
+ * when there are at least {@link GROUP_MIN} of them. A pure function of its
+ * input, so every surface forms the same groups; it removes nothing.
+ * `contentRoot` is the root the content fingerprint is keyed on, so a group
+ * id never reads the displayed path.
+ */
+export function formGroups(results: FileScanResult[], opts: { contentRoot?: string } = {}): FormedGroups {
+  const root = opts.contentRoot ?? process.cwd();
+  const byFile: MatchGroup[][] = [];
+  const memberOf: Array<Array<MatchGroup | undefined>> = [];
+  for (const r of results) {
+    const buckets = new Map<string, number[]>();
+    r.matches.forEach((m, i) => {
+      const slot = slotKey(m);
+      if (slot === undefined) return;
+      const k = [m.type, m.severity, m.demotion ? 'true' : 'false', slot, m.source ?? '', String(m.stage ?? '')].join('\0');
+      const list = buckets.get(k) ?? [];
+      list.push(i);
+      buckets.set(k, list);
+    });
+    const groups: MatchGroup[] = [];
+    const of: Array<MatchGroup | undefined> = r.matches.map(() => undefined);
+    let rel: string | undefined;
+    for (const idx of buckets.values()) {
+      if (idx.length < GROUP_MIN) continue;
+      rel ??= contentRelPath(r.file, root);
+      const ms = idx.map(i => r.matches[i]).sort((a, b) => a.line - b.line || a.column - b.column);
+      const m0 = ms[0];
+      const slot = m0.groupSlot;
+      if (slot === undefined) continue;
+      const demoted = m0.demotion !== undefined;
+      const group_id = createHash('sha256')
+        .update(
+          ['vg-group-v1', rel, m0.type, m0.severity, demoted ? 'true' : 'false', slotKey(m0), m0.source ?? '', String(m0.stage ?? '')].join('\0'),
+          'utf8',
+        )
+        .digest('hex');
+      const keys = ms
+        .map(m =>
+          // The member's baseline key: its content fingerprint when it carries a
+          // value digest, its root-relative positional fingerprint otherwise.
+          m.valueDigest !== undefined
+            ? contentFingerprint(rel as string, m.type, m.valueDigest)
+            : rootPositionalFingerprint(root, r.file, m),
+        )
+        .sort();
+      const digests = new Set<string>();
+      let undigested = 0;
+      for (const m of ms) {
+        if (m.valueDigest === undefined) undigested++;
+        else digests.add(m.valueDigest);
+      }
+      const g: MatchGroup = {
+        group_id,
+        rule: m0.type,
+        basis: slot.basis,
+        ...(slot.basis === 'column' ? { delimiter: slot.delimiter, column: slot.column } : {}),
+        ...(m0.source !== undefined ? { source: m0.source } : {}),
+        ...(m0.stage !== undefined ? { stage: m0.stage } : {}),
+        members: ms.length,
+        distinct_values: digests.size + undigested,
+        severity: m0.severity,
+        demoted,
+        first: ms.slice(0, GROUP_LISTED).map(m => ({ line: m.line, column: m.column })),
+        members_digest: createHash('sha256').update(keys.join('\0'), 'utf8').digest('hex'),
+      };
+      groups.push(g);
+      for (const i of idx) of[i] = g;
+    }
+    // In file order of each group's first member.
+    groups.sort((a, b) => a.first[0].line - b.first[0].line || a.first[0].column - b.first[0].column);
+    byFile.push(groups);
+    memberOf.push(of);
+  }
+  return { byFile, memberOf };
+}
+
+/** The four `run` counts of section 8.2, from the results and their groups. */
+export function contentRunCounts(
+  results: FileScanResult[],
+  groups: FormedGroups,
+): Required<Pick<JsonRunMetadata, 'demoted_matches' | 'demoted_by_reason' | 'match_groups' | 'grouped_matches'>> {
+  const byReason: Record<DemotionReason, number> = { 'data-uri-binary-payload': 0, 'base64-binary-run': 0 };
+  let demoted = 0;
+  for (const r of results) {
+    for (const m of r.matches) {
+      if (m.demotion === undefined) continue;
+      demoted++;
+      byReason[m.demotion.reason]++;
+    }
+  }
+  let matchGroups = 0;
+  let grouped = 0;
+  for (const gs of groups.byFile) {
+    matchGroups += gs.length;
+    for (const g of gs) grouped += g.members;
+  }
+  return { demoted_matches: demoted, demoted_by_reason: byReason, match_groups: matchGroups, grouped_matches: grouped };
+}
+
+/** "a" or "an" before a number written in digits. */
+function articleForNumber(n: number): string {
+  const s = String(n);
+  // eight..., eleven..., eighteen... (11 and 18 lead only when the digit count is 2 mod 3).
+  if (s.startsWith('8')) return 'an';
+  if ((s.startsWith('11') || s.startsWith('18')) && s.length % 3 === 2) return 'an';
+  return 'a';
+}
+
+/** "a" or "an" before a format name read letter by letter or as a word. */
+function articleForFormat(name: string): string {
+  return /^[aeiom]/.test(name) ? 'an' : 'a';
+}
+
+/**
+ * The reason a demoted match carries, in one sentence (section 8.1), shared
+ * by the text output and the VS Code extension.
+ */
+export function demotionText(d: ContentDemotion): string {
+  const format = d.format.replace(/^\./, '');
+  const what = `${articleForFormat(format)} ${format} ${d.family}`;
+  const where =
+    d.reason === 'data-uri-binary-payload'
+      ? `${d.run_length}-character data:${d.media_type ?? ''};base64 payload`
+      : `${d.run_length}-character base64 run`;
+  return `demoted from ${d.from}: inside ${articleForNumber(d.run_length)} ${where} that decodes to ${what}`;
 }
 
 /**
@@ -205,7 +390,13 @@ export interface JsonOutput {
       content_fingerprint?: string;
       /** Which copy the match came from: `index`, `head`, `worktree` or `file`. */
       source?: string;
+      /** Present when the match was demoted; `severity` is already the demoted one. */
+      demotion?: ContentDemotion;
+      /** Present when the match is a member of a group in `groups`. */
+      group_id?: string;
     }>;
+    /** Present only when the file has a group. Presentation: every member is also in `matches`. */
+    groups?: MatchGroup[];
   }>;
   /** Non-fatal scan warnings (skipped files, rejected patterns, git issues). */
   diagnostics?: Array<{
@@ -430,8 +621,20 @@ function contentKey(
   return contentFingerprintForMatch(root, file, m);
 }
 
+/** The groups for a formatter call, keyed on the same root as the content fingerprint. */
+function groupsFor(results: FileScanResult[], opts: FormatOptions, fpCwd: string | null): FormedGroups {
+  return formGroups(results, { contentRoot: opts.contentRoot ?? fpCwd ?? process.cwd() });
+}
+
+/** `opts.run` with the four content counts of section 8.2, always present. */
+function runWithCounts(opts: FormatOptions, results: FileScanResult[], groups: FormedGroups): JsonRunMetadata | undefined {
+  return opts.run ? { ...opts.run, ...contentRunCounts(results, groups) } : undefined;
+}
+
 export function formatJson(results: FileScanResult[], opts: FormatOptions = {}): string {
   const fpCwd = opts.cwd === undefined ? process.cwd() : opts.cwd;
+  const groups = groupsFor(results, opts, fpCwd);
+  const run = runWithCounts(opts, results, groups);
   const output: JsonOutput = {
     version: '1',
     scannedAt: new Date().toISOString(),
@@ -439,12 +642,13 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
       files: results.length,
       secrets: results.reduce((n, r) => n + r.matches.length, 0),
     },
-    ...(opts.run ? { run: opts.run } : {}),
+    ...(run ? { run } : {}),
     ...(opts.trustBase ? { trustBase: opts.trustBase } : {}),
-    results: results.map(({ file, matches }) => ({
+    results: results.map(({ file, matches }, fi) => ({
       file: normalizeFilePath(file, opts.cwd, opts.scanRoot),
-      matches: matches.map(m => {
+      matches: matches.map((m, mi) => {
         const content = contentKey(opts, fpCwd, file, m);
+        const group = groups.memberOf[fi][mi];
         return {
           type: m.type,
           severity: m.severity,
@@ -455,8 +659,11 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
           fingerprint: fingerprintForMatch(fpCwd, file, m),
           ...(content !== undefined ? { content_fingerprint: content } : {}),
           ...(m.source !== undefined ? { source: m.source } : {}),
+          ...(m.demotion !== undefined ? { demotion: m.demotion } : {}),
+          ...(group !== undefined ? { group_id: group.group_id } : {}),
         };
       }),
+      ...(groups.byFile[fi].length > 0 ? { groups: groups.byFile[fi] } : {}),
     })),
   };
   if (opts.diagnostics && opts.diagnostics.length > 0) {
@@ -492,8 +699,23 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
     properties: { tags: ['security', 'secrets'] },
   }));
 
-  const sarifResults = results.flatMap(({ file, matches }) =>
-    matches.map(m => ({
+  const groups = groupsFor(results, opts, fpCwd);
+  const run = runWithCounts(opts, results, groups);
+  /** Result properties: the copy, the demotion and the group, each only when it applies. */
+  const resultProperties = (m: SecretMatch, group: MatchGroup | undefined): Record<string, unknown> | undefined => {
+    const p: Record<string, unknown> = {
+      ...(m.source !== undefined ? { 'vault-guard/source': m.source } : {}),
+      ...(m.demotion !== undefined
+        ? { 'vault-guard/demoted_from': m.demotion.from, 'vault-guard/demotion_reason': m.demotion.reason }
+        : {}),
+      ...(group !== undefined ? { 'vault-guard/group': group.group_id, 'vault-guard/group_size': group.members } : {}),
+    };
+    return Object.keys(p).length > 0 ? p : undefined;
+  };
+
+  // One result per match, grouped or not (section 5.7).
+  const sarifResults = results.flatMap(({ file, matches }, fi) =>
+    matches.map((m, mi) => ({
       ruleId: m.type,
       level: m.severity === 'critical' ? 'error' : m.severity === 'high' ? 'warning' : 'note',
       // Intentionally do NOT include the masked value here. Reviewers have the
@@ -526,7 +748,10 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
           ...(content !== undefined ? { 'vault-guard/v2': content } : {}),
         };
       })(),
-      ...(m.source !== undefined ? { properties: { 'vault-guard/source': m.source } } : {}),
+      ...((): { properties?: Record<string, unknown> } => {
+        const properties = resultProperties(m, groups.memberOf[fi][mi]);
+        return properties !== undefined ? { properties } : {};
+      })(),
     }))
   );
 
@@ -617,6 +842,11 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
             ...(opts.run.worktree_undecodable !== undefined
               ? { worktree_undecodable: opts.run.worktree_undecodable }
               : {}),
+            // Section 8.3: the same four counts as the JSON run, always present.
+            demoted_matches: run?.demoted_matches,
+            demoted_by_reason: run?.demoted_by_reason,
+            match_groups: run?.match_groups,
+            grouped_matches: run?.grouped_matches,
           },
         }
       : undefined;

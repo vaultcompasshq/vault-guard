@@ -293,6 +293,23 @@ Set `"fail_on"` in `.vault-guard.json` to
 change it repo-wide. The JSON `run` block reports both `fail_on` and
 `blocking_matches`; gate on `blocking_matches`, not `summary.secrets`.
 
+One more downgrade is made on content rather than on the path. A match
+that is a slice of an embedded image, font or recording (it sits strictly
+inside a base64 run of at least 1024 characters, and that run decodes to
+the header of a binary format: for a `data:` URI, the format the URI
+declares; otherwise a PNG or JPEG header) is reported at `low` with the
+reason beside it. This is the one place a vendor-anchored rule is lowered,
+and only because the bytes show the match is not a key: a key in a CSV
+cell, in a plaintext `data:` URI, at the end of a payload, or in a payload
+that decodes to text keeps its full severity. `--fail-on low` blocks on
+these too.
+
+Many matches of one rule in one column of a delimited data file, or on very
+long lines, are printed as one grouped line with a count. They are still
+separate findings in JSON and SARIF, each counts toward `blocking_matches`,
+and a baseline accepts them one by one, so a new value in the same column
+is reported on its own.
+
 Structured output includes a `run` block (timing, files/bytes scanned, active pattern count, diagnostics). See **[docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md)**.
 
 ---
@@ -812,6 +829,25 @@ what was scanned", not "nothing there".
   rules whose match holds the secret. `matches[].fingerprint` keeps its
   positional meaning. SARIF adds it as `partialFingerprints["vault-guard/v2"]`
   beside `vault-guard/v1`.
+
+**Fields added in 1.12.0**, all additive, and the four `run` counts always
+present, zero included:
+
+- `run.demoted_matches` and `run.demoted_by_reason` (`data-uri-binary-payload`
+  and `base64-binary-run`, both keys present): matches lowered to `low` because
+  they sit inside encoded media. Each such match carries a `demotion` record
+  (`from`, `reason`, `family`, `format`, `media_type` for a `data:` URI, and
+  `run_length`); its `severity` is already the demoted one, so the gate and
+  `blocking_matches` read it as they read any other.
+- `run.match_groups` and `run.grouped_matches`: groups formed in data files,
+  and the matches in them. A member keeps its own entry in `results[].matches[]`
+  and gains `group_id`; the file gains `results[].groups`. Grouping is
+  presentation only: `summary.secrets` and `blocking_matches` still count
+  matches. SARIF keeps one result per match and adds `vault-guard/group` and
+  `vault-guard/group_size` (and, on a demoted result, `vault-guard/demoted_from`
+  and `vault-guard/demotion_reason`) to its properties. In JSON both
+  `groups[].column` (the field index) and `matches[].column` are 0-based; the
+  text line prints them plus 1, so field index 6 is shown as "column 7".
 
 ---
 

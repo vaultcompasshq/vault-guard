@@ -18,6 +18,13 @@ not a file read.
 | `report_token_usage` | Rough on-disk token estimate for paths (no network calls). |
 | `record_session_event` | Append an opt-in local row to `~/.vault-guard/usage.sqlite` (e.g. `secret_blocked`, `revert`). |
 
+The three scan tools apply the same content demotion as the CLI (a match that
+is a slice of encoded media is reported at `low` with a `demotion` record) and
+form the same groups in data files. Their `summary` objects carry
+`demoted_matches` and `match_groups` beside `total_matches`, which keeps
+counting matches; the embedded JSON and SARIF documents carry every field the
+CLI's do.
+
 ## Errors
 
 Tool errors are returned as JSON payloads in the normal MCP tool response.

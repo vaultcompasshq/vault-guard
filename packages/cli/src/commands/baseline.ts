@@ -304,7 +304,10 @@ export async function baselineCommand(target: string, options: BaselineOptions):
         worktreeEditsWithFindings.add(r.file);
         continue;
       }
-      if (m.severity === 'critical' && !options.includeCritical) {
+      // A demoted match is judged by its severity before demotion, so a
+      // critical key lowered by the content demotion is refused exactly as it
+      // was in 1.11.0 (design 2026-10-17 data files, section 4.5).
+      if ((m.demotion?.from ?? m.severity) === 'critical' && !options.includeCritical) {
         refused.push({ file: r.file, match: m });
         continue;
       }
@@ -325,7 +328,10 @@ export async function baselineCommand(target: string, options: BaselineOptions):
     let digest: string | undefined;
     if (valueBearing) {
       key = contentFingerprintForMatch(root, file, m);
-      fingerprints.add(positional);
+      // A demoted match stays OUT of the positional list, which has no
+      // severity rule: a 1.9.x reader would otherwise suppress the same match
+      // at its full severity. Its entries record is its only key (4.5).
+      if (m.demotion === undefined) fingerprints.add(positional);
     } else {
       key = rootPositionalFingerprint(root, file, m);
       // Over the bytes the finding came from, kept by the scan (the index

@@ -36,7 +36,7 @@ function canonical(p: string): string {
  * resolved on both sides first so a file reached through a linked parent
  * directory keys the same as through its physical path.
  */
-function contentRelPath(fileAbs: string, root: string): string {
+export function contentRelPath(fileAbs: string, root: string): string {
   const file = canonical(path.resolve(fileAbs));
   return relativeFingerprintKey(file, canonical(path.resolve(root)));
 }

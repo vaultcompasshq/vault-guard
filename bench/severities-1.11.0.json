@@ -1,0 +1,66 @@
+{
+  "_comment": "Per positively labelled fixture, its findings as sorted rule:severity, from the CLI named with --cli. Written by bench/run.cjs --write-severities; --assert compares against it.",
+  "fixtures/secrets/anthropic.ts": [
+    "anthropic:critical"
+  ],
+  "fixtures/secrets/openai.ts": [
+    "openai-project:critical"
+  ],
+  "fixtures/secrets/openai-svcacct.ts": [
+    "openai-svcacct:critical"
+  ],
+  "fixtures/secrets/openai-admin.ts": [
+    "openai-admin:critical"
+  ],
+  "fixtures/secrets/openai-legacy.ts": [
+    "openai:critical"
+  ],
+  "fixtures/secrets/aws.ts": [
+    "aws-access:critical"
+  ],
+  "fixtures/secrets/github.ts": [
+    "github-token:critical"
+  ],
+  "fixtures/secrets/stripe.ts": [
+    "stripe:critical"
+  ],
+  "fixtures/secrets/database.ts": [
+    "postgresql-url:low"
+  ],
+  "fixtures/secrets/slack.ts": [
+    "slack-webhook:critical"
+  ],
+  "fixtures/secrets/resend.ts": [
+    "resend-api:critical"
+  ],
+  "fixtures/secrets/stripe-test-key.ts": [
+    "stripe-test:high"
+  ],
+  "fixtures/secrets/remote-dsn.ts": [
+    "postgresql-url:low"
+  ],
+  "fixtures/secrets/caddytest/key.pem": [
+    "ssh-private-key:low"
+  ],
+  "fixtures/secrets/groq.ts": [
+    "groq:critical"
+  ],
+  "fixtures/secrets/openrouter.ts": [
+    "openrouter:critical"
+  ],
+  "fixtures/secrets/xai.ts": [
+    "xai:critical"
+  ],
+  "fixtures/secrets/supabase.ts": [
+    "supabase-token:critical"
+  ],
+  "fixtures/secrets/doppler.ts": [
+    "doppler-token:critical"
+  ],
+  "fixtures/secrets/rust/auth_tests.rs": [
+    "jwt-token:low"
+  ],
+  "fixtures/secrets/rust/inline_cfg_module.rs": [
+    "api-key-generic:low"
+  ]
+}

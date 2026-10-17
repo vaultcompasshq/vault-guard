@@ -7,8 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Planned as 1.12.0, a minor. A key-shaped match that is a slice of an embedded
+image, font or recording is reported at low with the reason, instead of at its
+rule's severity, and many matches of one rule in one column of a data file
+are shown as one grouped finding. Under the default gate (medium) and under
+--fail-on high or critical, a finding demoted this way no longer blocks. No
+finding is removed, no fingerprint changes, and --fail-on low still blocks on
+every demoted finding.
+
 ### Changed
 
+- A match whose every character is base64, that sits strictly inside a run
+  of at least 1024 base64 characters, and whose run decodes to the header of
+  a known binary format is lowered to low. For a data: URI the decoded bytes
+  must be the format its declared media type names (image/png, font/woff2,
+  audio/mpeg and the others in the design); for a run with no data: prefix
+  they must be a PNG or JPEG header, and nothing else. Until now such a
+  match was reported at its rule's severity: one coincidental AIza run
+  inside an embedded PNG was a critical gcp-api-key finding. What can newly
+  stop blocking: those findings, under --fail-on medium (the default), high
+  and critical. Under --fail-on low they block as before. A key that stands
+  alone, is delimited on either side, sits at either end of a payload, or
+  sits in a payload that decodes to text or to random bytes keeps its full
+  severity. The decision reads only the bytes around the match, never a file
+  name or a path, and no config key, flag or file in the tree changes it.
+  The boundary: a key deliberately spliced inside a crafted image payload is
+  reported at low, with its reason, rather than at its rule's severity.
+- In a file whose content is a delimited table (at least 20 lines, 90
+  percent of them with the same number of fields) or on lines of 64 Ki
+  characters or more, five or more matches of one rule in the same column
+  (or on such lines) are shown as one finding in the text output, with the
+  count, the number of distinct values and the first five lines. Every match
+  is still reported in JSON and SARIF, still counts toward
+  run.blocking_matches, and still decides the exit code. A group's members
+  share one severity and are either all demoted or none, so a stronger
+  match in the same column is always shown on its own line. The baseline
+  still works per match: a new value in a baselined column is reported.
+- baseline --write treats a demoted match by its severity before demotion
+  when deciding whether --include-critical is needed, and leaves demoted
+  matches out of the top-level fingerprints list that 1.9.x runners read,
+  so an older runner can never suppress the full-severity finding. The
+  intended cost: a runner older than 1.12.0 (1.9.x through that list, 1.10
+  and 1.11 through their baseline severity rule) reports a demoted match at
+  its full old severity and blocks on it. Upgrade every runner that reads
+  the baseline.
+- When one value is found in more than one copy of a file (the committed
+  blob, the working-tree copy, or the two sides of a conflict), the copy
+  reported is now the one with the higher severity; equal severities keep
+  the blob's copy, as before. The same key bytes can be demoted in one copy
+  and not in another, and a value that is critical in any copy is reported
+  critical, from that copy.
+- The re-time check for a file whose first scan went over the budget now
+  also compares each match's severity and demotion reason between the two
+  passes. The demotion reads only the text, so the passes agree; a pass that
+  did not would make the file untrusted rather than be reported at the
+  first pass's severity.
 - JSON `results[].file` is now relative to the scan root, with forward
   slashes, in every mode. Scanning a directory outside the current directory
   (`vault-guard scan /work/app` from somewhere else) used to put the absolute
@@ -32,6 +85,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory (`"."` for the current directory itself) together with the ref
   that was tried, and no longer prints its absolute path. It prints nothing
   from the repository's contents. No exit code or trust-base decision changes.
+
+### Added
+
+- JSON: a demotion record on each demoted match (from, reason, family,
+  format, media_type, run_length); group_id on each grouped match;
+  results[].groups; and run.demoted_matches, run.demoted_by_reason,
+  run.match_groups and run.grouped_matches, always present. The same counts
+  in SARIF run properties, and the demotion and group as result properties.
+- MCP: demoted_matches and match_groups in the tool summaries.
+
+Unchanged: summary.secrets, run.blocking_matches as a count of matches,
+every fingerprint, the baseline format and the reader's rules, the exit
+codes, the SARIF result count.
 
 ## [1.11.0] - 2026-10-17
 
