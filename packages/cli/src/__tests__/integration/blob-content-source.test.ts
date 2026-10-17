@@ -22,6 +22,7 @@ import {
   tmpDir,
   write,
 } from './git-fixture';
+import { realMp4, realPng } from './binary-fixtures';
 
 /**
  * Tracked content is read from git, not from the checkout (design
@@ -803,11 +804,17 @@ describe('tracked content comes from git blobs', () => {
     }
   }, 60_000);
 
+  // U6 of the 2026-10-17 design: the same test on a fixture that also holds
+  // images and videos, whose head reads must use the same --batch process.
   itPosix('U1: blob reads use at most two cat-file processes per repository', () => {
     const dir = fresh();
     initRepo(dir);
     for (let i = 0; i < 200; i++) write(dir, `src/f${i}.ts`, `export const v${i} = ${i};\n`);
     write(dir, 'src/leak.ts', `export const k = "${AWS_KEY}";\n`);
+    for (let i = 0; i < 5; i++) {
+      write(dir, `img/logo${i}.png`, realPng(4096, 100 + i));
+      write(dir, `media/clip${i}.mp4`, realMp4(16384, 200 + i));
+    }
     commitAll(dir, 'base');
     const log = path.join(fresh('vg-blob-log-'), 'git.log');
     const bin = gitStub(path.dirname(log), log);
@@ -816,6 +823,7 @@ describe('tracked content comes from git blobs', () => {
       PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
     });
     expect(r.code).toBe(1);
+    expect((JSON.parse(r.stdout) as { run: { binary_files_skipped: number } }).run.binary_files_skipped).toBe(10);
     const calls = stubCalls(log);
     const isRootLookup = (c: { args: string[] }): boolean =>
       subcommand(c.args) === 'rev-parse' &&

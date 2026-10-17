@@ -201,12 +201,8 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
       }
       const dir = resolved.path;
       const t0 = Date.now();
-      const { results, filesScanned, bytesScanned, overBudget, unscannable } = await scanWorkspaceDirectory(
-        dir,
-        scanner,
-        10,
-        configIgnorePatterns(config),
-      );
+      const outcome = await scanWorkspaceDirectory(dir, scanner, 10, configIgnorePatterns(config));
+      const { results, filesScanned, bytesScanned, overBudget, unscannable } = outcome;
       // What the embedded documents must also say: every file this run did not
       // vouch for, with the same kinds the CLI uses (an over-budget file counts,
       // as it does there). Paths are relative to the scanned directory.
@@ -220,6 +216,13 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
         files_scanned: filesScanned,
         bytes_scanned: bytesScanned,
         patterns_active: scanner.getActivePatternCount(),
+        // The binary counts of the 2026-10-17 design, section 5, always present.
+        binary_files_skipped: outcome.binaryFilesSkipped,
+        binary_files_skipped_by_family: { ...outcome.binaryFilesSkippedByFamily },
+        binary_worktree_copies_skipped: outcome.binaryWorktreeCopiesSkipped,
+        binary_type_mismatch_scanned: outcome.binaryTypeMismatch.length,
+        binary_type_mismatch: outcome.binaryTypeMismatch.map(m => ({ file: relToDir(m.file), family: m.family })),
+        scan_budget_retimed: outcome.scanBudgetRetimed,
         ...(notVouched.length > 0
           ? { unscannable_files: notVouched.length, unscannable: notVouched }
           : {}),

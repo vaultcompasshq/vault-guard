@@ -3,6 +3,27 @@ export * from './errors';
 export * from './scanners';
 export * from './utils/file-utils';
 export * from './utils/content-source';
+export {
+  SNIFF_BYTES,
+  BINARY_FAMILIES,
+  BINARY_TYPES,
+  binaryCandidate,
+  confirmsBinary,
+  isControlByte,
+  isLfsPointer,
+  type BinaryFamily,
+  type BinaryTypeRow,
+  type Signature,
+  type SignaturePart,
+} from './utils/binary-type';
+export {
+  THREAD_CPU_STABLE_NODE,
+  defaultScanClock,
+  threadCpuClockUsable,
+  timeSpan,
+  type ClockMeasure,
+  type ScanClock,
+} from './utils/scan-clock';
 export * from './utils/git-env';
 export * from './utils/read-no-follow';
 export { BlobBatchReader, batchCheckBlobs, type BlobCheck } from './utils/blob-reader';

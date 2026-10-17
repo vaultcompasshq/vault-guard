@@ -1,12 +1,12 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { DiagnosticBus } from '@vaultcompass/vault-guard-core';
+import { DiagnosticBus, type ScanClock } from '@vaultcompass/vault-guard-core';
 import type { SecretScanner } from '@vaultcompass/vault-guard-core';
 import { scanFilesAsync, scanFileListAsync, type UnreadableFile } from '../utils/scan-utils';
 
 /**
- * Defense-in-depth per-file wall-clock budget.
+ * Defense-in-depth per-file CPU-time budget.
  *
  * The regex bounds are the specific fix for the two audited patterns; this
  * budget is the backstop for any future pattern (built-in or user `extra_`)
@@ -20,23 +20,20 @@ describe('per-file scan budget', () => {
   let dir: string;
   const originalCwd = process.cwd();
 
-  // A scanner whose per-file scan deliberately busy-waits past a small forced
-  // budget. Cast through unknown: only the two scan entry points are exercised.
-  const busyWait = (ms: number): void => {
-    const end = Date.now() + ms;
-    // eslint-disable-next-line no-empty
-    while (Date.now() < end) {}
-  };
+  // A scanner that finds nothing; the slowness comes from the clock seam.
+  // Cast through unknown: only the two scan entry points are exercised.
   const slowScanner = {
-    scan: () => {
-      busyWait(60);
-      return [];
-    },
-    scanContent: () => {
-      busyWait(60);
-      return [];
-    },
+    scan: () => [],
+    scanContent: () => [],
   } as unknown as SecretScanner;
+  // The budget is CPU time with one re-time (design 2026-10-17, section 6).
+  // A busy-wait is descheduled on a loaded machine and its CPU time can stay
+  // under the budget, so the slow cases make every measured span 60 ms
+  // through the clock seam instead, over twice the 10 ms budget.
+  const slowClock = (): ScanClock => {
+    let t = 0;
+    return { measure: 'thread-cpu', cpuMs: () => (t += 60), wallMs: () => t };
+  };
 
   beforeEach(() => {
     dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vg-budget-')));
@@ -58,9 +55,10 @@ describe('per-file scan budget', () => {
       bus,
       unreadable,
       scanBudgetMs: 10,
+      scanClock: slowClock(),
     });
 
-    // Both files blew the 10ms budget (each busy-waits 60ms).
+    // Both files blew the 10ms budget (each measured span is 60ms on the seam).
     expect(unreadable.length).toBe(2);
     const diags = bus.drain();
     expect(diags).toEqual(
@@ -81,6 +79,7 @@ describe('per-file scan budget', () => {
       bus,
       unreadable,
       scanBudgetMs: 10,
+      scanClock: slowClock(),
       cwd: dir,
     });
 

@@ -29,6 +29,7 @@ export type DiagnosticCode =
   | 'file.line_too_long'
   | 'file.read_error'
   | 'file.scan_timeout'
+  | 'file.type_mismatch'
   | 'fs.permission_denied'
   | 'git.staged_files_failed'
   | 'git.warning'

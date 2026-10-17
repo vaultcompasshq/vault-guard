@@ -102,6 +102,46 @@ describe('hook environment', () => {
     expect(hookResult(out).code).toBe(1);
   });
 
+  itPosix("U14 (design 2026-10-17): --staged head reads in a commit -a hook use the hook's index", () => {
+    const repo = fresh('vg-hook-head-');
+    fx.initRepo(repo);
+    fx.write(repo, 'app.ts', 'export const a = 1;\n');
+    fx.write(repo, 'img/logo.png', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]));
+    fx.commitAll(repo, 'base');
+    const outDir = fresh('vg-hook-head-out-');
+    const log = path.join(outDir, 'git.log');
+    const bin = fx.gitStub(outDir, log);
+    const out = path.join(outDir, 'r');
+    const script = [
+      '#!/bin/sh',
+      `cd '${repo}' || exit 99`,
+      `PATH='${bin}':"$PATH" '${process.execPath}' '${fx.CLI_ENTRY}' scan --staged --format json > '${out}.json' 2> '${out}.err'`,
+      `echo $? > '${out}.code'`,
+      'exit 0',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(repo, '.git', 'hooks', 'pre-commit'), script, { mode: 0o755 });
+    // A staged real .woff2, and -a stages logo.png replaced with text holding a key:
+    // that content exists only in the temporary index GIT_INDEX_FILE names.
+    fx.write(repo, 'fonts/a.woff2', Buffer.from([0x77, 0x4f, 0x46, 0x32, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00]));
+    fx.git(repo, ['add', 'fonts/a.woff2']);
+    fx.write(repo, 'img/logo.png', `aws_access_key_id = ${fx.AWS_KEY}\n`);
+    fx.git(repo, ['commit', '-q', '-a', '-m', 'edit']);
+    expect(Number.parseInt(fs.readFileSync(`${out}.code`, 'utf-8').trim(), 10)).toBe(1);
+    const doc = JSON.parse(fs.readFileSync(`${out}.json`, 'utf-8')) as {
+      run: { binary_files_skipped: number; binary_files_skipped_by_family: Record<string, number>; binary_type_mismatch: unknown };
+      results: Array<{ file: string }>;
+    };
+    expect(doc.results.map(r => r.file)).toEqual(['img/logo.png']);
+    expect(doc.run.binary_files_skipped_by_family.font).toBe(1);
+    expect(doc.run.binary_type_mismatch).toEqual([{ file: 'img/logo.png', family: 'image' }]);
+    const batches = fx
+      .stubCalls(log)
+      .filter(c => fx.subcommand(c.args) === 'cat-file' && c.args.includes('--batch'));
+    expect(batches).toHaveLength(1);
+    expect(batches[0].indexFile).not.toBeNull();
+  });
+
   /** A bare repository whose work tree has no .git entry: the dotfiles layout. */
   function dotfiles(): { env: NodeJS.ProcessEnv; work: string; gitDir: string } {
     const root = fresh('vg-dotfiles-');

@@ -271,6 +271,12 @@ export async function getAllFilesAsync(
   verbose = false,
   bus?: DiagnosticBus,
   counts?: ScanSkipCounts,
+  /**
+   * Where the verbose walk warnings go. The CLI collects them so that, on a
+   * run that cannot complete, the INCOMPLETE line is the first thing on
+   * stderr (design 2026-10-17, section 7). Defaults to `console.error`.
+   */
+  warn?: WalkWarn,
 ): Promise<string[]> {
   const files: string[] = [];
 
@@ -306,7 +312,7 @@ export async function getAllFilesAsync(
         }
 
         if (lstat.isDirectory() && !shouldIgnoreDirectory(item)) {
-          const subFiles = await getAllFilesAsync(fullPath, visited, verbose, bus, counts);
+          const subFiles = await getAllFilesAsync(fullPath, visited, verbose, bus, counts, warn);
           files.push(...subFiles);
         } else if (lstat.isFile()) {
           if (shouldIgnoreFile(fullPath)) {
@@ -323,9 +329,7 @@ export async function getAllFilesAsync(
             ctx: { path: path.join(dirPath, item), detail: String(error) },
           });
         }
-        if (verbose) {
-          console.error(`Warning: Cannot access ${path.join(dirPath, item)}:`, error);
-        }
+        if (verbose) walkWarn(warn, `Warning: Cannot access ${path.join(dirPath, item)}:`, error);
       }
     }
   } catch (error) {
@@ -336,12 +340,18 @@ export async function getAllFilesAsync(
         ctx: { dir: dirPath, detail: String(error) },
       });
     }
-    if (verbose) {
-      console.error(`Warning: Cannot read directory ${dirPath}:`, error);
-    }
+    if (verbose) walkWarn(warn, `Warning: Cannot read directory ${dirPath}:`, error);
   }
 
   return files;
+}
+
+/** A sink for one line of walk output on stderr. */
+export type WalkWarn = (line: string) => void;
+
+function walkWarn(warn: WalkWarn | undefined, message: string, error: unknown): void {
+  if (warn) warn(`${message} ${String(error)}`);
+  else console.error(message, error);
 }
 
 /**
@@ -513,13 +523,15 @@ export async function getFilesToScanAsync(
   configIgnorePatterns: string[] = [],
   counts?: ScanSkipCounts,
   info?: PlainFileSetInfo,
+  /** Where verbose walk warnings go; `console.error` when absent. */
+  warn?: WalkWarn,
 ): Promise<string[]> {
   if (findGitRoot(targetPath) !== null) {
     noteFileSet(info, 'git');
     return getGitFilesToScan(targetPath, configIgnorePatterns, counts, info ?? newPlainFileSetInfo(), bus);
   }
   noteFileSet(info, 'walk');
-  const allFiles = await getAllFilesAsync(targetPath, new Set(), verbose, bus, counts);
+  const allFiles = await getAllFilesAsync(targetPath, new Set(), verbose, bus, counts, warn);
   const gitignoreTester = getGitignoreTester(targetPath);
   const configIgnoreTester = buildConfigIgnoreFilter(configIgnorePatterns, targetPath);
   const out: string[] = [];
@@ -1113,20 +1125,11 @@ function shouldIgnoreFile(
   gitignoreTester?: (filePath: string) => boolean,
 ): boolean {
   const ext = path.extname(filePath);
-  const ignoreExts = [
-    '.png',
-    '.jpg',
-    '.jpeg',
-    '.gif',
-    '.ico',
-    '.pdf',
-    '.zip',
-    '.tar',
-    '.gz',
-    '.lock',
-    '.log',
-    '.map',
-  ];
+  // Text that is skipped by name on purpose (it produces false positives).
+  // Binary formats are not here: a binary skip needs the file's own bytes to
+  // agree with its extension, which the content classifier decides per copy
+  // (design 2026-10-17, section 2.4; utils/binary-type.ts).
+  const ignoreExts = ['.lock', '.log', '.map'];
 
   if (ignoreExts.includes(ext)) {
     return true;

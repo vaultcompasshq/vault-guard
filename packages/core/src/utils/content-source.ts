@@ -6,7 +6,15 @@ import { GitError } from '../errors';
 import type { IgnoreDirectiveHits, SecretScanner } from '../scanners/secret-scanner';
 import type { MatchSource, SecretMatch } from '../types';
 import { BlobBatchReader, batchCheckBlobs, type BlobCheck } from './blob-reader';
+import {
+  SNIFF_BYTES,
+  binaryCandidate,
+  confirmsBinary,
+  isLfsPointer,
+  type BinaryFamily,
+} from './binary-type';
 import { applyPathAwareSeverity } from './path-severity';
+import { defaultScanClock, timeSpan, type ClockMeasure, type ScanClock } from './scan-clock';
 import { MAX_SCAN_FILE_BYTES } from './scan-file';
 import { decodeDiskCopy, decodeTextBuffer } from './text-decode';
 
@@ -277,6 +285,31 @@ export class GitContentSource {
     return r.read(oid);
   }
 
+  /** The first `n` bytes of a blob, through the same reader and process (design 2026-10-17, 4.2). */
+  readHead(repoTop: string, oid: string, n: number): Promise<Buffer> {
+    if (this.closed) {
+      return Promise.reject(
+        new GitError(
+          `vault-guard: the run ended before ${oid} was read from ${repoTop}; the content source is closed`,
+          'git cat-file --batch',
+        ),
+      );
+    }
+    let r = this.readers.get(repoTop);
+    if (!r) {
+      r = new BlobBatchReader(repoTop, this.env, this.window);
+      this.readers.set(repoTop, r);
+    }
+    return r.readHead(oid, n);
+  }
+
+  /** Body bytes piped through `cat-file` for head reads, for the bench (not an output field). */
+  get headReadBytes(): number {
+    let n = 0;
+    for (const r of this.readers.values()) n += r.headReadBytes;
+    return n;
+  }
+
   /**
    * One path has finished with a blob. When no prepared path still needs it,
    * the reader forgets its bytes, so memory is bounded by the blobs in use
@@ -366,34 +399,180 @@ export interface FileContentOutcome {
   undecodable?: string;
   /** Raw bytes of each copy that produced a header-only match, by {@link copyKey}. */
   kept: Map<string, Buffer>;
-  /** Slowest single copy, for the post-hoc scan budget. */
+  /** Slowest single copy's deciding measurement (CPU time, design 2026-10-17, 6.2). */
   elapsedMs: number;
+  /**
+   * Every copy that would have been read was confirmed binary (name and bytes
+   * agree): nothing was decoded or scanned, `matches` is empty and
+   * `bytesRead` is the head bytes only.
+   */
+  skippedByType?: { family: BinaryFamily };
+  /** Disk copies confirmed binary while another copy of the file was scanned (the LFS case). */
+  binaryCopiesSkipped: number;
+  /** A copy had a binary extension, was not confirmed, and was not an LFS pointer: scanned as text. */
+  typeMismatch?: { family: BinaryFamily };
+  /** Set when a copy's scan went over the budget and its result is not trusted (6.3). */
+  untrusted?: BudgetUntrusted;
+  /** A copy went over the budget once, was re-timed, and was then trusted. */
+  retimed: boolean;
+}
+
+/** Why a copy's result is not trusted, with the numbers the diagnostic carries. */
+export interface BudgetUntrusted {
+  reason: string;
+  /** The deciding measurement: the re-time when there was one. */
+  elapsedMs: number;
+  firstMs: number;
+  wallMs: number;
+  budgetMs: number;
+  measure: ClockMeasure;
+  retimed: boolean;
 }
 
 export interface ScanFileContentOptions {
   pathRoot?: string;
   maxBytes?: number;
   ignoreHits?: IgnoreDirectiveHits;
+  /**
+   * Apply the binary classifier (design 2026-10-17, section 2) to each copy.
+   * Off by default, so a caller that asked for a file to be scanned gets it
+   * scanned as text.
+   */
+  classify?: boolean;
+  /** CPU-time budget per copy, in ms. Without it no copy is judged, and nothing is re-timed. */
+  budgetMs?: number;
+  /** The clock seam; defaults to {@link defaultScanClock}. */
+  clock?: ScanClock;
 }
 
 const MISSING_BLOB_REASON =
   'the committed blob for this tracked file is not in the local object store (a damaged ' +
   'repository, or a partial clone that cannot fetch it)';
 
+interface CopyScan {
+  matches: SecretMatch[];
+  ms: number;
+  untrusted?: BudgetUntrusted;
+  retimed: boolean;
+}
+
+const sameMatches = (a: SecretMatch[], b: SecretMatch[]): boolean =>
+  a.length === b.length &&
+  a.every(
+    (m, i) =>
+      m.type === b[i].type &&
+      m.line === b[i].line &&
+      m.offset === b[i].offset &&
+      m.matchLength === b[i].matchLength &&
+      m.valueDigest === b[i].valueDigest,
+  );
+
+/**
+ * Scan one decoded copy and judge it against the budget (design 2026-10-17,
+ * 6.3): within the budget, trusted; over twice the budget, untrusted with no
+ * second pass; otherwise one more pass over the same text with a discarded
+ * inline tally, trusted only if that pass is within the budget and its
+ * matches equal the first pass's. The first pass's matches are reported.
+ */
 function scanText(
   scanner: SecretScanner,
   text: string,
   file: string,
   opts: ScanFileContentOptions,
   hits: IgnoreDirectiveHits | undefined,
-): { matches: SecretMatch[]; ms: number } {
-  const t0 = Date.now();
-  const matches = applyPathAwareSeverity(
-    scanner.scanContent(text, { filePath: file, ignoreHits: hits, pathRoot: opts.pathRoot }),
-    file,
-    opts.pathRoot,
-  );
-  return { matches, ms: Date.now() - t0 };
+): CopyScan {
+  const clock = opts.clock ?? defaultScanClock();
+  const pass = (h: IgnoreDirectiveHits | undefined): SecretMatch[] =>
+    applyPathAwareSeverity(
+      scanner.scanContent(text, { filePath: file, ignoreHits: h, pathRoot: opts.pathRoot }),
+      file,
+      opts.pathRoot,
+    );
+  const first = timeSpan(clock, () => pass(hits));
+  const budget = opts.budgetMs;
+  if (budget === undefined || first.ms <= budget) return { matches: first.value, ms: first.ms, retimed: false };
+  const c1 = Math.round(first.ms);
+  const base = { firstMs: c1, budgetMs: budget, measure: clock.measure };
+  if (first.ms > 2 * budget) {
+    return {
+      matches: first.value,
+      ms: first.ms,
+      retimed: false,
+      untrusted: {
+        ...base,
+        reason: `scan exceeded the ${budget} ms CPU budget (took ${c1} ms, over twice the budget, so it was not re-timed)`,
+        elapsedMs: c1,
+        wallMs: Math.round(first.wallMs),
+        retimed: false,
+      },
+    };
+  }
+  const second = timeSpan(clock, () => pass(hits ? freshHits() : undefined));
+  const c2 = Math.round(second.ms);
+  if (second.ms > budget) {
+    return {
+      matches: first.value,
+      ms: second.ms,
+      retimed: false,
+      untrusted: {
+        ...base,
+        reason: `scan exceeded the ${budget} ms CPU budget twice (first ${c1} ms, re-timed ${c2} ms)`,
+        elapsedMs: c2,
+        wallMs: Math.round(second.wallMs),
+        retimed: true,
+      },
+    };
+  }
+  if (!sameMatches(first.value, second.value)) {
+    return {
+      matches: first.value,
+      ms: second.ms,
+      retimed: false,
+      untrusted: {
+        ...base,
+        reason: 'scan results differed between two passes over the same content',
+        elapsedMs: c2,
+        wallMs: Math.round(second.wallMs),
+        retimed: true,
+      },
+    };
+  }
+  return { matches: first.value, ms: second.ms, retimed: true };
+}
+
+/** Fold one copy's budget verdict into the file's: the first untrusted copy decides. */
+function foldBudget(into: { untrusted?: BudgetUntrusted; retimed: boolean; elapsedMs: number }, c: CopyScan): void {
+  into.elapsedMs = Math.max(into.elapsedMs, c.ms);
+  if (c.untrusted && !into.untrusted) into.untrusted = c.untrusted;
+  if (c.retimed) into.retimed = true;
+}
+
+/** Read up to {@link SNIFF_BYTES} from the start of an open file without moving its position. */
+async function readHeadFrom(fh: fs.promises.FileHandle): Promise<Buffer> {
+  const head = Buffer.alloc(SNIFF_BYTES);
+  let got = 0;
+  while (got < SNIFF_BYTES) {
+    const { bytesRead } = await fh.read(head, got, SNIFF_BYTES - got, got);
+    if (bytesRead === 0) break;
+    got += bytesRead;
+  }
+  return head.subarray(0, got);
+}
+
+/** The rest of an open file after a positional head read: the whole file, from the same descriptor. */
+async function readAllFrom(fh: fs.promises.FileHandle, size: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let pos = 0;
+  let total = 0;
+  for (;;) {
+    const buf = Buffer.alloc(Math.max(65536, Math.min(size - pos, 8 * 1024 * 1024)));
+    const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
+    if (bytesRead === 0) break;
+    chunks.push(buf.subarray(0, bytesRead));
+    pos += bytesRead;
+    total += bytesRead;
+  }
+  return Buffer.concat(chunks, total);
 }
 
 function tag(matches: SecretMatch[], source: MatchSource, stage?: 2 | 3): SecretMatch[] {
@@ -511,19 +690,53 @@ export async function scanFileContent(
     worktreeScanned: false,
     kept,
     elapsedMs: 0,
+    binaryCopiesSkipped: 0,
+    retimed: false,
     ...o,
   });
 
   if (!entry || !source) {
-    const st = await fs.promises.stat(file);
-    if (st.size > max) return outcome({ failure: { kind: 'too_large', bytes: st.size } });
-    const bytes = await fs.promises.readFile(file);
-    if (bytes.length > max) return outcome({ failure: { kind: 'too_large', bytes: bytes.length } });
+    const cand = opts.classify ? binaryCandidate(file) : undefined;
+    let bytes: Buffer;
+    let typeMismatch: { family: BinaryFamily } | undefined;
+    if (cand) {
+      // One descriptor: the bytes judged are the bytes read (4.3).
+      const fh = await fs.promises.open(file, 'r');
+      try {
+        const head = await readHeadFrom(fh);
+        if (confirmsBinary(cand.ext, head)) {
+          return outcome({ skippedByType: { family: cand.family }, bytesRead: head.length });
+        }
+        const st = await fh.stat();
+        if (!isLfsPointer(head, st.size)) typeMismatch = { family: cand.family };
+        if (st.size > max) {
+          return outcome({ failure: { kind: 'too_large', bytes: st.size }, ...(typeMismatch ? { typeMismatch } : {}) });
+        }
+        bytes = await readAllFrom(fh, st.size);
+      } finally {
+        await fh.close();
+      }
+    } else {
+      const st = await fs.promises.stat(file);
+      if (st.size > max) return outcome({ failure: { kind: 'too_large', bytes: st.size } });
+      bytes = await fs.promises.readFile(file);
+    }
+    const mm = typeMismatch ? { typeMismatch } : {};
+    if (bytes.length > max) return outcome({ failure: { kind: 'too_large', bytes: bytes.length }, ...mm });
     const hits = opts.ignoreHits ? freshHits() : undefined;
-    const { matches, ms } = scanText(scanner, decodeTextBuffer(bytes), file, opts, hits);
+    const scanned = scanText(scanner, decodeTextBuffer(bytes), file, opts, hits);
     if (hits && opts.ignoreHits) foldHits(opts.ignoreHits, hits, freshHits());
-    if (matches.some(m => m.valueDigest === undefined)) kept.set(copyKey(file, 'file'), bytes);
-    return outcome({ matches: tag(matches, 'file'), bytesRead: bytes.length, elapsedMs: ms });
+    if (scanned.matches.some(m => m.valueDigest === undefined)) kept.set(copyKey(file, 'file'), bytes);
+    const budget = { elapsedMs: 0, retimed: false } as { untrusted?: BudgetUntrusted; retimed: boolean; elapsedMs: number };
+    foldBudget(budget, scanned);
+    return outcome({
+      matches: tag(scanned.matches, 'file'),
+      bytesRead: bytes.length,
+      elapsedMs: budget.elapsedMs,
+      retimed: budget.retimed && !budget.untrusted,
+      ...(budget.untrusted ? { untrusted: budget.untrusted } : {}),
+      ...mm,
+    });
   }
 
   const blobs: Array<{ oid: string; stage?: 2 | 3 }> =
@@ -553,9 +766,19 @@ async function scanTrackedCopies(
   kept: Map<string, Buffer>,
   outcome: (o: Partial<FileContentOutcome>) => FileContentOutcome,
 ): Promise<FileContentOutcome> {
+  // Each copy is judged on its own bytes (design 2026-10-17, 4.2 and 4.3).
+  // The blob is judged by the name the path was given; the disk read by the
+  // name of what it holds (a named symlink's resolved target).
+  const blobCand = opts.classify ? binaryCandidate(file) : undefined;
+  const diskFile = entry.diskPath ?? file;
+  const diskCand = opts.classify ? binaryCandidate(diskFile) : undefined;
+  let typeMismatch: { family: BinaryFamily } | undefined;
+  const mm = (): Partial<FileContentOutcome> => (typeMismatch ? { typeMismatch } : {});
+  let headBytes = 0;
+  const scanBlobs: Array<{ oid: string; stage?: 2 | 3 }> = [];
   for (const b of blobs) {
     const c = source.check(entry.repoTop, b.oid);
-    if (c.kind === 'missing') return outcome({ failure: { kind: 'read_error', reason: MISSING_BLOB_REASON } });
+    if (c.kind === 'missing') return outcome({ failure: { kind: 'read_error', reason: MISSING_BLOB_REASON }, ...mm() });
     if (c.kind === 'other') {
       throw new GitError(
         `vault-guard: ${file} is listed as a tracked file, but its object ${b.oid} is a ${c.type}, ` +
@@ -563,43 +786,84 @@ async function scanTrackedCopies(
         'git cat-file --batch-check',
       );
     }
-    if (c.size > max) return outcome({ failure: { kind: 'too_large', bytes: c.size } });
+    if (blobCand) {
+      // Head first: a confirmed binary is skipped at any size (4.7).
+      const head = await source.readHead(entry.repoTop, b.oid, SNIFF_BYTES);
+      if (confirmsBinary(blobCand.ext, head)) {
+        headBytes += head.length;
+        continue;
+      }
+      if (!isLfsPointer(head, c.size)) typeMismatch = { family: blobCand.family };
+    }
+    if (c.size > max) return outcome({ failure: { kind: 'too_large', bytes: c.size }, ...mm() });
+    scanBlobs.push(b);
   }
   const readDisk = entry.worktreeAlso && !entry.diskAbsent;
-  const diskFile = entry.diskPath ?? file;
   let diskBytes: Buffer | undefined;
+  let diskSkipped = false;
   if (readDisk) {
     let st: fs.Stats;
     try {
       st = await fs.promises.lstat(diskFile);
     } catch (error) {
-      return outcome({ failure: { kind: 'read_error', reason: String(error) } });
+      return outcome({ failure: { kind: 'read_error', reason: String(error) }, ...mm() });
     }
-    if (st.size > max) return outcome({ failure: { kind: 'too_large', bytes: st.size } });
+    if (diskCand) {
+      try {
+        const fh = await fs.promises.open(diskFile, 'r');
+        try {
+          const head = await readHeadFrom(fh);
+          if (confirmsBinary(diskCand.ext, head, entry.encoding)) {
+            diskSkipped = true;
+            headBytes += head.length;
+          } else {
+            const fst = await fh.stat();
+            if (!isLfsPointer(head, fst.size)) typeMismatch = { family: diskCand.family };
+            if (fst.size > max) return outcome({ failure: { kind: 'too_large', bytes: fst.size }, ...mm() });
+            diskBytes = await readAllFrom(fh, fst.size);
+          }
+        } finally {
+          await fh.close();
+        }
+      } catch (error) {
+        return outcome({ failure: { kind: 'read_error', reason: String(error) }, ...mm() });
+      }
+    } else if (st.size > max) {
+      return outcome({ failure: { kind: 'too_large', bytes: st.size }, ...mm() });
+    }
+  }
+
+  // No copy left to scan: the file is skipped by type.
+  if (scanBlobs.length === 0 && (!readDisk || diskSkipped)) {
+    const family = (blobCand ?? diskCand)?.family as BinaryFamily;
+    return outcome({ skippedByType: { family }, bytesRead: headBytes });
   }
 
   const blobSides: SecretMatch[][] = [];
   const blobHits = opts.ignoreHits ? freshHits() : undefined;
   let bytesRead = 0;
-  let elapsedMs = 0;
-  for (const b of blobs) {
+  const budget = { elapsedMs: 0, retimed: false } as { untrusted?: BudgetUntrusted; retimed: boolean; elapsedMs: number };
+  for (const b of scanBlobs) {
     const bytes = await source.read(entry.repoTop, b.oid);
     bytesRead += bytes.length;
-    const { matches, ms } = scanText(scanner, decodeTextBuffer(bytes), file, opts, blobHits);
-    elapsedMs = Math.max(elapsedMs, ms);
+    const scanned = scanText(scanner, decodeTextBuffer(bytes), file, opts, blobHits);
+    foldBudget(budget, scanned);
     const src = source.blobSource;
-    if (matches.some(m => m.valueDigest === undefined)) kept.set(copyKey(file, src, b.stage), bytes);
-    blobSides.push(tag(matches, src, b.stage));
+    if (scanned.matches.some(m => m.valueDigest === undefined)) kept.set(copyKey(file, src, b.stage), bytes);
+    blobSides.push(tag(scanned.matches, src, b.stage));
   }
 
   let disk: SecretMatch[] = [];
   let undecodable: string | undefined;
   const diskHits = opts.ignoreHits ? freshHits() : undefined;
-  if (readDisk) {
-    try {
-      diskBytes = await fs.promises.readFile(diskFile);
-    } catch (error) {
-      return outcome({ failure: { kind: 'read_error', reason: String(error) } });
+  const scanDisk = readDisk && !diskSkipped;
+  if (scanDisk) {
+    if (diskBytes === undefined) {
+      try {
+        diskBytes = await fs.promises.readFile(diskFile);
+      } catch (error) {
+        return outcome({ failure: { kind: 'read_error', reason: String(error) }, ...mm() });
+      }
     }
     bytesRead += diskBytes.length;
     const decoded = decodeDiskCopy(diskBytes, entry.encoding, entry.filtered);
@@ -607,8 +871,9 @@ async function scanTrackedCopies(
     const seen = new Set<string>();
     const texts = decoded.texts.filter((t, i) => i === 0 || t !== decoded.texts[0]);
     for (const text of texts) {
-      const { matches, ms } = scanText(scanner, text, file, opts, diskHits);
-      elapsedMs = Math.max(elapsedMs, ms);
+      const scanned = scanText(scanner, text, file, opts, diskHits);
+      foldBudget(budget, scanned);
+      const matches = scanned.matches;
       for (const m of matches) {
         const k = identityKey(m);
         if (seen.has(k)) continue;
@@ -624,9 +889,13 @@ async function scanTrackedCopies(
   return outcome({
     matches: mergeCopies(blobSides, disk),
     bytesRead,
-    worktreeScanned: readDisk,
+    worktreeScanned: scanDisk,
     ...(undecodable !== undefined ? { undecodable } : {}),
-    elapsedMs,
+    elapsedMs: budget.elapsedMs,
+    binaryCopiesSkipped: diskSkipped ? 1 : 0,
+    retimed: budget.retimed && !budget.untrusted,
+    ...(budget.untrusted ? { untrusted: budget.untrusted } : {}),
+    ...mm(),
   });
 }
 

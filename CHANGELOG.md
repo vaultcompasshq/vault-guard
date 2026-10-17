@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Planned as **1.11.0, a minor.** Video, audio and font files are no longer
+read as text, every binary skip now needs the file's own bytes to agree with
+its extension, and a file that goes over the scan time budget is scanned once
+more before the run refuses to trust it. A run that was green on 1.10.0 can be
+red on this release: a text file named like an image, an archive or a native
+library used to be skipped on its name alone and is now scanned. Design:
+`docs/design/2026-10-17-media-skip-budget-retime-upgrade-note.md`.
+
 ### Security
 
 - The release workflow now installs, builds, tests and packs in a job that
@@ -16,6 +24,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where dependency install scripts run, so the split keeps those scripts
   away from the token and does not by itself guarantee the integrity of
   what was built.
+- A text file with a binary extension was skipped unread in every mode:
+  plain directory scans, pull-request mode (--trust-base), --staged, a file
+  named on the command line, and the MCP scan_workspace tool, which has
+  carried its own copy of the same name-only list since 1.0.0. The
+  affected names were .png, .jpg, .jpeg, .gif, .ico, .pdf, .zip, .tar and
+  .gz (dropped by the file-set type filter, in lowercase), the same in any
+  case, and .exe, .dll, .so, .dylib and .bin (skipped at scan time). A key
+  saved as credentials.png or in an env dump named dump.bin therefore
+  passed the gate, including in a pull request, with only a skip count to
+  show for it (and no count at all from scan_workspace). This has been the
+  behaviour of every release up to and including 1.10.0. From 1.11.0 such
+  a file is scanned as text, reported under binary_type_mismatch, and can
+  fail the run. A file is skipped only when its own first bytes carry the
+  format's signature and are not text, or, for .bin, which has no
+  signature, when its first bytes hold a control byte that text does not
+  use. Two known limits remain: a file whose first bytes are a valid binary
+  header followed by text is still skipped (a change to the content, like
+  encoding a secret), and ISO-2022-KR text, which uses the SO and SI control
+  bytes, is still skipped when named .bin with no declared
+  working-tree-encoding. See docs/THREAT_MODEL.md, "What the binary skip
+  guarantees, and its boundary".
+
+### Added
+
+- Video (.mp4, .mov, .m4v, .webm, .mkv, .avi, .ogv, .flv, .wmv, .mpg and
+  others), audio (.mp3, .wav, .ogg, .opus, .flac, .m4a, .aac, .aiff, .mid
+  and others) and font files (.woff, .woff2, .ttf, .otf, .ttc, .eot) are
+  recognised as binary and skipped when their bytes carry the format's
+  signature. Until 1.10.0 they were read as text, and one large video could
+  go over the per-file time budget and make the run exit 2.
+- `run.binary_files_skipped_by_family`, `run.binary_worktree_copies_skipped`,
+  `run.binary_type_mismatch_scanned`, `run.binary_type_mismatch` and
+  `run.scan_budget_retimed` in JSON, the same counts in SARIF run
+  properties, and text lines for each when it is not zero. The MCP
+  scan_workspace tool reports the same counts.
+- A `file.type_mismatch` warning for a file whose extension names a binary
+  type but whose content is text.
+
+### Changed
+
+- A file is skipped as binary only when its extension and its first bytes
+  agree. This applies to the existing image, PDF, archive and library
+  extensions as well as the new ones, in every mode, including
+  `--trust-base` and `--staged`. A file whose bytes do not agree is scanned
+  as text and listed. Content alone never causes a skip: a text file with a
+  NUL byte is still scanned. A .bin file, which has no format signature, is
+  skipped only when its first bytes hold a control byte that text does not
+  use; NUL bytes and non-UTF-8 bytes never count, so NUL-separated text
+  (an env -0 dump) and text in a legacy codepage (a Windows set > dump.bin)
+  are scanned. Formats whose signature is plain ASCII (Ogg, PDF, BMP, MP4
+  and QuickTime atoms, and others) also need a NUL or control byte, so text
+  in any codepage that happens to start with such letters is scanned. A
+  working-tree copy with a declared working-tree-encoding that decodes
+  cleanly in that encoding is always treated as text.
+- Images, PDFs and archives are now counted under `binary_files_skipped`
+  rather than `type_filtered_files`, and pass through the config `ignore`
+  list like any other file. A binary file whose bytes agree is skipped at
+  any size; the 32 MiB limit applies to everything scanned as text.
+- The per-file scan budget measures CPU time instead of wall time, and a
+  file over it is scanned a second time from the same content. Only a file
+  over the budget on both passes (or over twice the budget on the first) is
+  reported as not trusted, with exit 2 as before. A busy machine no longer
+  makes the result change from run to run.
+- On a run that exits 2 with an INCOMPLETE report and stderr not a
+  terminal, the INCOMPLETE line is the first line on stderr, in every
+  format, and it names the first file. Warnings that used to come first (a
+  rejected extra_pattern, per-file scan errors, a baseline parse warning,
+  the warning summary) now follow it.
+- On a complete text run, a rejected extra_pattern and the walk's
+  "Cannot read directory" and "Cannot access" warnings are printed after
+  the scan instead of before or during it. Nothing is dropped, and their
+  order among themselves is unchanged.
+- The progress indicator (Scanning... N%) is no longer written when stderr
+  is not a terminal. It used to fill piped output and CI logs with
+  carriage-return updates, and it put the INCOMPLETE line on the same line
+  as itself. On a terminal its line now ends with a newline.
+- The 1.4.0 upgrade note is no longer printed on a run that exits 2.
+
+### Fixed
+
+- A committed video could make a run exit 2 at random under machine load.
+- A wrapper that quotes the first stderr line of a run that could not
+  complete quoted the upgrade note instead of the reason.
+
+Unchanged: the 32 MiB whole-file limit for anything scanned as text, the
+exit code rules, and the name-based skips of .lock, .log and .map files,
+lockfiles and minified bundles.
 
 ## [1.10.0] - 2026-10-14
 

@@ -105,11 +105,26 @@ describe('directory and pull-request mode fail closed', () => {
   });
 
   /** Every Date.now() call jumps forward, so any timed section reads as long. */
+  /**
+   * Every measured span of every clock the budget can use advances 6000 ms,
+   * so each scan is over the 5000 ms budget on both passes (design
+   * 2026-10-17, section 6: CPU time, re-timed once).
+   */
   function makeEveryScanSlow(): void {
-    let t = 1_700_000_000_000;
-    jest.spyOn(Date, 'now').mockImplementation(() => {
-      t += 6000;
-      return t;
+    let us = 0;
+    const cpu = (): { user: number; system: number } => {
+      us += 6_000_000;
+      return { user: us, system: 0 };
+    };
+    jest.spyOn(process, 'cpuUsage').mockImplementation(cpu);
+    const proc = process as unknown as { threadCpuUsage?: () => { user: number; system: number } };
+    if (typeof proc.threadCpuUsage === 'function') {
+      jest.spyOn(proc as Required<typeof proc>, 'threadCpuUsage').mockImplementation(cpu);
+    }
+    let ms = 0;
+    jest.spyOn(performance, 'now').mockImplementation(() => {
+      ms += 6000;
+      return ms;
     });
   }
 
@@ -382,27 +397,35 @@ describe('directory and pull-request mode fail closed', () => {
   });
 
   describe('binary files are skipped, and the skip is counted', () => {
-    it('a binary extension the walk lets through is counted in the run', async () => {
+    // 1.11.0 (design 2026-10-17): a binary skip needs the bytes to agree with
+    // the extension. A .bin needs a control byte outside the text set (0x07,
+    // BEL, is in it, so the old all-BEL fixture is now scanned as text), and
+    // a PNG needs its signature; neither is type-filtered by name any more.
+    it('a binary extension whose bytes agree is counted in the run', async () => {
       write('ok.ts', 'export const a = 1;\n');
-      fs.writeFileSync(path.join(dir, 'blob.bin'), Buffer.alloc(2048, 7));
+      fs.writeFileSync(path.join(dir, 'blob.bin'), Buffer.alloc(2048, 1));
       const r = await capture(() => scanCommand('.', 'json', false));
       expect(r.code).toBe(0);
       expect((JSON.parse(r.stdout) as RunJson).run.binary_files_skipped).toBe(1);
     });
 
-    it('a PNG removed by the walk filter is counted as type-filtered, before any budget', async () => {
+    it('a PNG whose bytes agree is skipped by type before any budget, at any size, and not type-filtered', async () => {
       write('ok.ts', 'export const a = 1;\n');
-      fs.writeFileSync(path.join(dir, 'logo.png'), Buffer.alloc(1_300_000, 9));
+      const png = Buffer.alloc(1_300_000, 9);
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]).copy(png);
+      fs.writeFileSync(path.join(dir, 'logo.png'), png);
       const r = await capture(() => scanCommand('.', 'json', false));
       expect(r.code).toBe(0);
-      expect((JSON.parse(r.stdout) as RunJson).run.type_filtered_files).toBe(1);
+      const run = (JSON.parse(r.stdout) as RunJson).run;
+      expect(run.type_filtered_files).toBe(0);
+      expect(run.binary_files_skipped).toBe(1);
     });
 
-    it('text mode states both counts', async () => {
+    it('text mode states the count with its family', async () => {
       write('ok.ts', 'export const a = 1;\n');
-      fs.writeFileSync(path.join(dir, 'blob.bin'), Buffer.alloc(2048, 7));
+      fs.writeFileSync(path.join(dir, 'blob.bin'), Buffer.alloc(2048, 1));
       const r = await capture(() => scanCommand('.', 'text', false));
-      expect(r.log).toMatch(/Binary files skipped: 1/);
+      expect(r.log).toMatch(/Binary files skipped: 1 \(content matched the extension: other 1\)/);
     });
   });
 });

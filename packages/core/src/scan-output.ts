@@ -58,12 +58,22 @@ export interface JsonRunMetadata {
    */
   type_filtered_files?: number;
   /**
-   * Files skipped when the scanner reached them because their extension marks
-   * them binary (`.bin`, `.exe` and the like; images and archives are usually
-   * removed earlier, by the type filter above). Counted so a skip by name is
-   * never silent. Emitted even at zero.
+   * Files skipped as binary because their extension names a binary format AND
+   * their own first bytes carry that format's signature and are not text
+   * (design 2026-10-17, section 2). A name alone never skips a file. Emitted
+   * even at zero.
    */
   binary_files_skipped?: number;
+  /** {@link binary_files_skipped} per family, every family present; sums to it. */
+  binary_files_skipped_by_family?: Record<string, number>;
+  /** Working-tree copies confirmed binary whose file was otherwise scanned (the LFS case). */
+  binary_worktree_copies_skipped?: number;
+  /** Files with a binary extension whose bytes are text, scanned as text. */
+  binary_type_mismatch_scanned?: number;
+  /** Which files make up {@link binary_type_mismatch_scanned}, sorted by file. */
+  binary_type_mismatch?: Array<{ file: string; family: string }>;
+  /** Files whose first scan went over the CPU budget, re-timed once, then trusted. */
+  scan_budget_retimed?: number;
   /**
    * Files dropped by the project's own `ignore` list in the config. A declared
    * skip: the written decision of the project (the BASE ref's on a
@@ -552,6 +562,21 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
               : {}),
             ...(opts.run.binary_files_skipped !== undefined
               ? { binary_files_skipped: opts.run.binary_files_skipped }
+              : {}),
+            ...(opts.run.binary_files_skipped_by_family !== undefined
+              ? { binary_files_skipped_by_family: opts.run.binary_files_skipped_by_family }
+              : {}),
+            ...(opts.run.binary_worktree_copies_skipped !== undefined
+              ? { binary_worktree_copies_skipped: opts.run.binary_worktree_copies_skipped }
+              : {}),
+            ...(opts.run.binary_type_mismatch_scanned !== undefined
+              ? { binary_type_mismatch_scanned: opts.run.binary_type_mismatch_scanned }
+              : {}),
+            ...(opts.run.binary_type_mismatch !== undefined
+              ? { binary_type_mismatch: opts.run.binary_type_mismatch }
+              : {}),
+            ...(opts.run.scan_budget_retimed !== undefined
+              ? { scan_budget_retimed: opts.run.scan_budget_retimed }
               : {}),
             ...(opts.run.config_ignored_files !== undefined
               ? { config_ignored_files: opts.run.config_ignored_files }
