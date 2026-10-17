@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Planned as **1.11.0, a minor.** Video, audio and font files are no longer
+## [1.11.0] - 2026-10-17
+
+A minor release. Video, audio and font files are no longer
 read as text, every binary skip now needs the file's own bytes to agree with
 its extension, and a file that goes over the scan time budget is scanned once
 more before the run refuses to trust it. A run that was green on 1.10.0 can be
