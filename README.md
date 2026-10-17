@@ -769,6 +769,20 @@ node packages/cli/dist/cli-entry.js scan /path/to/project --format json
 
 Parse `summary.secrets`, `results`, and `run` as documented in **[docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md)**.
 
+**`results[].file` is repository-relative**: relative to the scan root (the directory you
+scanned, or the repository root for `--staged`), with forward slashes on every platform, and
+the same in text output, JSON and SARIF. It never carries your home directory or user name.
+
+```json
+{ "results": [ { "file": "src/config.ts", "matches": [ { "type": "aws-access", "line": 12 } ] } ] }
+```
+
+Scanning `/work/app` from another directory gives `src/config.ts`, not `/work/app/src/config.ts`.
+A path that is not under the scan root cannot come from the command line (it takes one target),
+but a programmatic caller that formats such a path gets it back unchanged (absolute) rather than
+as a `..` traversal. Fingerprints are not derived from this display path, so baselines written
+before this change still match.
+
 **If you are building a pass/fail gate, read `run.blocking_matches`, not `summary.secrets`.**
 `summary.secrets` is a raw count of every finding in `results`, including ones below the
 `--fail-on` threshold; it does not reflect the gate. `run.blocking_matches` is the count of

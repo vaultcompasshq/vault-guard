@@ -887,6 +887,29 @@ from the path relativiser; `packages/core/src/scanners/__tests__/scan-output.tes
 (the forward-slash cases; the comment beside them that says "platform-native" is
 stale). `silent-passes.test.ts` reads findings from JSON for the same reason.
 
+## `results[].file` is repository-relative, and a fingerprint never reads the displayed path
+
+JSON `results[].file`, the SARIF artifact uri and the text output's path are
+all relative to the scan root (the scan target when it sits outside the cwd,
+the repository root for `--staged`, else the cwd), forward slashes on every OS.
+The display root only chooses how a path is SPELLED; `fingerprintForMatch` and
+`contentFingerprintForMatch` still receive the original path and the unchanged
+cwd and content root, so moving the display root cannot move a fingerprint.
+Known and unchanged: for a scan target outside the cwd, the positional
+`fingerprint` (and, outside git, the content key) is keyed on the absolute
+path, as before; that is a property of those fingerprints, not of this field.
+For a target spelled `..`, the positional key uses the `../` spelling relative
+to the cwd, not the absolute path.
+
+**Enforced by:** `normalizeFilePath` in `packages/core/src/scan-output.ts` and
+`displayRoot` in `packages/cli/src/commands/scan.ts`; `scan-output.test.ts`
+(`formatJson relativizes a file outside cwd but inside the scan root, like
+SARIF`, `formatJson fingerprints do not change with the scan root`);
+`relative-paths.test.ts` (every mode, and `the positional fingerprint is the
+published formula over the cwd-relative path`); the MCP `server.test.ts`
+(`scan_workspace and scan_file name findings relative to the scan root, never
+by absolute path`).
+
 ## Tracked files are scanned whatever `.gitignore` says, in every mode
 
 Through 1.9.1 a plain directory scan dropped any file `.gitignore` matched, even

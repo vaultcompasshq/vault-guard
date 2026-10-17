@@ -223,6 +223,29 @@ describe('createMcpServer', () => {
     }
   });
 
+  it('scan_workspace and scan_file name findings relative to the scan root, never by absolute path', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-rel-')));
+    try {
+      fs.mkdirSync(path.join(root, 'sub'));
+      fs.writeFileSync(path.join(root, 'sub', 'leak.ts'), `const key = "${SECRET}";`, 'utf8');
+      const client = await connect(createMcpServer({ telemetryFactory: fakeStore, workspaceRoot: root }));
+
+      const ws = parse(await client.callTool({ name: 'scan_workspace', arguments: { root: 'sub' } }));
+      expect((ws.json as { results: Array<{ file: string }> }).results[0].file).toBe('leak.ts');
+      // The raw `results` field used to carry the absolute path next to the
+      // relative one in the embedded documents.
+      expect((ws.results as Array<{ file: string }>)[0].file).toBe('leak.ts');
+      expect(JSON.stringify(ws)).not.toContain(root);
+
+      const sf = parse(await client.callTool({ name: 'scan_file', arguments: { file_path: 'sub/leak.ts' } }));
+      expect((sf.json as { results: Array<{ file: string }> }).results[0].file).toBe('sub/leak.ts');
+      expect(JSON.stringify(sf)).not.toContain(root);
+      await client.close();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('scan_workspace carries files it did not scan into the embedded json and sarif documents', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vgmcp-root-'));
     try {

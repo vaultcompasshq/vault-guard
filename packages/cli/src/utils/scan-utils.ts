@@ -50,13 +50,13 @@ export interface ScanFormatOptions {
   diagnostics?: Diagnostic[];
   run?: JsonRunMetadata;
   /**
-   * Directory the scan actually walked. SARIF uris are relativized against it
-   * so an out-of-tree target does not publish absolute local paths. Ignored by
-   * `formatJson`, whose `file` paths stay cwd-relative.
+   * Directory the scan actually walked. SARIF uris and JSON `results[].file`
+   * are relativized against it so an out-of-tree target does not publish
+   * absolute local paths. Fingerprints never use it.
    */
   scanRoot?: string;
   /**
-   * Base for `formatJson`'s `file` paths and for match fingerprints, and the
+   * Base for `formatJson`'s `file` paths (when no `scanRoot` moves it) and for match fingerprints, and the
    * anchor SARIF resolves `scanRoot` against. Defaults to `process.cwd()`,
    * which is right for a directory scan.
    *
@@ -77,6 +77,7 @@ export interface ScanFormatOptions {
 export function formatJson(results: ScanResult[], opts: ScanFormatOptions = {}): string {
   return formatJsonResults(results, {
     cwd: opts.cwd ?? process.cwd(),
+    scanRoot: opts.scanRoot,
     contentRoot: opts.contentRoot,
     diagnostics: opts.diagnostics,
     run: opts.run,
@@ -1265,8 +1266,15 @@ export function copyLabel(match: ScanResult['matches'][number], blobSide: 'index
 
 /** Relative to `base` when inside it, absolute otherwise. Matches scan-output behaviour. */
 function relativeForDisplay(file: string, base: string): string {
-  if (!path.isAbsolute(file)) return file;
-  const rel = path.relative(base, file);
+  // A path spelled with a leading `..` (a scan of a parent directory) is
+  // judged where it points, so it can come out relative to the scan root.
+  const abs = path.isAbsolute(file)
+    ? file
+    : file.startsWith('..')
+      ? path.resolve(process.cwd(), file)
+      : null;
+  if (abs === null) return file;
+  const rel = path.relative(base, abs);
   if (rel.startsWith('..') || path.isAbsolute(rel)) return file;
   return rel || '.';
 }

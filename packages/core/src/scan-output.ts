@@ -232,9 +232,10 @@ export interface FormatOptions {
    * this instead of `cwd`, so a finding outside the process cwd but inside the
    * scan target still gets a relative uri. Defaults to `cwd`.
    *
-   * `formatJson` ignores this field. Its `file` paths stay cwd-relative,
-   * because they are what the terminal output and the baseline fingerprints
-   * are keyed on.
+   * `formatJson` uses it the same way for `results[].file`, so a scan whose
+   * target sits outside the cwd reports repository-relative paths instead of
+   * absolute machine paths. It never reaches a fingerprint: fingerprints are
+   * computed from the original path and {@link cwd}, exactly as before.
    */
   scanRoot?: string;
   /**
@@ -263,8 +264,20 @@ export interface FormatOptions {
  * directory and OS username when the output is shared (PR comments, GitHub
  * Code Scanning UI, support tickets, screenshots).
  */
-function normalizeFilePath(file: string, cwd: string | null | undefined): string {
-  return toForwardSlashes(relativizeFilePath(file, cwd));
+function normalizeFilePath(
+  file: string,
+  cwd: string | null | undefined,
+  scanRoot?: string,
+): string {
+  if (cwd === null && scanRoot === undefined) return toForwardSlashes(file);
+  const anchor = cwd ?? process.cwd();
+  const impl = isWindowsStylePath(file) || isWindowsStylePath(anchor) ? path.win32 : path;
+  const base = resolveSarifBase(anchor, scanRoot, impl);
+  if (base === anchor) return toForwardSlashes(relativizeFilePath(file, anchor));
+  // The scan root is outside the cwd: a relative input is judged where it
+  // points, not where it is spelled, exactly as the SARIF uri does.
+  const abs = impl.isAbsolute(file) ? file : impl.resolve(anchor, file);
+  return toForwardSlashes(relativizeFilePath(abs, base));
 }
 
 /**
@@ -429,7 +442,7 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
     ...(opts.run ? { run: opts.run } : {}),
     ...(opts.trustBase ? { trustBase: opts.trustBase } : {}),
     results: results.map(({ file, matches }) => ({
-      file: normalizeFilePath(file, opts.cwd),
+      file: normalizeFilePath(file, opts.cwd, opts.scanRoot),
       matches: matches.map(m => {
         const content = contentKey(opts, fpCwd, file, m);
         return {

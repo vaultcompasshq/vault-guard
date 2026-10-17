@@ -22,6 +22,7 @@ import {
   FAIL_ON_VALUES,
   loadTrustedControls,
   TrustBaseError,
+  repositoryLabel,
   ATTRIBUTES_PROPOSAL_LINE,
   ATTRIBUTES_NOTE_LINE,
   newPlainFileSetInfo,
@@ -291,8 +292,8 @@ export async function scanCommand(
         console.error(
           chalk.red('❌ Cannot establish the trust base:'),
           chalk.white(
-            `the scan target ${target} is outside the repository that "${trustBaseRef}" ` +
-              `lives in (${controls.repoRoot}), so pull-request mode would have no ` +
+            `the scan target ${target} is outside ${repositoryLabel(controls.repoRoot)}, ` +
+              `the checkout that the base ref "${trustBaseRef}" was read from, so pull-request mode would have no ` +
               'tracked files to scan and would report a clean result over nothing. ' +
               'Run vault-guard from inside the repository you are judging. ' +
               'Nothing was scanned.',
@@ -807,12 +808,22 @@ export async function scanCommand(
       );
     }
 
+    // The directory every printed path is relative to: the repository root for
+    // `--staged`, otherwise the scan target when it sits outside the cwd, else
+    // the cwd. JSON, SARIF and text all use it, so one finding is spelled one
+    // way in every format.
+    const displayRoot = staged ? outputBase : resolveScanRoot(targetPaths, cwd);
+
     if (format === 'json') {
       // The document is still emitted: CI wants the artifact even when the
       // run failed, and `run.unscannable_files` plus the error-severity
       // `file.read_error` diagnostics inside it say why.
+      // `scanRoot` only decides how `results[].file` is DISPLAYED (relative to
+      // the scan target when that sits outside the cwd); fingerprints are
+      // computed from `cwd` and the original path, as before.
       process.stdout.write(
-        formatJson(results, { diagnostics, run, cwd: outputBase, contentRoot, trustBase }) + '\n',
+        formatJson(results, { diagnostics, run, scanRoot: displayRoot, cwd: outputBase, contentRoot, trustBase }) +
+          '\n',
       );
       if (scanIncomplete) {
         // stdout carries the document; the reason and the remedy go to stderr,
@@ -828,9 +839,8 @@ export async function scanCommand(
       // `--staged` reads paths from the git index, so the repository root is
       // the right base there -- not the cwd, which a hook invoked from a
       // subdirectory would otherwise make the base for files above it.
-      const scanRoot = staged ? outputBase : resolveScanRoot(targetPaths, cwd);
       process.stdout.write(
-        formatSarif(results, { diagnostics, run, scanRoot, cwd: outputBase, contentRoot, trustBase }) +
+        formatSarif(results, { diagnostics, run, scanRoot: displayRoot, cwd: outputBase, contentRoot, trustBase }) +
           '\n',
       );
       if (scanIncomplete) {
@@ -1002,7 +1012,7 @@ export async function scanCommand(
         // "here is what I found" and "here is what I never looked at".
         if (results.length > 0) {
           console.error('');
-          displayScanResults(results, blocking, outputBase);
+          displayScanResults(results, blocking, displayRoot);
         }
       });
       // Everything else this run had to say on stderr follows the block.
@@ -1016,7 +1026,7 @@ export async function scanCommand(
       return 0;
     }
 
-    displayScanResults(results, blocking, outputBase);
+    displayScanResults(results, blocking, displayRoot);
 
     if (blocking === 0) {
       // Findings exist but all sit below the gate. Say so explicitly -- a silent
