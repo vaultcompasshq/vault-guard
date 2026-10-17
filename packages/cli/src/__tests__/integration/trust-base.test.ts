@@ -378,6 +378,11 @@ describe('pull-request mode (--trust-base)', () => {
         expect(r.code).toBe(2);
         expect(r.err).toContain('outside');
         expect(r.log).not.toContain('SUCCESS');
+        // It names the checkout it consulted and the ref it tried, relative to
+        // the cwd, and prints neither absolute path.
+        expect(r.err).toContain('the repository at "." (the current directory)');
+        expect(r.err).toContain('"base-snapshot"');
+        expect(r.err).not.toContain(dir);
       } finally {
         fs.rmSync(outside, { recursive: true, force: true });
       }

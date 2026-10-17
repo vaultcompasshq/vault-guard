@@ -238,11 +238,16 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
           // Not scanned at all (over the size limit or unreadable): never a clean.
           ...(unscannable.length > 0 ? { files_not_scanned: unscannable.length } : {}),
         },
-        ...(overBudget.length > 0 ? { over_budget: overBudget } : {}),
-        ...(unscannable.length > 0 ? { not_scanned: unscannable } : {}),
+        ...(overBudget.length > 0
+          ? { over_budget: overBudget.map(o => ({ ...o, file: relToDir(o.file) })) }
+          : {}),
+        ...(unscannable.length > 0
+          ? { not_scanned: unscannable.map(u => ({ ...u, file: relToDir(u.file) })) }
+          : {}),
         json: JSON.parse(formatJson(results, { cwd: dir, run })) as unknown,
         sarif: formatSarif(results, { cwd: dir, run }),
-        results,
+        // Same paths as the embedded documents: relative to the scanned directory.
+        results: results.map(r => ({ ...r, file: relToDir(r.file) })),
       });
     },
   );
@@ -292,7 +297,15 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
           ...(overBudget ? { over_scan_budget: true } : {}),
         },
         ...(overBudget
-          ? { over_budget: [{ file: fp, elapsed_ms: elapsed, budget_ms: MCP_SCAN_BUDGET_MS }] }
+          ? {
+              over_budget: [
+                {
+                  file: path.relative(workspaceRoot, fp).split(path.sep).join('/'),
+                  elapsed_ms: elapsed,
+                  budget_ms: MCP_SCAN_BUDGET_MS,
+                },
+              ],
+            }
           : {}),
         json: JSON.parse(formatJson(results, { cwd: workspaceRoot, run })) as unknown,
         sarif: formatSarif(results, { cwd: workspaceRoot, run }),

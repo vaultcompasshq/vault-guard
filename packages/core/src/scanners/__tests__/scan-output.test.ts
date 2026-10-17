@@ -141,12 +141,48 @@ describe('scan-output formatters', () => {
       expect(uri).toBe('src/leak.ts');
     });
 
-    it('formatJson ignores the scan root and stays relative to cwd', () => {
+    // Changed deliberately (feat: relative paths): this test used to pin that
+    // formatJson ignored scanRoot, which left every finding of a scan whose
+    // target sat outside the cwd as an absolute machine path.
+    it('formatJson relativizes a file outside cwd but inside the scan root, like SARIF', () => {
       const results: FileScanResult[] = [
         { file: '/repo/other/src/leak.ts', matches: [makeMatch()] },
       ];
       const out = JSON.parse(formatJson(results, { cwd, scanRoot: '/repo/other' }));
-      expect(out.results[0].file).toBe('/repo/other/src/leak.ts');
+      expect(out.results[0].file).toBe('src/leak.ts');
+    });
+
+    it('formatJson keeps the file cwd-relative when the scan root is nested inside cwd', () => {
+      const results: FileScanResult[] = [
+        { file: '/repo/a/src/leak.ts', matches: [makeMatch()] },
+      ];
+      const out = JSON.parse(formatJson(results, { cwd: '/repo', scanRoot: '/repo/a' }));
+      expect(out.results[0].file).toBe('a/src/leak.ts');
+    });
+
+    it('formatJson resolves a relative path outside cwd against cwd before judging it', () => {
+      const results: FileScanResult[] = [{ file: '../b/src/leak.ts', matches: [makeMatch()] }];
+      const out = JSON.parse(formatJson(results, { cwd: '/repo/a', scanRoot: '/repo/b' }));
+      expect(out.results[0].file).toBe('src/leak.ts');
+    });
+
+    it('formatJson keeps a file outside the scan root absolute rather than a .. traversal', () => {
+      // insideFile is inside cwd but outside the scan root, so this passes
+      // only if the scan root, not the cwd, is the base.
+      const results: FileScanResult[] = [{ file: insideFile, matches: [makeMatch()] }];
+      const out = JSON.parse(formatJson(results, { cwd, scanRoot: '/repo/other' }));
+      expect(out.results[0].file).toBe(insideFile);
+    });
+
+    it('formatJson fingerprints do not change with the scan root', () => {
+      const results: FileScanResult[] = [
+        { file: '/repo/other/src/leak.ts', matches: [makeMatch()] },
+      ];
+      const without = JSON.parse(formatJson(results, { cwd }));
+      const withRoot = JSON.parse(formatJson(results, { cwd, scanRoot: '/repo/other' }));
+      expect(withRoot.results[0].matches[0].fingerprint).toBe(
+        without.results[0].matches[0].fingerprint,
+      );
     });
 
     it('formatSarif emits a forward-slash relative uri with no leading ./ or /', () => {

@@ -40,6 +40,7 @@ export {
   HEAD_TREE_LISTING_MAX_BYTES,
   readFileAtRef,
   isRegularFileMode,
+  repositoryLabel,
   CONFIG_PROPOSAL_LINE,
   BASELINE_PROPOSAL_LINE,
   CONFIG_ADDED_LINE,

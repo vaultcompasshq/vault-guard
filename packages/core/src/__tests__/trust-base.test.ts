@@ -94,6 +94,63 @@ describe('loadTrustedControls', () => {
       expect((err as Error).message).toContain('Nothing was scanned.');
     });
 
+    describe('naming the repository it consulted', () => {
+      const startCwd = process.cwd();
+      afterEach(() => process.chdir(startCwd));
+
+      function messageFor(startDir: string, ref: string): string {
+        try {
+          loadTrustedControls(startDir, ref);
+        } catch (e) {
+          return (e as Error).message;
+        }
+        throw new Error('expected loadTrustedControls to throw');
+      }
+
+      it('an unresolvable ref names the repository relative to the cwd, never its absolute path', () => {
+        seed(root);
+        write(root, 'src/other.ts', 'export const y = 2;\n');
+        commit(root, 'feature');
+        process.chdir(path.join(root, 'src'));
+        const message = messageFor(process.cwd(), 'origin/nope');
+        expect(message).toContain('origin/nope');
+        expect(message).toContain('the repository at ".."');
+        expect(message).not.toContain(root);
+      });
+
+      it('names the repository as "." when the cwd is its root', () => {
+        seed(root);
+        write(root, 'src/other.ts', 'export const y = 2;\n');
+        commit(root, 'feature');
+        process.chdir(root);
+        const message = messageFor(root, 'origin/nope');
+        expect(message).toContain('the repository at "." (the current directory)');
+      });
+
+      it('a start directory outside any worktree is named relative to the cwd', () => {
+        const bare = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vg-not-git-')));
+        try {
+          process.chdir(bare);
+          const message = messageFor(bare, 'main');
+          expect(message).toContain('"." (the current directory) is not inside a git worktree');
+          expect(message).not.toContain(bare);
+        } finally {
+          process.chdir(startCwd);
+          fs.rmSync(bare, { recursive: true, force: true });
+        }
+      });
+
+      it('prints the repository path and none of its content', () => {
+        // A repository with no commits and one untracked file: pins that no
+        // file name or config text from the repository rides along with the path.
+        write(root, 'secret-name-xyz.ts', 'export const y = 2;\n');
+        process.chdir(root);
+        const message = messageFor(root, 'main');
+        expect(message).toContain('the repository at "."');
+        expect(message).not.toContain('secret-name-xyz');
+      });
+    });
+
     it('refuses a ref that begins with a dash, which git would read as an option', () => {
       seed(root);
       write(root, 'src/other.ts', 'export const y = 2;\n');

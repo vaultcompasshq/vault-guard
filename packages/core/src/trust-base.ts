@@ -131,6 +131,26 @@ function canonicalDir(dir: string): string {
 }
 
 /**
+ * A directory as an error message names it: relative to the current directory
+ * with forward slashes, `"."` for the current directory itself, and absolute
+ * only when no relative spelling exists (another drive on Windows). A message
+ * that says which checkout was consulted should not also publish the home
+ * directory and user name the absolute path would carry.
+ */
+export function directoryLabel(dir: string): string {
+  const base = canonicalDir(process.cwd());
+  const rel = path.relative(base, canonicalDir(dir));
+  if (path.isAbsolute(rel)) return `"${dir.split(path.sep).join('/')}"`;
+  if (rel === '') return '"." (the current directory)';
+  return `"${rel.split(path.sep).join('/')}"`;
+}
+
+/** The sentence fragment naming the repository a refusal consulted. */
+export function repositoryLabel(repoRoot: string): string {
+  return `the repository at ${directoryLabel(repoRoot)}`;
+}
+
+/**
  * The worktree root, which every path in this module is expressed relative to.
  *
  * Running git at the root and passing root-relative paths keeps `..` out of
@@ -144,7 +164,7 @@ function repoRootOf(startDir: string, ref: string): string {
   if (!root) {
     throw new TrustBaseError(
       `vault-guard: cannot read control inputs from base ref "${ref}": ` +
-        `${startDir} is not inside a git worktree, so there is no base ref to ` +
+        `${directoryLabel(startDir)} is not inside a git worktree, so there is no base ref to ` +
         'read from. Pull-request mode needs a git checkout. Nothing was scanned.',
     );
   }
@@ -209,7 +229,8 @@ export function assertTrustBaseResolvable(repoRoot: string, ref: string): void {
   if (base === null) {
     throw new TrustBaseError(
       `vault-guard: cannot read control inputs from base ref "${ref}": it does ` +
-        'not resolve to a commit in this repository. Nothing was scanned. In CI, ' +
+        `not resolve to a commit in ${repositoryLabel(repoRoot)}, the checkout this ` +
+        'run consulted. Nothing was scanned. In CI, ' +
         'fetch the base branch (actions/checkout with fetch-depth: 0) before ' +
         'running the gate.',
     );
@@ -222,7 +243,7 @@ export function assertTrustBaseResolvable(repoRoot: string, ref: string): void {
     // this is could-not-run, not a quiet downgrade to trusting the head.
     throw new TrustBaseError(
       `vault-guard: cannot resolve HEAD to compare against base ref "${ref}": ` +
-        'this is not a git repository with any commits. Pull-request mode needs ' +
+        `${repositoryLabel(repoRoot)} has no commit at HEAD. Pull-request mode needs ` +
         'both a base commit and a head commit. Nothing was scanned.',
     );
   }

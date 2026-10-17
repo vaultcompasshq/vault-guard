@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- JSON `results[].file` is now relative to the scan root, with forward
+  slashes, in every mode. Scanning a directory outside the current directory
+  (`vault-guard scan /work/app` from somewhere else) used to put the absolute
+  machine path in the JSON document, which published the home directory and
+  user name to whoever read it; it now gives `src/config.ts`, as SARIF
+  already did. Text output prints the same path. The MCP `scan_workspace`
+  tool's raw `results`, `over_budget` and `not_scanned` fields, and
+  `scan_file`'s `over_budget`, now use relative paths too. Baselines are
+  unaffected: fingerprints (`fingerprint`, `content_fingerprint`, the SARIF
+  `partialFingerprints`) are computed exactly as before and never from the
+  displayed path, so a baseline written by an earlier release still matches.
+  A consumer that joined the old absolute value with something will now see a
+  relative value; one that read the field as a repository path is unaffected.
+  A scan of a parent directory (for example `vault-guard scan ..`) now
+  reports JSON and text paths relative to that parent (`sub/x.ts`) instead of
+  relative to the current directory (`../sub/x.ts`), matching SARIF.
+- The `--trust-base` refusals that name a repository now say which one: the
+  scan target is outside the repository the base ref was read from, the ref
+  does not resolve, HEAD does not resolve, or the start directory is not in a
+  git worktree. The message gives that repository relative to the current
+  directory (`"."` for the current directory itself) together with the ref
+  that was tried, and no longer prints its absolute path. It prints nothing
+  from the repository's contents. No exit code or trust-base decision changes.
+
 ## [1.11.0] - 2026-10-17
 
 A minor release. Video, audio and font files are no longer
