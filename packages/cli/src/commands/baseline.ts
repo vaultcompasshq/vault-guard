@@ -11,6 +11,7 @@ import {
   meetsFailThreshold,
   fingerprintForMatch,
   contentFingerprintForMatch,
+  contentRelPath,
   rootPositionalFingerprint,
   findGitEntryRoot,
   getGitWorkTreeRoot,
@@ -104,9 +105,26 @@ function canonical(p: string): string {
   }
 }
 
-function posixRel(root: string, file: string): string {
-  const rel = path.relative(canonical(root), canonical(file));
-  return rel.split(path.sep).join('/');
+/**
+ * The scope of a write, in the same terms as the entry labels it is compared
+ * with: resolved like a label (`contentRelPath`: parent directories resolved,
+ * the leaf never), for a file and a directory target alike. Naming a link,
+ * to a file or to a directory, scopes the write to the link itself, which no
+ * entry is labelled under, so the write drops nothing. Resolving the leaf put
+ * the target's entries in scope while the scan never reached them through
+ * the link, and removed them (review of audit 2026-10-18, N1). For a real
+ * directory, even under a linked parent, the two rules agree.
+ */
+function writeScope(root: string, targetAbs: string): string {
+  return contentRelPath(targetAbs, root);
+}
+
+/**
+ * An entry's `file` label, resolved the way its content key is
+ * (`contentRelPath`): links in the parent directory resolved, the leaf never.
+ */
+function entryFileLabel(root: string, file: string): string {
+  return contentRelPath(file, root);
 }
 
 interface Accepted {
@@ -352,7 +370,7 @@ export async function baselineCommand(target: string, options: BaselineOptions):
     entries.set(id, {
       fingerprint: key,
       rule: m.type,
-      file: posixRel(root, file),
+      file: entryFileLabel(root, file),
       line: m.line,
       severity: m.severity,
       count: 1,
@@ -384,7 +402,7 @@ export async function baselineCommand(target: string, options: BaselineOptions):
   // longer found"; the positional list cannot be attributed to paths, so on a
   // scoped write every previous positional key is kept too (only 1.9.x reads
   // it). A write of the whole tree regenerates both lists.
-  const scope = posixRel(root, targetAbs);
+  const scope = writeScope(root, targetAbs);
   const scoped = scope !== '' && scope !== '.';
   const inScope = (file: string | undefined): boolean =>
     !scoped || file === undefined || file === scope || file.startsWith(`${scope}/`);
@@ -427,7 +445,7 @@ export async function baselineCommand(target: string, options: BaselineOptions):
   for (const { file, match: m } of refused) {
     console.log(
       chalk.yellow(
-        `  not accepted: critical, rotate and remove instead: ${posixRel(root, file)}:${m.line} ${m.type}`,
+        `  not accepted: critical, rotate and remove instead: ${entryFileLabel(root, file)}:${m.line} ${m.type}`,
       ),
     );
   }

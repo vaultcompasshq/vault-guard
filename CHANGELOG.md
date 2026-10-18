@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Under --trust-base, a file the head tree records as a regular file whose
+  working-tree copy had been replaced by a symlink (or a directory) was left
+  out of the scan and counted nowhere, so a key in it could pass with exit 0.
+  The trigger is a change to the working tree after checkout, such as an
+  earlier CI step or a local edit; the head commit's content cannot cause it.
+  The same file named on the command line (scan --trust-base or check
+  --trust-base with file arguments) was read through the link, or, when the
+  link pointed at a directory, dropped. The HEAD blob is now scanned in both
+  cases, the working-tree entry is never read or followed, and the run adds
+  a symlink.not_followed warning naming the file. When no HEAD blob is
+  available the file is counted as unscannable and the run exits 2. Found
+  by an independent audit on 2026-10-18.
+- A content fingerprint (the key of a baseline entry) was built from the
+  file's path with every symlink resolved, the file's own entry included. A
+  head file whose working copy was swapped for a link to a baselined file
+  was keyed on that other file's path and suppressed by its entry, so a
+  copied key passed with exit 0. The key now resolves links in the parent
+  directories only and keeps the file's own name: a file reached through a
+  linked directory keys as before, and a file whose own entry is a link
+  keys on its own path. The keys this moves are those of a symlink named on
+  the command line, which was keyed on its target's path and is now keyed
+  on the link's; a baseline entry written for such a file by 1.10.0 to
+  1.12.0 no longer suppresses it (the run fails closed). baseline --write
+  cannot accept a named link's target content: it reports that finding as
+  a working-tree finding and does not accept it. Scan or baseline the
+  target's own path instead. On a case-insensitive file system, a file
+  target typed in the wrong case is no longer case-normalised by resolving
+  the leaf, so its key moves too (the run fails closed); name it in its
+  committed case. baseline --write scoped to a link now scopes the write
+  to the link's own path, so the target's entry is kept. A write scoped to
+  a link to a directory no longer deletes the entries under the directory
+  it points at; 1.12.0 did, and the next scan blocked on them. Found by the
+  independent review of the fix above.
+
+### Known limits
+
+- A plain scan (no --trust-base) still drops a tracked file whose disk entry
+  was replaced by a symlink, including one named on the command line,
+  without counting it as missing, as noted under 1.10.0. Pull-request mode no longer does (above), and scan --staged reads
+  the staged blob.
+
 ## [1.12.0] - 2026-10-17
 
 A minor release. A key-shaped match that is a slice of an embedded

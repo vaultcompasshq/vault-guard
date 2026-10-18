@@ -146,6 +146,21 @@ describe('getPullRequestFilesToScan', () => {
     expect(files).not.toContain(path.join(root, 'src', 'link.ts'));
   });
 
+  itPosix('records a head-tree file whose disk entry became a symlink, and leaves it out of the set', () => {
+    write(root, 'src/real.ts', 'export const a = 1;\n');
+    write(root, 'src/swapped.ts', 'export const b = 2;\n');
+    commitAll();
+    const p = path.join(root, 'src', 'swapped.ts');
+    fs.rmSync(p);
+    fs.symlinkSync('real.ts', p);
+    const skipped = noSkips();
+    const files = fileSet(skipped);
+    // Out of the returned set (never read through the link here)...
+    expect(files).not.toContain(p);
+    // ...but recorded, so the caller reads the blob or fails closed on it.
+    expect(skipped.diskNotRegular).toEqual([{ file: p, kind: 'symlink', nestedVendored: false }]);
+  });
+
   it('drops a generated artifact the walk would also have dropped', () => {
     write(root, 'src/app.min.js', 'var a=1;\n');
     write(root, 'src/app.ts', 'export const b = 2;\n');

@@ -553,6 +553,43 @@ export function newContentReport(): ContentReport {
   return { worktreeCopies: new Set(), undecodable: [], kept: new Map(), blobFiles: 0, headReadBytes: 0 };
 }
 
+/** What a working-tree entry is, when it is not a regular file. */
+type DiskEntryKind = 'symlink' | 'directory' | 'other';
+
+/** The kind, as the run's messages say it. */
+const DISK_KIND_LABEL: Record<DiskEntryKind, string> = {
+  symlink: 'a symlink',
+  directory: 'a directory',
+  other: 'something other than a file, a directory or a symlink',
+};
+
+function diskEntryKind(st: fs.Stats): DiskEntryKind {
+  if (st.isSymbolicLink()) return 'symlink';
+  if (st.isDirectory()) return 'directory';
+  return 'other';
+}
+
+/**
+ * The warning for a head-tree regular file whose working-tree entry is not a
+ * regular file, after its HEAD blob was chosen instead (audit 2026-10-18, N1).
+ */
+function warnDiskNotRegular(
+  display: string,
+  kind: DiskEntryKind,
+  options: ScanOptions,
+  emit: ((line: string) => void) | undefined,
+): void {
+  const message =
+    `${display}: the head tree records a regular file, but the working-tree entry is ${DISK_KIND_LABEL[kind]}; ` +
+    'the committed blob was scanned and the working-tree entry was not read';
+  emit?.(chalk.yellow(`Warning: ${message}`));
+  options.bus?.add({
+    code: 'symlink.not_followed',
+    severity: 'warning',
+    ctx: { file: display, reason: `working-tree entry is ${DISK_KIND_LABEL[kind]}`, detail: message },
+  });
+}
+
 /** The sink for verbose text-format lines: the collector when given, else stderr. */
 function emitter(options: ScanOptions): (line: string) => void {
   return options.warn ?? ((line: string) => console.error(line));
@@ -926,6 +963,27 @@ export async function scanFilesAsync(
       continue;
     }
 
+    // A NAMED head-tree regular file whose working-tree entry is not a regular
+    // file (review of audit 2026-10-18, N1): decided on lstat, before the stat
+    // below, which follows a link and would treat a link to a directory as a
+    // directory target and find nothing under it. The HEAD blob is scanned and
+    // the disk entry is never read or followed, as for a directory target.
+    if (options.pullRequest && named?.oid !== undefined && (named.mode === '100644' || named.mode === '100755')) {
+      const abs = path.resolve(targetPath);
+      let lst: fs.Stats | undefined;
+      try {
+        lst = await fs.promises.lstat(abs);
+      } catch {
+        lst = undefined;
+      }
+      if (lst !== undefined && !lst.isFile()) {
+        content.add(new Map([[abs, { ...named, worktreeAlso: false }]]));
+        warnDiskNotRegular(path.relative(process.cwd(), abs), diskEntryKind(lst), options, verbose ? emit : undefined);
+        jobs.push({ targetPath, pathRoot, files: [targetPath] });
+        continue;
+      }
+    }
+
     try {
       await fs.promises.access(targetPath);
     } catch {
@@ -973,7 +1031,31 @@ export async function scanFilesAsync(
     // directory target: that is the only one getPullRequestFilesToScan just
     // filled the list for, so a file target after a directory must not record
     // the directory's entries a second time.
-    const prUnreadable = stat.isDirectory() ? (options.pullRequest?.skipped.unreadable ?? []) : [];
+    const prUnreadable = stat.isDirectory() ? [...(options.pullRequest?.skipped.unreadable ?? [])] : [];
+    // A head-tree regular file whose working-tree entry is a symlink or a
+    // directory (audit 2026-10-18, N1): a change after checkout, such as an
+    // earlier CI step. The tree says it is a file and the blob says what it
+    // holds, so the HEAD blob is scanned and the disk entry is never read or
+    // followed. Without a blob to read, it is a file the run did not check.
+    const prDiskNotRegular =
+      stat.isDirectory() && options.pullRequest ? (options.pullRequest.skipped.diskNotRegular ?? []) : [];
+    for (const d of prDiskNotRegular) {
+      const entry = content.entryFor(d.file);
+      const display = path.relative(process.cwd(), d.file);
+      if (entry?.oid !== undefined) {
+        content.add(new Map([[d.file, { ...entry, worktreeAlso: false }]]));
+        filesToScan.push(d.file);
+        if (d.nestedVendored) options.pullRequest?.skipped.nestedVendored?.push(d.file);
+        warnDiskNotRegular(display, d.kind, options, verbose ? emit : undefined);
+      } else {
+        prUnreadable.push({
+          file: d.file,
+          reason:
+            `the head tree records a regular file, but the working-tree entry is ${DISK_KIND_LABEL[d.kind]}, ` +
+            'not a regular file, and no head blob was available to read instead',
+        });
+      }
+    }
     if (plainInfo && options.plainFileSet) mergePlainFileSetInfo(options.plainFileSet, plainInfo);
     if (plainInfo && stat.isDirectory()) content.add(plainInfo.blobs);
     for (const u of [...prUnreadable, ...(plainInfo?.unreadable ?? [])]) {

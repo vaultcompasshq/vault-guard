@@ -69,6 +69,7 @@ export {
   fingerprintForMatch,
   contentFingerprintForMatch,
   contentFingerprint,
+  contentRelPath,
   rootPositionalFingerprint,
 } from './match-fingerprint';
 export * from './scan-output';

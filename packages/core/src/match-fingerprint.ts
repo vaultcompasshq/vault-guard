@@ -33,11 +33,20 @@ function canonical(p: string): string {
 /**
  * The path a content fingerprint is keyed on: relative to `root` (the
  * repository root inside git, the scan anchor outside it), with symlinks
- * resolved on both sides first so a file reached through a linked parent
- * directory keys the same as through its physical path.
+ * resolved in the root and in the file's PARENT directory, so a file reached
+ * through a linked parent directory keys the same as through its physical
+ * path.
+ *
+ * The leaf is never resolved. A key belongs to the path it was found at: a
+ * file whose working copy is a link to another file is keyed on its own name,
+ * never on the target's (audit 2026-10-18, review of N1). Resolving the leaf
+ * let a head file swapped for a link to a baselined file borrow that file's
+ * accepted key, which is exactly the "a copy into another file is a new key"
+ * rule below, defeated by a working-tree change.
  */
 export function contentRelPath(fileAbs: string, root: string): string {
-  const file = canonical(path.resolve(fileAbs));
+  const abs = path.resolve(fileAbs);
+  const file = path.join(canonical(path.dirname(abs)), path.basename(abs));
   return relativeFingerprintKey(file, canonical(path.resolve(root)));
 }
 

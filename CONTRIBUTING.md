@@ -133,6 +133,13 @@ node scripts/gen-rules-doc.cjs && git diff --exit-code docs/RULES.md
 pnpm lint && pnpm test && node bench/run.cjs --assert
 ```
 
+The root `pnpm test` runs `pnpm build` first. Some tests spawn the built CLI
+from `packages/cli/dist/`, so without a build they test whatever was built
+last and can pass after a source-only regression; CI's test job builds
+before it tests for the same reason. A single package's tests run on their
+own (`pnpm --filter @vaultcompass/vault-guard test`) do not build: run
+`pnpm build` first when a test you are relying on spawns the CLI.
+
 ## Out of scope (separate plans)
 
 `vault-guard init` is **shipped** (see README Quickstart §0).
