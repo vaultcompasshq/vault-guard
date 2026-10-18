@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Planned as 1.12.0, a minor. A key-shaped match that is a slice of an embedded
+## [1.12.0] - 2026-10-17
+
+A minor release. A key-shaped match that is a slice of an embedded
 image, font or recording is reported at low with the reason, instead of at its
 rule's severity, and many matches of one rule in one column of a data file
 are shown as one grouped finding. Under the default gate (medium) and under
