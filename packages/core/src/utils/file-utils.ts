@@ -621,6 +621,16 @@ export interface PullRequestSkips {
    * depth; they are scanned, and counted so the run can say so.
    */
   nestedVendored?: string[];
+  /**
+   * Files in the list whose disk entry exists but is not a regular file (a
+   * symlink or a directory where the tree records a file), left out of the
+   * returned set. The list comes from git, so git says these are files; only
+   * the working tree disagrees, which needs a change after checkout (audit
+   * 2026-10-18, N1). A pull-request caller reads each one's HEAD blob and never
+   * the disk entry, or, when it has no blob for it, fails closed on it. A plain
+   * caller keeps its documented behaviour and ignores this list.
+   */
+  diskNotRegular?: Array<{ file: string; kind: 'symlink' | 'directory' | 'other'; nestedVendored: boolean }>;
 }
 
 /**
@@ -651,7 +661,9 @@ export interface PullRequestSkips {
  * Everything else is the walk's own filtering, applied to the same paths:
  * binaries and lockfiles by extension and name, generated artifacts, the
  * config's own `ignore` patterns (from the BASE ref, in this mode), and
- * anything that is not a regular file on disk. Those name-and-extension drops
+ * anything that is not a regular file on disk, which is left out of the
+ * returned set but recorded in {@link PullRequestSkips.diskNotRegular} for the
+ * caller to read from its blob or fail closed on. Those name-and-extension drops
  * are COUNTED into {@link PullRequestSkips.typeFilteredFiles}: what they skip
  * is unchanged, but `src/leak.min.js` used to disappear without the run saying
  * so, which is the same silence this mode exists to remove.
@@ -677,6 +689,7 @@ export function getPullRequestFilesToScan(
   let configIgnored = 0;
   const unreadable: Array<{ file: string; reason: string; code?: string }> = [];
   const nestedVendored: string[] = [];
+  const diskNotRegular: NonNullable<PullRequestSkips['diskNotRegular']> = [];
   const out: string[] = [];
 
   for (const file of headTreeFiles) {
@@ -724,7 +737,14 @@ export function getPullRequestFilesToScan(
       unreadable.push({ file: abs, reason: String(error), ...(code ? { code } : {}) });
       continue;
     }
-    if (!stat.isFile()) continue;
+    if (!stat.isFile()) {
+      // Never followed and never read here. Recorded rather than dropped: the
+      // list says this path is a file, so leaving it out unrecorded is a file
+      // nobody checked and nobody was told about.
+      const kind = stat.isSymbolicLink() ? 'symlink' : stat.isDirectory() ? 'directory' : 'other';
+      diskNotRegular.push({ file: abs, kind, nestedVendored: underNestedVendored });
+      continue;
+    }
 
     if (underNestedVendored) nestedVendored.push(abs);
     out.push(abs);
@@ -736,6 +756,7 @@ export function getPullRequestFilesToScan(
   skipped.configIgnoredFiles = configIgnored;
   skipped.unreadable = unreadable;
   skipped.nestedVendored = nestedVendored;
+  skipped.diskNotRegular = diskNotRegular;
   return out;
 }
 

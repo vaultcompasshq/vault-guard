@@ -875,6 +875,9 @@ pnpm test
 pnpm lint
 ```
 
+`pnpm test` at the root builds first, because some tests spawn the built CLI
+from `dist/` and would otherwise test a stale build. See CONTRIBUTING.md.
+
 Published packages: **`@vaultcompass/vault-guard`** (CLI), **`@vaultcompass/vault-guard-core`**, **`@vaultcompass/vault-guard-mcp`**, **`@vaultcompass/vault-guard-telemetry`**.
 
 Run the precision/recall benchmark against the labeled fixture corpus:

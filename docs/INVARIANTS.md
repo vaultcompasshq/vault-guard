@@ -1041,6 +1041,101 @@ decides a disk copy's encoding before its declared label`);
 `blob-reader.test.ts` (`holds no more blobs than the read window at once,
 and none after the run`).
 
+## Under `--trust-base` a head-tree file is scanned from its blob, whatever its disk entry is
+
+The head tree decides the file set and the file's type; the disk entry does
+not. When the head tree records a regular file (100644 or 100755) and the
+working-tree entry at that path is a symlink, a directory or anything else
+that is not a regular file, the HEAD blob is scanned, the disk entry's
+content is never read, and the run adds a `symlink.not_followed` warning
+naming the file. This holds for a directory target and for a file named on
+the command line (`scan --trust-base` or `check --trust-base` with file
+arguments), where the decision is made on `lstat` before any `stat` that
+would follow the link. This needs a change to the working tree after
+checkout (an earlier CI step, a local edit); head content cannot cause it.
+When the run has no head blob for such a file it records the file as
+unscannable with the reason "the working-tree entry is a symlink (or a
+directory, or something other than a file, a directory or a symlink), not
+a regular file", so the run exits 2; it is never dropped uncounted. Until
+this rule (audit 2026-10-18, N1) the file set `continue`d past such an
+entry and counted it nowhere, and a named target was read through the link
+or, linked to a directory, dropped.
+
+The finding is keyed on the file's own path, not the link's target.
+`contentRelPath` resolves links in the root and in the file's parent
+directory and never in the leaf, so a file reached through a linked
+directory keys on its physical path and a file whose own entry is a link
+keys on its own name. Both fingerprints of the head blob's finding are the
+same with and without the swap, and a link to a baselined file cannot
+borrow that file's entry: a copy into another file stays a new key. The
+scope of `baseline <path> --write` is resolved by the same rule for a file
+and a directory target alike, so naming a link, to a file or to a
+directory, scopes the write to the link itself and never drops the
+entries of what it points at; enforced by `writeScope` in
+`packages/cli/src/commands/baseline.ts` and
+`packages/cli/src/__tests__/integration/baseline-scope-link.test.ts` (`keeps
+the target's entry, accepts nothing for the link, and the next scan still
+passes`, `leaves every entry in place, and the next scan still passes`),
+both red when the scope goes back to the fully resolved path.
+
+Plain mode is deliberately unchanged and keeps its known limit: a plain
+scan still drops a tracked file whose disk entry was replaced by a symlink,
+including one named on the command line, uncounted (CHANGELOG 1.10.0,
+Known limits). `getPullRequestFilesToScan`
+records the entry in `diskNotRegular` in both modes; only the pull-request
+caller in `scan-utils.ts` acts on it.
+
+**Enforced by:** `getPullRequestFilesToScan` in
+`packages/core/src/utils/file-utils.ts` (records `diskNotRegular`);
+`contentRelPath` in `packages/core/src/match-fingerprint.ts` (leaf never
+resolved); in `packages/cli/src/utils/scan-utils.ts`, the named-target
+`lstat` branch and the directory-target `diskNotRegular` loop of
+`scanFilesAsync` (read the blob, clear `worktreeAlso`, or record the file
+unscannable). Tests:
+`packages/cli/src/__tests__/integration/trust-base-disk-swap.test.ts`
+(`still blocks on the key in the head blob, and never exits 0`, `never
+reads through the link: a key in the link target outside the repository is
+not reported`, `text output blocks too and never prints the all-clear`,
+`A9: the swap moves neither fingerprint of the head blob's finding`, `two
+named targets, one swapped for a link to a directory in the repository:
+blocks on the head blob`, `check --trust-base with the same two named
+targets blocks too`, `a single named target swapped for a link to a file
+blocks on the head blob, not the target`, `A13: after swapping new.ts for a
+link to accepted.ts the key still blocks, reported on src/new.ts`, `plain
+mode keeps its documented known limit: the swapped file is dropped`);
+`packages/cli/src/__tests__/integration/trust-base-disk-swap-no-blob.test.ts`
+(`records the file as unscannable with the reason, and exits 2`);
+`packages/core/src/__tests__/pull-request-file-set.test.ts` (`records a
+head-tree file whose disk entry became a symlink, and leaves it out of the
+set`); `packages/core/src/__tests__/content-rel-path.test.ts` (`keys a file
+whose own entry is a link on its own name, never on the target`, `keys a
+file reached through a linked parent directory on its physical path`).
+
+Mutations, each shown red: restoring the silent drop (no `diskNotRegular`
+record) fails six of the twelve cases in the two CLI files and the core
+file-set case; keeping `worktreeAlso` on the re-added entry, so the disk
+copy is read through the link, fails the outside-target case with an extra
+`worktree` match; restoring the leaf realpath in `contentRelPath` fails A9
+and A13 (A13 exits 0) and the core leaf case; removing the named-target
+`lstat` branch fails the two-target, `check` and single-target cases;
+dropping the no-blob unreadable record turns that case's exit 2 into 0.
+
+## The root `pnpm test` builds before it tests
+
+Tests that spawn the CLI run `packages/cli/dist/`, not `src/`. Through
+1.12.0 the root `test` script was `pnpm -r test` alone, so a local run after
+a source-only change tested the previous build and could pass over a
+regression: the 2026-10-18 audit's mutations M14 and M17, applied to `src/`,
+survived `hook-environment.test.ts` and `incomplete-first-line.test.ts`
+(N6). The root script is now `pnpm build && pnpm -r test`, matching CI's
+test job, which already builds first. A single package's `jest` run does
+not build, and CONTRIBUTING.md says so.
+
+**Enforced by:** the `test` script in the root `package.json`. Shown, not
+pinned by a test: with M17 applied to `src/` and `dist/` stale,
+`incomplete-first-line.test.ts` alone passes 12 of 12; the root
+`pnpm test` fails `A23: progress on a pipe` and nothing else.
+
 ## Reading the blob does not move a fingerprint for an untransformed file
 
 For a tracked file whose checkout applies no transform, the positional
