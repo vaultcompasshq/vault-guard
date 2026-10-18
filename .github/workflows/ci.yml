@@ -244,7 +244,7 @@ jobs:
       id: conductor
       uses: vaultcompasshq/conductor@5e69e45fc62799ef454e77d3b9b64cec6db95470 # v0.11.0
       with:
-        vault-guard-version: 1.11.0
+        vault-guard-version: 1.12.0
         output: conductor.sarif
 
     - name: Upload the SARIF log
