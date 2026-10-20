@@ -451,17 +451,23 @@ jobs:
           echo "Smoke testing @vaultcompass/vault-guard@${VERSION}"
 
           FOUND=0
-          for i in $(seq 1 12); do
+          # About 20 minutes (80 attempts, 15 seconds apart). The registry can
+          # serve the version metadata minutes before the tarball, and
+          # "npm install" fetches the tarball, so both must be ready.
+          for i in $(seq 1 80); do
             if [[ "$(npm view "@vaultcompass/vault-guard@${VERSION}" version 2>/dev/null)" == "${VERSION}" ]]; then
-              echo "Package visible on registry."
-              FOUND=1
-              break
+              TARBALL="$(npm view "@vaultcompass/vault-guard@${VERSION}" dist.tarball 2>/dev/null || true)"
+              if [[ -n "${TARBALL}" ]] && curl -sfI -o /dev/null "${TARBALL}"; then
+                echo "Package and tarball visible on registry."
+                FOUND=1
+                break
+              fi
             fi
-            echo "Waiting for npm registry (attempt ${i}/12)…"
-            sleep 10
+            echo "Waiting for npm registry and tarball (attempt ${i}/80)..."
+            sleep 15
           done
           if [[ "${FOUND}" -ne 1 ]]; then
-            echo "::error::Timed out waiting for @vaultcompass/vault-guard@${VERSION} on the npm registry."
+            echo "::error::Timed out after about 20 minutes waiting for @vaultcompass/vault-guard@${VERSION} and its tarball on the npm registry."
             exit 1
           fi
 
