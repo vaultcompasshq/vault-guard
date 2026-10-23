@@ -103,6 +103,10 @@ describe('getFilesToScan + ignore package', () => {
     expect(files).toContain('f.secret');
 
     fs.writeFileSync(gi, '*.secret\n', 'utf-8');
+    // Two writes this close can share one mtime on a coarse clock (seen on
+    // the Windows runner), so move it forward instead of relying on timing.
+    const later = new Date(fs.statSync(gi).mtimeMs + 10_000);
+    fs.utimesSync(gi, later, later);
     files = getFilesToScan(root).map(f => path.basename(f));
     expect(files).not.toContain('f.secret');
   });
