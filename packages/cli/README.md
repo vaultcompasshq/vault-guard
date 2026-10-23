@@ -1,6 +1,6 @@
 # @vaultcompass/vault-guard
 
-Catch secrets at commit and in CI, not after they are in your git history. Pre-commit hooks across every hook manager, fast staged-file scans, and SARIF for GitHub Code Scanning. Built for paste-heavy AI coding workflows.
+Catch secrets at commit and in CI, not after they are in your git history. Pre-commit hooks for git, husky, lefthook and the pre-commit framework, fast staged-file scans, and SARIF for GitHub Code Scanning. Built for paste-heavy AI coding workflows.
 
 ## Install
 
