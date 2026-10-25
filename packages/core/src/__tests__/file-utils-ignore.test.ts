@@ -102,7 +102,14 @@ describe('getFilesToScan + ignore package', () => {
     let files = getFilesToScan(root).map(f => path.basename(f));
     expect(files).toContain('f.secret');
 
+    const firstMtimeMs = fs.statSync(gi).mtimeMs;
     fs.writeFileSync(gi, '*.secret\n', 'utf-8');
+    // A rewrite inside the same filesystem clock tick can leave mtimeMs
+    // unchanged (NTFS on the Windows runner advances it in ~16ms steps),
+    // which made this test flaky there. Move mtime explicitly so the
+    // test exercises what its name says: a changed mtime invalidates.
+    const bumped = new Date(firstMtimeMs + 5000);
+    fs.utimesSync(gi, bumped, bumped);
     files = getFilesToScan(root).map(f => path.basename(f));
     expect(files).not.toContain('f.secret');
   });
