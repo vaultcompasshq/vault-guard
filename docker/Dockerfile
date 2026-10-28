@@ -1,7 +1,7 @@
 # Minimal image for CI or local scans (installs published CLI from npm).
 # Build: docker build -t vault-guard:local -f docker/Dockerfile .
 # Run:   docker run --rm -v "$PWD":/repo -w /repo vault-guard:local scan .
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 
 ARG VG_VERSION=latest
 RUN npm install -g "@vaultcompass/vault-guard@${VG_VERSION}" \
