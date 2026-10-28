@@ -1,28 +1,8 @@
-# Vault Guard
+# vault-guard
 
-Vault Guard reads the text of the files you point it at, and reports the
-credentials it finds in them, before a commit lands or before an agent's
-proposed edit is applied.
-
-<!-- guardrails-family: shared block, keep it identical in dep-guard, vault-guard, intent-guard and conductor -->
-The Vault & Compass guardrails are three gates over an AI-assisted coding
-session: [dep-guard](https://www.npmjs.com/package/@vaultcompass/dep-guard)
-checks what comes in (hallucinated package names, typosquats, tampered
-lockfile entries),
-[vault-guard](https://www.npmjs.com/package/@vaultcompass/vault-guard) checks
-what goes out (credentials about to be committed), and
-[intent-guard](https://www.npmjs.com/package/@vaultcompass/intent-guard)
-checks the change against what was approved (drift from a frozen intent
-contract, and change budgets). Each one installs, configures and runs on its
-own;
-[conductor](https://www.npmjs.com/package/@vaultcompass/conductor) is the
-optional umbrella that runs them from one policy file, one hook and one
-report, beside two scanners you install yourself:
-[gitleaks](https://github.com/gitleaks/gitleaks) for secrets anywhere in git
-history and [osv-scanner](https://github.com/google/osv-scanner) for known
-vulnerabilities. conductor scans nothing itself and installs nothing that
-is not its own.
-<!-- /guardrails-family -->
+vault-guard blocks a commit, a pull request, or an AI editor's proposed edit
+that contains a credential: a vendor API key, a database URL with a
+password, a private key. It scans files as they are now, not git history.
 
 ```bash
 npm install -g @vaultcompass/vault-guard
@@ -35,7 +15,7 @@ npm install -g @vaultcompass/vault-guard
 A pasted key arrives as an ordinary edit. It is a few characters in a
 config file or a test fixture, it does not look different from the lines
 around it, and nobody reads a generated diff closely enough to spot it.
-Vault Guard sits at the three points a credential passes through on its way
+vault-guard sits at the three points a credential passes through on its way
 into a repository: the edit an agent proposes (an MCP server exposes
 `scan_text`, `scan_file` and `scan_workspace`, so a client can ask before
 applying), the staged diff (a pre-commit hook running `vault-guard scan
@@ -100,7 +80,13 @@ Add to your MCP config (`~/.cursor/mcp.json`, `claude_desktop_config.json`, etc.
 }
 ```
 
-Vault Guard exposes `scan_text`, `scan_file`, and `scan_workspace` tools. Your AI agent can call them before applying any edit that touches secrets.
+The form above installs the latest version each time the editor starts. To pin one, use the same config with the version in the package argument:
+
+```json
+      "args": ["-y", "@vaultcompass/vault-guard-mcp@1.12.1"]
+```
+
+vault-guard exposes `scan_text`, `scan_file`, and `scan_workspace` tools. Your AI agent can call them before applying any edit that touches secrets.
 
 See **[docs/MCP.md](./docs/MCP.md)** for the full tool reference.
 
@@ -314,6 +300,30 @@ Structured output includes a `run` block (timing, files/bytes scanned, active pa
 
 ---
 
+## Part of the Vault & Compass guardrails
+
+<!-- guardrails-family: shared block, keep it identical in dep-guard, vault-guard, intent-guard and conductor -->
+The Vault & Compass guardrails are three gates over an AI-assisted coding
+session, plus an optional umbrella: [dep-guard](https://www.npmjs.com/package/@vaultcompass/dep-guard)
+checks what comes in (hallucinated package names, typosquats, tampered
+lockfile entries),
+[vault-guard](https://www.npmjs.com/package/@vaultcompass/vault-guard) checks
+what goes out (credentials about to be committed), and
+[intent-guard](https://www.npmjs.com/package/@vaultcompass/intent-guard)
+checks the change against what was approved (drift from a frozen intent
+contract, and change budgets). Each one installs, configures and runs on its
+own;
+[conductor](https://www.npmjs.com/package/@vaultcompass/conductor) is the
+optional umbrella that runs them from one policy file, one hook and one
+report, beside two scanners you install yourself:
+[gitleaks](https://github.com/gitleaks/gitleaks) for secrets anywhere in git
+history and [osv-scanner](https://github.com/google/osv-scanner) for known
+vulnerabilities. conductor scans nothing itself and installs nothing that
+is not its own.
+<!-- /guardrails-family -->
+
+---
+
 ## What it detects
 
 - AI/ML API keys (Anthropic, OpenAI, Groq, OpenRouter, xAI, Perplexity, Mistral, DeepSeek, Together, Fireworks, LangSmith, HuggingFace, Replicate)
@@ -336,36 +346,36 @@ the `stripe` rule id. The finding is correct; only the vendor label may be off.
 
 ## How it compares
 
-Vault Guard is **not** a history miner. It targets fast working-tree checks (the IDE, pre-commit gate, and CI on the checkout) and is designed to be composed with dedicated history scanners, not to replace them.
+vault-guard is **not** a history miner. It targets fast working-tree checks (the IDE, pre-commit gate, and CI on the checkout) and is designed to be composed with dedicated history scanners, not to replace them.
 
-| Feature | Vault Guard | Gitleaks | TruffleHog | detect-secrets | GitHub Secret Protection | GitGuardian |
+| Feature | vault-guard | Gitleaks | TruffleHog | detect-secrets | GitHub Secret Protection | GitGuardian |
 |---|---|---|---|---|---|---|
 | Working-tree / staged-file scan | Yes | Yes | Yes | Yes | Push/PR focused | Yes |
 | Git history mining | No | Yes | Yes | No | Hosted scanning | Yes |
 | MCP / AI-agent scanning | Local MCP | No | No | No | Yes | Yes |
 | GitHub Action (SARIF output) | Yes | Yes | No | No | Native platform | Yes |
-| Pre-commit hook installer | Yes | Partial | No | Yes | No | Yes |
+| Pre-commit hook installer | Yes | Partial | Documented, no installer | Yes | No | Yes |
 | Entropy gating on generic patterns | Yes | Partial | Yes | Yes | Provider-pattern focused | Yes |
-| Config ignore paths / baselines | Yes | Yes | No | Yes | Platform-managed | Yes |
-| Opt-in local token telemetry (Anthropic) | Yes | No | No | No | No | No |
+| Config ignore paths / baselines | Yes | Yes | Inline ignore comments only; no baseline file | Yes | Platform-managed | Yes |
 | Local-only / no account required | Yes | Yes | Yes | Yes | No | No |
 
-For credentials in Git history use **[Gitleaks](https://github.com/gitleaks/gitleaks)** or **[TruffleHog](https://github.com/trufflesecurity/trufflehog)** alongside Vault Guard. They are complementary, not competing.
+For credentials in Git history use **[Gitleaks](https://github.com/gitleaks/gitleaks)** or **[TruffleHog](https://github.com/trufflesecurity/trufflehog)** alongside vault-guard. They are complementary, not competing.
 
+Each release is compared with the previous one on up to eleven public repositories (`bench/real-repos/`), with every changed finding checked by hand. That is a regression check, not an accuracy score.
 
 ---
 
 ## Recommended stack
 
-Use Vault Guard as the **local AI-edit firewall**, then compose with history scanners:
+Use vault-guard as the **local AI-edit firewall**, then compose with history scanners:
 
 | Layer | Tool | Role |
 |---|---|---|
-| AI edits + staged files + CI checkout | **Vault Guard** (MCP, pre-commit, Action) | Fast working-tree gate; no account |
+| AI edits + staged files + CI checkout | **vault-guard** (MCP, pre-commit, Action) | Fast working-tree gate; no account |
 | Git history / deep local scan | [Gitleaks](https://github.com/gitleaks/gitleaks) | Offline history + strong pre-commit rules |
 | Verified / live-key audit | [TruffleHog](https://github.com/trufflesecurity/trufflehog) | Confirm credentials still work |
 
-Vault Guard does **not** mine Git history: see [docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md). Pairing with Gitleaks/TruffleHog is the recommended production setup, not a competing choice.
+vault-guard does **not** mine Git history: see [docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md). Pairing with Gitleaks/TruffleHog is the recommended production setup, not a competing choice.
 
 
 ---
@@ -725,54 +735,13 @@ suppressed line numbers.
 
 ---
 
-## Opt-in token telemetry (Anthropic only)
+## Opt-in token telemetry, statusline and suggest-model
 
-Vault Guard can log Anthropic token usage locally; useful if you want to see what the proxy costs day-to-day.
-
-```bash
-vault-guard proxy --listen 127.0.0.1:8765
-```
-
-Forwards `POST /v1/messages` to `api.anthropic.com` and logs `model`, `input_tokens`, `output_tokens`, and estimated cost to **`~/.vault-guard/usage.sqlite`** (local only; nothing is sent to Vault & Compass servers).
-
-Set `ANTHROPIC_BASE_URL=http://127.0.0.1:8765` to route a client through it. See **[docs/PRIVACY.md](./docs/PRIVACY.md)** for the full schema, opt-out steps, and data retention policy.
-
-**Note:** this feature is Anthropic-specific. Token usage from Cursor's built-in models, Copilot, and other providers is not captured.
-
-Inspect or wipe the local data:
-
-```bash
-vault-guard data status             # counts only; no raw paths
-vault-guard data export -o out.json
-vault-guard data reset              # interactive prompt
-vault-guard data reset --yes        # non-interactive (CI)
-```
-
-Statusline JSON (for custom editor status bars):
-
-```bash
-vault-guard statusline --json
-# { secrets_today, tokens_today_input, tokens_today_output, est_cost_usd, model }
-```
-
-Model hint from recent telemetry:
-
-```bash
-vault-guard suggest-model --json
-```
-
----
+Optional local Anthropic token logging (`vault-guard proxy`), `statusline` and `suggest-model`: see [docs/token-telemetry.md](./docs/token-telemetry.md).
 
 ## VS Code / Cursor extension
 
-Inline diagnostics for open files (uses `@vaultcompass/vault-guard-core`). Package lives in
-`packages/vscode-extension`.
-
-**Local tryout:** `pnpm --filter vault-guard-vscode build`, then **Run Extension** from VS Code.
-
-**Marketplace:** packaging is ready (`vsce package` / `vsce publish`). See
-[packages/vscode-extension/README.md](./packages/vscode-extension/README.md). Publishing
-requires the `vaultcompass` publisher token (maintainers only).
+Inline diagnostics for open files, not yet published: see [docs/vscode-extension.md](./docs/vscode-extension.md).
 
 ---
 
