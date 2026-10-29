@@ -205,8 +205,8 @@ assert_version_bad "1.7.00"
 # action.yml. Same number today, different meanings: MIN_* is flag
 # compatibility, TAG_SCANNER is the tested scanner this tag ships.
 TAG_SCANNER_MAJOR=1
-TAG_SCANNER_MINOR=12
-TAG_SCANNER_PATCH=1
+TAG_SCANNER_MINOR=13
+TAG_SCANNER_PATCH=0
 
 # Guard: every CONSTANT copied into this file still equals the one in
 # action.yml, and is assigned there exactly once. A copy that drifts asserts the
@@ -311,21 +311,22 @@ assert_pr_version_bad() {
   fi
 }
 
-# The scanner this tag ships, and anything above it. 1.12.1 is the version
-# this tag accepts; 1.12.2 and 1.13.0 are forward pins on the patch and
+# The scanner this tag ships, and anything above it. 1.13.0 is the version
+# this tag accepts; 1.13.1 and 1.14.0 are forward pins on the patch and
 # minor arms.
-assert_pr_version_ok "1.12.1"
-assert_pr_version_ok "1.12.2"
 assert_pr_version_ok "1.13.0"
+assert_pr_version_ok "1.13.1"
+assert_pr_version_ok "1.14.0"
 assert_pr_version_ok "2.0.0"
 assert_pr_version_ok "10.20.30"
 
 # Backward, and the shapes the first check already refuses. 1.7.0 and 1.7.1
 # clear the flag floor (still 1.7.0) but are below the tag scanner
-# (1.12.1), so the pull-request gate refuses them, as does 1.8.x, 1.9.x,
-# 1.10.0, 1.11.0 and 1.12.0 (the patch arm: same major and minor, lower
-# patch). `1.9.1` sorts above `1.10.0` as text and must still be refused
+# (1.13.0), so the pull-request gate refuses them, as does 1.8.x, 1.9.x,
+# 1.10.0, 1.11.0, 1.12.0 and 1.12.1 (the highest scanner below the tag
+# scanner). `1.9.1` sorts above `1.10.0` as text and must still be refused
 # numerically.
+assert_pr_version_bad "1.12.1"
 assert_pr_version_bad "1.12.0"
 assert_pr_version_bad "1.11.0"
 assert_pr_version_bad "1.10.0"
