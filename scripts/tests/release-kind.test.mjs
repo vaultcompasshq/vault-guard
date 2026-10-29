@@ -665,6 +665,7 @@ describe('.github/workflows/release.yml wiring', () => {
   const STEPS_AFTER_DECISION = [
     'Install dependencies',
     'Build packages',
+    'Lint code',
     'Regenerate docs/RULES.md and check for drift',
     'Run tests with coverage',
     'Run release-kind tests',
@@ -699,6 +700,7 @@ describe('.github/workflows/release.yml wiring', () => {
     const ungated = [
       'Install dependencies',
       'Build packages',
+      'Lint code',
       'Regenerate docs/RULES.md and check for drift',
       'Run tests with coverage',
       'Run release-kind tests',
