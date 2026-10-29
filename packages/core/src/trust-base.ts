@@ -49,6 +49,7 @@ import path from 'path';
 import { ConfigError } from './errors';
 import { listConfigSearchDirs, parseConfigText, type VaultGuardConfig } from './config';
 import { BASELINE_FILENAME, parseBaselineText, type BaselineEntry } from './baseline';
+import { DEFAULT_ENTROPY_THRESHOLD } from './utils/entropy';
 import { DEFAULT_FAIL_ON, isFailOnThreshold, type FailOnThreshold } from './utils/fail-on';
 import { fileSetGitEnv } from './utils/git-env';
 
@@ -91,6 +92,16 @@ export const CONFIG_ADDED_LINE = 'config added in this pull request';
 
 /** The head carries a baseline the base ref does not. Nothing is suppressed. */
 export const BASELINE_ADDED_LINE = 'baseline added in this pull request';
+
+/**
+ * Prefix of the proposal line naming every OTHER config or baseline file the
+ * head added, removed, modified or retyped: a `.vault-guard.local.json` the
+ * committed config shadows, a nested config or baseline off this run's search
+ * walk. None of them decides this run, but each decides some plain run (a scan
+ * from another directory, a developer's hook, a later pull request that
+ * deletes the file shadowing it), so a reviewer has to see that it appeared.
+ */
+export const OTHER_CONTROL_FILES_LINE = 'other control files changed in this pull request';
 
 function runGit(cwd: string, args: string[]): string | null {
   try {
@@ -469,12 +480,38 @@ function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((x): x is string => typeof x === 'string') : [];
 }
 
+/**
+ * The ignore entries, each tagged with the list it sits in, so an entry moved
+ * from `patterns` to `paths` counts as added there: the two lists match
+ * different things, and a move is a change in what is muted.
+ */
 function ignoreEntries(config: Record<string, unknown> | null): string[] {
   if (config === null) return [];
   const ignore = config.ignore;
   if (ignore === null || typeof ignore !== 'object' || Array.isArray(ignore)) return [];
   const o = ignore as Record<string, unknown>;
-  return [...stringList(o.paths), ...stringList(o.patterns)];
+  return [
+    ...stringList(o.paths).map(p => `paths\0${p}`),
+    ...stringList(o.patterns).map(p => `patterns\0${p}`),
+  ];
+}
+
+/** The top-level keys a valid config may carry, in the order the summary names them. */
+const KNOWN_CONFIG_KEYS: readonly string[] = [
+  'ignore',
+  'fail_on',
+  'severity_overrides',
+  'extra_patterns',
+  'entropy_threshold',
+  'extra_patterns_unsafe',
+];
+
+function sameJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
 }
 
 const FAIL_ON_STRICTNESS: Record<FailOnThreshold, number> = {
@@ -490,56 +527,157 @@ function failOnOf(config: Record<string, unknown> | null): FailOnThreshold {
   return isFailOnThreshold(v) ? v : DEFAULT_FAIL_ON;
 }
 
-function countAddedKeys(base: unknown, head: unknown): number {
-  const b = base !== null && typeof base === 'object' && !Array.isArray(base)
-    ? (base as Record<string, unknown>)
-    : {};
-  const h = head !== null && typeof head === 'object' && !Array.isArray(head)
-    ? (head as Record<string, unknown>)
-    : {};
-  let n = 0;
+/** Severity order for overrides; `off` mutes the rule, so it is the lowest. */
+const OVERRIDE_RANK: Record<string, number> = { off: 0, low: 1, medium: 2, high: 3, critical: 4 };
+
+/**
+ * How the head's severity overrides differ from the base's, per rule id: an
+ * override added or removed, an existing one moved down (toward `off`, a
+ * loosening) or up, or changed to something that is not a severity at all.
+ */
+function overrideChanges(
+  base: unknown,
+  head: unknown,
+): { added: number; removed: number; lowered: number; raised: number; changed: number } {
+  const asRecord = (v: unknown): Record<string, unknown> =>
+    v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  const b = asRecord(base);
+  const h = asRecord(head);
+  const own = (o: Record<string, unknown>, k: string): boolean =>
+    Object.prototype.hasOwnProperty.call(o, k);
+  const out = { added: 0, removed: 0, lowered: 0, raised: 0, changed: 0 };
   for (const [key, value] of Object.entries(h)) {
-    if (!(key in b) || b[key] !== value) n++;
+    if (!own(b, key)) {
+      out.added++;
+      continue;
+    }
+    if (b[key] === value) continue;
+    const from = typeof b[key] === 'string' && own(OVERRIDE_RANK, b[key] as string) ? OVERRIDE_RANK[b[key] as string] : null;
+    const to = typeof value === 'string' && own(OVERRIDE_RANK, value) ? OVERRIDE_RANK[value] : null;
+    if (from === null || to === null) out.changed++;
+    else if (to < from) out.lowered++;
+    else out.raised++;
   }
-  return n;
+  for (const key of Object.keys(b)) if (!own(h, key)) out.removed++;
+  return out;
+}
+
+/**
+ * What changed in one top-level config key, as summary phrases. Never empty
+ * for a key whose value differs: when no specific phrase fits, the key is
+ * named as changed. Values are printed only where they are numbers.
+ */
+function keyChangePhrases(
+  key: string,
+  base: Record<string, unknown> | null,
+  head: Record<string, unknown>,
+): string[] {
+  const out: string[] = [];
+  switch (key) {
+    case 'ignore': {
+      const b = new Set(ignoreEntries(base));
+      const h = new Set(ignoreEntries(head));
+      const added = [...h].filter(p => !b.has(p)).length;
+      const removed = [...b].filter(p => !h.has(p)).length;
+      if (added > 0) out.push(`${plural(added, 'pattern', 'patterns')} added to ignore`);
+      if (removed > 0) out.push(`${plural(removed, 'pattern', 'patterns')} removed from ignore`);
+      break;
+    }
+    case 'fail_on': {
+      const b = FAIL_ON_STRICTNESS[failOnOf(base)];
+      const h = FAIL_ON_STRICTNESS[failOnOf(head)];
+      if (h < b) out.push('fail_on lowered');
+      else if (h > b) out.push('fail_on raised');
+      break;
+    }
+    case 'severity_overrides': {
+      const c = overrideChanges(base?.severity_overrides, head.severity_overrides);
+      const say = (n: number, verb: string): void => {
+        if (n > 0) out.push(`${plural(n, 'severity override', 'severity overrides')} ${verb}`);
+      };
+      say(c.added, 'added');
+      say(c.lowered, 'lowered');
+      say(c.raised, 'raised');
+      say(c.changed, 'changed');
+      say(c.removed, 'removed');
+      break;
+    }
+    case 'extra_patterns': {
+      const b = Array.isArray(base?.extra_patterns) ? base.extra_patterns.length : 0;
+      const h = Array.isArray(head.extra_patterns) ? head.extra_patterns.length : 0;
+      if (h > b) out.push(`${plural(h - b, 'extra pattern', 'extra patterns')} added`);
+      else if (h < b) out.push(`${plural(b - h, 'extra pattern', 'extra patterns')} removed`);
+      break;
+    }
+    case 'entropy_threshold': {
+      const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+      const num = (v: unknown): number => (isNum(v) ? v : DEFAULT_ENTROPY_THRESHOLD);
+      const b = num(base?.entropy_threshold);
+      const raw = head.entropy_threshold;
+      if (raw !== undefined && raw !== null && !isNum(raw)) {
+        // An invalid head value is not a move to the default: say what it is.
+        out.push(`entropy_threshold changed (not a number at the head; the base rules use ${b})`);
+        break;
+      }
+      const h = num(raw);
+      if (h > b) out.push(`entropy_threshold raised from ${b} to ${h}`);
+      else if (h < b) out.push(`entropy_threshold lowered from ${b} to ${h}`);
+      break;
+    }
+    case 'extra_patterns_unsafe': {
+      const b = base?.extra_patterns_unsafe === true;
+      const h = head.extra_patterns_unsafe === true;
+      if (h && !b) out.push('extra_patterns_unsafe turned on');
+      else if (b && !h) out.push('extra_patterns_unsafe turned off');
+      break;
+    }
+  }
+  if (out.length === 0) out.push(`${key} changed`);
+  return out;
 }
 
 /**
  * A short parenthetical for the config proposal line, or the empty string.
  *
- * Deliberately cheap and deliberately incomplete. It answers "what did this
- * pull request try to loosen" for the four levers that actually mute the
- * scanner, and says nothing at all when it cannot answer, rather than
- * manufacturing a summary that a reviewer would then trust as exhaustive. The
- * full diff is one `git diff` away and is the authority.
+ * Complete at the level of the top-level key: every key whose value differs
+ * between the base and the head is named, with a count or a direction where
+ * one is cheap to give, and as "changed" where it is not (audit 2026-10-27
+ * NB2: the summary used to name four levers, so a raised entropy_threshold
+ * printed a line a reviewer would read as the whole story). An unrecognised
+ * key is counted, never echoed, because its name is head-controlled text.
+ * The phrases are a reading aid; the full diff is one `git diff` away and is
+ * the authority.
  */
-function summariseConfigChange(baseText: string | null, headText: string | null): string {
+function summariseConfigChange(
+  baseText: string | null,
+  headText: string | null,
+  basePath: string | null,
+  headPath: string | null,
+): string {
+  const parts: string[] = [];
+  if (basePath !== null && headPath !== null && basePath !== headPath) {
+    parts.push(
+      `read from ${printablePath(headPath)} at the head instead of ${printablePath(basePath)}`,
+    );
+  }
+
   const base = asObject(baseText);
   const head = asObject(headText);
-  if (head === null) return '';
-
-  const parts: string[] = [];
-
-  const baseIgnores = new Set(ignoreEntries(base));
-  const addedIgnores = ignoreEntries(head).filter(p => !baseIgnores.has(p)).length;
-  if (addedIgnores > 0) {
-    parts.push(`${addedIgnores} pattern${addedIgnores === 1 ? '' : 's'} added to ignore`);
+  if (head === null) {
+    if (headText !== null) parts.push('not a JSON object at the head, so nothing more could be summarised');
+    return parts.length === 0 ? '' : ` (${parts.join(', ')})`;
   }
 
-  if (FAIL_ON_STRICTNESS[failOnOf(head)] < FAIL_ON_STRICTNESS[failOnOf(base)]) {
-    parts.push('fail_on lowered');
+  for (const key of KNOWN_CONFIG_KEYS) {
+    if (!sameJson(base?.[key], head[key])) parts.push(...keyChangePhrases(key, base, head));
   }
 
-  const overrides = countAddedKeys(base?.severity_overrides, head.severity_overrides);
-  if (overrides > 0) {
-    parts.push(`${overrides} severity override${overrides === 1 ? '' : 's'} added`);
-  }
-
-  const baseExtra = Array.isArray(base?.extra_patterns) ? base.extra_patterns.length : 0;
-  const headExtra = Array.isArray(head.extra_patterns) ? head.extra_patterns.length : 0;
-  if (headExtra > baseExtra) {
-    const n = headExtra - baseExtra;
-    parts.push(`${n} extra pattern${n === 1 ? '' : 's'} added`);
+  const unknown = new Set(
+    [...Object.keys(base ?? {}), ...Object.keys(head)].filter(k => !KNOWN_CONFIG_KEYS.includes(k)),
+  );
+  const unknownChanged = [...unknown].filter(k => !sameJson(base?.[k], head[k])).length;
+  if (unknownChanged > 0) {
+    parts.push(`${plural(unknownChanged, 'unrecognised top-level key', 'unrecognised top-level keys')} changed`);
   }
 
   return parts.length === 0 ? '' : ` (${parts.join(', ')})`;
@@ -615,10 +753,25 @@ export interface TrustedControls {
   attributesPaths: string[];
 }
 
-/** A path for a proposal line: JSON-escaped when it holds a control character. */
+/**
+ * Characters JSON.stringify leaves raw that still change how a line reads:
+ * C1 controls, and the bidi marks, embeddings, overrides and isolates that
+ * can make a path display in a different order from its bytes.
+ */
+const INVISIBLE_LAYOUT = /[\u0080-\u009f؜‎‏‪-‮⁦-⁩]/g;
+
+/**
+ * A path for a proposal line: JSON-escaped when it holds a C0 or C1 control
+ * character, DEL or a bidi control, with the ones JSON.stringify would leave
+ * raw written as \u escapes. The path is head-controlled text.
+ */
 function printablePath(p: string): string {
   // eslint-disable-next-line no-control-regex
-  return /[\u0000-\u001f\u007f]/.test(p) ? JSON.stringify(p) : p;
+  if (!/[\u0000-\u001f\u007f]/.test(p) && !new RegExp(INVISIBLE_LAYOUT.source).test(p)) return p;
+  return JSON.stringify(p).replace(
+    INVISIBLE_LAYOUT,
+    c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
 }
 
 /**
@@ -632,11 +785,38 @@ function attributesChanges(
   repoRoot: string,
   ref: string,
 ): Array<{ path: string; newMode: string; status: string }> {
+  return changedPathsAgainstBase(repoRoot, ref, ['.gitattributes'], '.gitattributes');
+}
+
+/**
+ * Every config or baseline file, at any depth, the head added, removed,
+ * modified or retyped against the base commit. The same diff, the same `icase`
+ * and the same fail-closed handling as {@link attributesChanges}: a
+ * `.Vault-Guard.json` is what a case-insensitive checkout would read.
+ */
+function controlFileChanges(
+  repoRoot: string,
+  ref: string,
+): Array<{ path: string; newMode: string; status: string }> {
+  return changedPathsAgainstBase(
+    repoRoot,
+    ref,
+    [...CONFIG_FILENAMES, BASELINE_FILENAME],
+    'the vault-guard config and baseline files',
+  );
+}
+
+function changedPathsAgainstBase(
+  repoRoot: string,
+  ref: string,
+  basenames: readonly string[],
+  what: string,
+): Array<{ path: string; newMode: string; status: string }> {
   const base = resolve(repoRoot, ref, 'commit');
   const argv = [
     '-c', 'core.quotePath=false',
     'diff-tree', '-r', '-z', '--raw', '--no-abbrev', '--no-renames',
-    base ?? ref, 'HEAD', '--', ':(glob,icase)**/.gitattributes',
+    base ?? ref, 'HEAD', '--', ...basenames.map(name => `:(glob,icase)**/${name}`),
   ];
   const r = spawnSync('git', argv, {
     cwd: repoRoot,
@@ -648,7 +828,7 @@ function attributesChanges(
   if (r.error !== undefined || r.status !== 0) {
     const stderr = typeof r.stderr === 'string' ? r.stderr.trim() : '';
     throw new TrustBaseError(
-      `vault-guard: could not compare .gitattributes between base ref "${ref}" and HEAD: ` +
+      `vault-guard: could not compare ${what} between base ref "${ref}" and HEAD: ` +
         `${stderr.length > 0 ? stderr : String(r.error ?? `git exited with status ${String(r.status)}`)}. ` +
         'Nothing was scanned.',
     );
@@ -662,6 +842,24 @@ function attributesChanges(
     out.push({ path: parts[i + 1], newMode: fields[1] ?? '', status: fields[4] ?? '' });
   }
   return out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+}
+
+/**
+ * The proposal line for control files the config and baseline lines do not
+ * already describe, or none. A path the run compared as its config or its
+ * baseline, on either side, has its own line and is left out here.
+ */
+function otherControlFilesProposals(
+  changes: Array<{ path: string }>,
+  described: ReadonlySet<string>,
+): string[] {
+  const rest = changes.filter(c => !described.has(c.path));
+  if (rest.length === 0) return [];
+  const names = rest.slice(0, 3).map(c => printablePath(c.path));
+  const more = rest.length > 3 ? `, and ${rest.length - 3} more` : '';
+  return [
+    `${OTHER_CONTROL_FILES_LINE} (${plural(rest.length, 'file', 'files')}: ${names.join(', ')}${more})`,
+  ];
 }
 
 /** The proposal lines for the attributes changes, or none. */
@@ -825,7 +1023,12 @@ export function loadTrustedControls(startDir: string, ref: string): TrustedContr
       baseConfig === null && headConfig !== null
         ? CONFIG_ADDED_LINE
         : CONFIG_PROPOSAL_LINE +
-            summariseConfigChange(baseConfig?.text ?? null, headConfig?.text ?? null),
+            summariseConfigChange(
+              baseConfig?.text ?? null,
+              headConfig?.text ?? null,
+              baseConfig?.path ?? null,
+              headConfig?.path ?? null,
+            ),
     );
   }
   if (configShapeChange !== null) proposals.push(shapeProposal('config', configShapeChange));
@@ -838,6 +1041,12 @@ export function loadTrustedControls(startDir: string, ref: string): TrustedContr
     );
   }
   if (baselineShapeChange !== null) proposals.push(shapeProposal('baseline', baselineShapeChange));
+  const described = new Set(
+    [baseConfig, headConfig, baseBaseline, headBaseline]
+      .filter((f): f is ControlFile => f !== null)
+      .map(f => f.path),
+  );
+  proposals.push(...otherControlFilesProposals(controlFileChanges(repoRoot, ref), described));
   proposals.push(...attributesProposals(attributes));
 
   const headBlobs = listHeadTreeBlobs(repoRoot);

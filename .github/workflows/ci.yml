@@ -4,7 +4,10 @@ on:
   push:
     branches: [ main, develop ]
   pull_request:
-    branches: [ main ]
+    # release-candidate-* too: the Main ruleset covers those branches and
+    # requires this workflow's checks, which never ran on a pull request into
+    # one, so such a pull request could never merge.
+    branches: [ main, 'release-candidate-*' ]
   workflow_dispatch:
 
 permissions:
@@ -258,9 +261,9 @@ jobs:
 
     - name: Run the guardrail gates
       id: conductor
-      uses: vaultcompasshq/conductor@257830bd4b94a81419189b641508f1dda0950d00 # v0.15.0
+      uses: vaultcompasshq/conductor@be3f33defcca091c403af6d2dc6e377ef5b94af7 # v0.16.0
       with:
-        vault-guard-version: 1.12.1
+        vault-guard-version: 1.13.0
         output: conductor.sarif
 
     - name: Upload the SARIF log

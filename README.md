@@ -83,7 +83,7 @@ Add to your MCP config (`~/.cursor/mcp.json`, `claude_desktop_config.json`, etc.
 The form above installs the latest version each time the editor starts. To pin one, use the same config with the version in the package argument:
 
 ```json
-      "args": ["-y", "@vaultcompass/vault-guard-mcp@1.12.1"]
+      "args": ["-y", "@vaultcompass/vault-guard-mcp@1.13.0"]
 ```
 
 vault-guard exposes `scan_text`, `scan_file`, and `scan_workspace` tools. Your AI agent can call them before applying any edit that touches secrets.
@@ -361,7 +361,7 @@ vault-guard is **not** a history miner. It targets fast working-tree checks (the
 
 For credentials in Git history use **[Gitleaks](https://github.com/gitleaks/gitleaks)** or **[TruffleHog](https://github.com/trufflesecurity/trufflehog)** alongside vault-guard. They are complementary, not competing.
 
-Each release is compared with the previous one on up to eleven public repositories (`bench/real-repos/`), with every changed finding checked by hand. That is a regression check, not an accuracy score.
+Since 1.10.0, each release that changed the scanner has been compared with the previous one on four to eleven public repositories, with every changed finding checked by hand, and the 1.12.1 patch was checked for drift on three (`bench/real-repos/`). That is a regression check, not an accuracy score.
 
 ---
 
@@ -397,7 +397,7 @@ jobs:
           # Required on pull requests: pull-request mode reads the config and
           # the baseline from the base branch, which a shallow clone does not have.
           fetch-depth: 0
-      - uses: vaultcompasshq/vault-guard@v1.12.1
+      - uses: vaultcompasshq/vault-guard@v1.13.0
         id: vault-guard
         with:
           path: .
@@ -414,7 +414,7 @@ jobs:
           sarif_file: ${{ steps.vault-guard.outputs.results-file }}
 ```
 
-The uploader is pinned to a commit rather than to `v3`, because it runs in your
+The uploader is pinned to a commit rather than to a tag, because it runs in your
 repository with your `security-events: write`. `vault-guard init` scaffolds this
 same workflow, permissions and pin included.
 
@@ -424,8 +424,8 @@ then decides the scanner, and there is one pin to bump instead of two that can
 disagree.
 
 **The Action tag and the scanner version are separate numbers, and they do not
-have to match.** `vaultcompasshq/vault-guard@v1.12.1` installs
-`@vaultcompass/vault-guard@1.12.1` -- this is a package release, so the two move
+have to match.** `vaultcompasshq/vault-guard@v1.13.0` installs
+`@vaultcompass/vault-guard@1.13.0` -- this is a package release, so the two move
 together. They are still allowed to come apart: `vaultcompasshq/vault-guard@v1.7.4`
 installed `@vaultcompass/vault-guard@1.7.0`, because that release changed the
 Action and nothing in the scanner, so there was no new scanner to publish. Read
@@ -490,8 +490,13 @@ What changes in that mode:
   the ref with `git show`. Nothing is checked out and nothing is written.
 - A control input the head changed is printed as a proposal and **not applied**:
   `config changed in this pull request (2 patterns added to ignore, fail_on
-  lowered)`. A control input that exists only in the head is a proposal too, and
-  the run uses the defaults it would have used with no config at all.
+  lowered)`. The parenthesis names every top-level config setting the head
+  changed, including `entropy_threshold`. A control input that exists only in
+  the head is a proposal too, and the run uses the defaults it would have used
+  with no config at all. Any other `.vault-guard.json`,
+  `.vault-guard.local.json` or baseline file the head added or changed, at any
+  depth, is listed by path as `other control files changed in this pull
+  request`: this run never reads it, but a scan from another directory would.
 - The file set is the **HEAD tree** (`git ls-tree -r HEAD`), so a `.gitignore`
   added by the pull request cannot hide a file that is already committed, and
   `git rm --cached` cannot either. Untracked and merely-staged files are **not**

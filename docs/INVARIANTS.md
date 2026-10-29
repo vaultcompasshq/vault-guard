@@ -312,7 +312,7 @@ accepted whatever its rules turn out to be.
 Four properties, each load-bearing:
 
 - `VG_TAG_SCANNER_*` is a SEPARATE constant from `VG_MIN_*`. They hold different
-  numbers (`VG_MIN` is 1.7.0 and `VG_TAG_SCANNER` is 1.12.1 in `action.yml`; they
+  numbers (`VG_MIN` is 1.7.0 and `VG_TAG_SCANNER` is 1.13.0 in `action.yml`; they
   were equal when this entry was written, and the claim that they stay equal is
   false) and mean different things: the floor is the oldest scanner that
   understands this tag's flags, this is the tested scanner the tag ships. One
@@ -365,8 +365,8 @@ else.
   safety: a push to an UNPROTECTED feature branch runs that branch's own
   workflow file, written by the same author, with `GITHUB_BASE_REF` empty, so it
   is as author-controlled as a pull request and the rule does not cover it.
-- It costs consumers something now. The tag scanner is 1.12.1 and older
-  versions are published, so a `version:` input of 1.7.x, 1.8.x, 1.9.x, 1.10.0, 1.11.0 or 1.12.0 is refused on
+- It costs consumers something now. The tag scanner is 1.13.0 and older
+  versions are published, so a `version:` input of 1.7.x, 1.8.x, 1.9.x, 1.10.0, 1.11.0, 1.12.0 or 1.12.1 is refused on
   every pull request (and, per the fork bullet above, on forks too). The entry
   once said it cost nothing; that stopped being true when 1.8.0 shipped.
 
@@ -1165,6 +1165,46 @@ so the head's attributes cannot change what was scanned.
 a proposal`, `F3: a nested .gitattributes change is reported`, `U13: a
 symlinked .gitattributes at the head is reported as a shape change`, `U13:
 an attributes proposal does not change the exit code`).
+
+## Every head-side control change the base-rules run ignores is named
+
+Under `--trust-base` the config proposal line names every top-level config
+key whose value differs between the base and the head: `ignore`, `fail_on`
+and `extra_patterns` with a count or a direction in both directions,
+`severity_overrides` as added, removed, lowered (toward `off`), raised or
+changed per rule id, `entropy_threshold` with both values (or as not a
+number at the head, with the value the base rules use),
+`extra_patterns_unsafe` turned on or off, any of them as `<key> changed` when no specific phrase
+fits, and unrecognised keys as a count (their names are head-controlled text
+and are never echoed). When the head config is a different file from the
+base one it names both paths. Separately, every `.vault-guard.json`,
+`.vault-guard.local.json` and `.vault-guard.baseline.json` at any depth that
+the head added, removed, modified or retyped, other than the config and
+baseline the run compared, is reported as `other control files changed in
+this pull request` with up to three paths and a count (audit 2026-10-27 NB2:
+a raised `entropy_threshold`, a shadowed local config and a nested config
+were all ignored, correctly, and none was named). An echoed path holding a
+C0 or C1 control, DEL or a bidi control is printed JSON-quoted, with those
+characters as \u escapes. None of this changes the exit code. The phrases
+are a reading aid, not a diff: they say which keys moved and roughly how,
+not every value, and reordering a key's entries is reported as a change.
+Not covered: the baseline line counts fingerprints added and removed, so a
+raised entry `count` or a duplicate entry for an existing fingerprint shows
+as `baseline changed in this pull request` with no parenthetical.
+
+**Enforced by:** `trust-base.ts` (`summariseConfigChange`,
+`keyChangePhrases`, `controlFileChanges`); core `trust-base.test.ts`
+(`names a raised entropy_threshold with both values`, `names
+extra_patterns_unsafe being turned on`, `says which way a changed severity
+override moved`, `says an entropy_threshold that is not a number is not a
+number, not a move to the default`, `escapes C1 control and bidi characters
+in an echoed path`, `names a changed extra pattern whose
+count did not move`, `counts unrecognised top-level keys without echoing
+their names`, `names the path when the head config is a different file from
+the base one`, `lists a head-added nested config and a nested baseline by
+path`, `reproduces the audit case: every lever named, none applied`); CLI
+`trust-base.test.ts` (`audit 2026-10-27 NB2: entropy_threshold and local and
+nested configs are named, none applied`).
 
 ## Control files on disk are never read or written through a link
 
