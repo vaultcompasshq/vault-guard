@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-10-28
+
+A minor release. This is a security release that closes gaps found in the
+2026-10-27 and 2026-10-28 audits.
+
 ### Changed
 
 - Under --trust-base, the config proposal line now names every top-level
