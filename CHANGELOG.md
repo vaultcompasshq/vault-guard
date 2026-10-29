@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Under --trust-base, the config proposal line now names every top-level
+  setting the head changed. It used to name only added ignore patterns, a
+  lowered fail_on, added severity overrides and added extra patterns, so a
+  head that raised entropy_threshold printed a summary a reviewer would read
+  as complete. It now also names entropy_threshold (with both values),
+  extra_patterns_unsafe, removals and a raised fail_on, says whether a
+  changed severity override was lowered or raised, says when the head's
+  entropy_threshold is not a number, falls back to naming a key as changed,
+  counts unrecognised keys without echoing them, and names both paths when
+  the head config is a different file from the base one.
+  None of this was ever applied; the change is in what the report shows.
+  Found by an independent audit on 2026-10-27.
+- Under --trust-base, every other .vault-guard.json, .vault-guard.local.json
+  or .vault-guard.baseline.json the head added, removed, modified or retyped,
+  at any depth (a local config the committed one shadows, a nested config or
+  baseline), is now reported as "other control files changed in this pull
+  request" with up to three paths. It never changes the exit code.
+- Paths in --trust-base proposal lines are now quoted with C1 control and
+  bidi characters written as escapes, not only C0 controls, so a directory
+  name cannot reorder or hide part of the line.
+
 ## [1.12.1] - 2026-10-18
 
 A patch release.

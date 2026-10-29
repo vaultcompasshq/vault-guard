@@ -39,8 +39,9 @@ const path = require('path');
 const ARGS = process.argv.slice(2);
 const DESIGN_1110 = ARGS[0] === '--design-2026-10-17';
 const DESIGN_DATA = ARGS[0] === '--design-2026-10-17-data-files';
-const [benchDir, outJson, cli191, cliAdc, cliBranch] = DESIGN_1110 || DESIGN_DATA ? [] : ARGS;
-if (!DESIGN_1110 && !DESIGN_DATA && !cliBranch) {
+const DRIFT = ARGS[0] === '--release-drift';
+const [benchDir, outJson, cli191, cliAdc, cliBranch] = DESIGN_1110 || DESIGN_DATA || DRIFT ? [] : ARGS;
+if (!DESIGN_1110 && !DESIGN_DATA && !DRIFT && !cliBranch) {
   process.stderr.write('usage: run.cjs <benchDir> <outJson> <cli-1.9.1> <cli-adc39e5> <cli-branch>\n');
   process.stderr.write('   or: run.cjs --design-2026-10-17 <benchDir> <outJson> <cli-1.10.0> <cli-branch>\n');
   process.stderr.write('   or: run.cjs --design-2026-10-17-data-files <benchDir> <outJson> <cli-1.11.0> <cli-branch>\n');
@@ -1034,7 +1035,125 @@ async function mainData(args) {
   process.stderr.write(`${JSON.stringify(out.release_blocker_summary, null, 2)}\n`);
 }
 
-if (DESIGN_DATA) {
+// ---------------------------------------------------------------------------
+// Release drift (a release that is not meant to change detection)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every finding one build has and the other does not, keyed by rule, file,
+ * line, offset, severity, source and both fingerprints, plus the run counts
+ * that should not move. For a release whose design does not touch detection
+ * the expected result is no difference at all, so nothing is "explained".
+ */
+function checkDrift(old, br) {
+  const k = f => [f.rule, f.file, f.line, f.offset, f.severity, f.source, f.fingerprint, f.content_fingerprint].join('|');
+  const pool = new Map();
+  for (const f of old.findings) pool.set(k(f), (pool.get(k(f)) || 0) + 1);
+  const added = [];
+  for (const f of br.findings) {
+    const n = pool.get(k(f)) || 0;
+    if (n > 0) pool.set(k(f), n - 1);
+    else added.push(tuple(f));
+  }
+  const lost = old.findings.filter(f => {
+    const n = pool.get(k(f)) || 0;
+    if (n > 0) {
+      pool.set(k(f), n - 1);
+      return true;
+    }
+    return false;
+  }).map(tuple);
+  return {
+    findings_lost: lost,
+    findings_added: added,
+    exit_code_equal: old.exit_code === br.exit_code,
+    files_scanned_equal: old.files_scanned === br.files_scanned,
+    blocking_equal: old.blocking_matches === br.blocking_matches,
+    demoted_equal: old.demoted_matches === br.demoted_matches,
+    groups_equal: old.match_groups === br.match_groups,
+    unscannable_equal: old.unscannable_files === br.unscannable_files,
+  };
+}
+
+/**
+ * `--release-drift <benchDir> <outJson> <old-label> <cli-old> <cli-branch> <name=owner/repo>...`
+ *
+ * Each named clone sits in benchDir under its name, prepared as for the other
+ * modes (depth 1, no origin, the marker committed on vg-bench). Plain and
+ * --trust-base, both builds interleaved, three runs each.
+ */
+async function mainDrift(args) {
+  const [dir, outFile, oldLabel, cliOld, cliBr, ...named] = args;
+  if (!cliBr || named.length === 0) {
+    process.stderr.write('usage: run.cjs --release-drift <benchDir> <outJson> <old-label> <cli-old> <cli-branch> <name=owner/repo>...\n');
+    process.exit(2);
+  }
+  const builds = { [oldLabel]: cliOld, branch: cliBr };
+  const out = {
+    generated_by: 'bench/real-repos/run.cjs --release-drift',
+    machine: {
+      platform: os.platform(),
+      arch: os.arch(),
+      cpus: os.cpus().length,
+      cpu: os.cpus()[0].model,
+      node: process.version,
+      git: git(dir, ['--version']).trim(),
+      load_average_at_start: os.loadavg().map(x => Math.round(x * 100) / 100),
+    },
+    runs_per_measurement: RUNS,
+    // Labels only; the CLI paths are machine-specific and are not recorded. Fill in by hand.
+    builds: { [oldLabel]: '', branch: '' },
+    method_notes: [
+      'Clones are depth 1 with no origin remote, each at the commit named as clone_head.',
+      'Plain scans run from the bench directory with the clone passed as an absolute path; --trust-base runs from inside the clone against clone_head. No code from a clone is executed.',
+      'The builds are interleaved run by run, three runs each, median wall time.',
+      'Findings are compared keyed by rule, file, line, offset, severity, source and both fingerprints. No difference is explained away: a release that does not change detection should show none.',
+    ],
+    finding_fields: ['rule', 'file', 'line', 'offset', 'severity', 'source', 'fingerprint', 'content_fingerprint', 'demotion', 'group_id'],
+    repositories: {},
+  };
+  for (const spec of named) {
+    const [name, slug] = spec.split('=');
+    const repo = path.join(dir, name);
+    if (!fs.existsSync(path.join(repo, 'vg-bench-marker.txt'))) {
+      fs.writeFileSync(path.join(repo, 'vg-bench-marker.txt'), 'benchmark marker\n');
+    }
+    const { head, base } = prepare(repo);
+    const plain = runPairData(builds, dir, [repo]);
+    const trust = runPairData(builds, repo, ['.', '--trust-base', base]);
+    out.repositories[name] = {
+      repository: slug,
+      clone_head: base,
+      bench_branch_head: head,
+      checks: { plain: checkDrift(plain[oldLabel], plain.branch), trust_base: checkDrift(trust[oldLabel], trust.branch) },
+      wall_time_ratio_plain: Math.round((plain.branch.wall_ms_median / plain[oldLabel].wall_ms_median) * 100) / 100,
+      plain: {
+        [oldLabel]: { ...strip(plain[oldLabel]), groups: plain[oldLabel].groups.length },
+        branch: { ...strip(plain.branch), groups: plain.branch.groups.length, ...compactFindings(plain.branch.findings) },
+      },
+      trust_base: {
+        [oldLabel]: { ...strip(trust[oldLabel]), groups: trust[oldLabel].groups.length },
+        branch: { ...strip(trust.branch), groups: trust.branch.groups.length },
+      },
+    };
+    process.stderr.write(`done ${name}\n`);
+  }
+  out.machine.load_average_at_end = os.loadavg().map(x => Math.round(x * 100) / 100);
+  const checks = Object.values(out.repositories).flatMap(r => [r.checks.plain, r.checks.trust_base]);
+  out.drift_summary = {
+    any_finding_added_or_lost: checks.some(c => c.findings_lost.length > 0 || c.findings_added.length > 0),
+    any_count_changed: checks.some(c => !c.exit_code_equal || !c.files_scanned_equal || !c.blocking_equal || !c.demoted_equal || !c.groups_equal || !c.unscannable_equal),
+  };
+  writeRecord(outFile, out);
+  process.stderr.write(`${JSON.stringify(out.drift_summary, null, 2)}\n`);
+}
+
+if (DRIFT) {
+  mainDrift(ARGS.slice(1)).catch(e => {
+    process.stderr.write(`${e && e.stack ? e.stack : String(e)}\n`);
+    process.exit(1);
+  });
+} else if (DESIGN_DATA) {
   mainData(ARGS.slice(1)).catch(e => {
     process.stderr.write(`${e && e.stack ? e.stack : String(e)}\n`);
     process.exit(1);

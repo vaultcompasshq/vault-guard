@@ -24,6 +24,26 @@ Unlike the entropy gate this one applies to vendor-anchored patterns too, which 
 
 That safety argument holds only for machine-issued credentials. For anything a person types, a run is a WEAK secret rather than a fake one, and suppressing it destroys the finding instead of demoting it. Rules whose value is human-chosen are therefore exempt from this check and are gated by entropy alone: `password-in-code`, and the four connection-string rules (`postgresql-url`, `mysql-url`, `mongodb-url`, `redis-url`), whose secret is the password component of the DSN. `password-in-code` matters most here, because its minimum capture is 12 characters, the same as this check's minimum value length, so an ordinary weak password sat exactly on the boundary.
 
+## Connection strings that are not reported
+
+The four connection-string rules skip a URL that looks like a sample rather than a deployment. `packages/core/src/utils/placeholder.ts` holds two marker lists, and they apply to different parts of the URL:
+
+- the STANDARD list (`example`, `dummy`, `placeholder`, `changeme`, `redacted`, `your_token`, `replace_me` and the rest of `STANDARD_MARKERS`) is checked against the WHOLE URL, so a marker in the user, password, host, database name or query skips it;
+- the AGGRESSIVE list (`test`, `secret`, `password`, `demo`, `sample`, `fake`, `mock`, `qwerty`, `your_` and the rest of `AGGRESSIVE_MARKERS`) is checked against the PASSWORD only, as a substring, case-insensitive. A marker in the user, host or database name does not skip the URL.
+
+A URL is also skipped when:
+
+- its host is local or reserved: `localhost`, `127.0.0.1`, `0.0.0.0`, `::1`, `host.docker.internal`, a host ending in `.local`, `.localhost`, `.test`, `.example` or `.invalid`, or a bare host with no dot (a docker-compose service name such as `db`);
+- its password is a known default (`postgres`, `admin`, `root` and the rest of `PLACEHOLDER_PASSWORDS`), the same as the user name, an all-caps name such as `DBPASS`, one starting with `$`, `<` or `{`, or eight or more characters drawn from at most two distinct characters.
+
+Examples, each on a host that is not local (`db.internal.acme-corp.net`) and with a password that has none of the above, unless the example says otherwise:
+
+- `postgres://admin:<password>@db.internal.example.net:5432/prod`: skipped, `example` (standard) in the host. The same holds for a database named `example_db` on the acme-corp host, a user named `dummy`, or a database named `prod_your_tokens`.
+- A password such as `Xk9vSecretLmR7wTp4N` or `Xk9vQz2Lm7Test4N` on the acme-corp host: skipped, because the password contains `secret` or `test` (aggressive).
+- User `testuser` and database `demo` on the acme-corp host, with a password that has no marker: reported. The aggressive list does not look outside the password.
+
+This is a known gap, not a design goal: a real URL whose user, host, database name or query contains a standard marker, or whose password contains any marker from either list, is not reported. To see the rules fire while testing, use a non-local host with no marker in it and a random password with no marker in it.
+
 ## Patterns
 
 | ID | Severity | Min entropy | Regex flags | Regex source |
