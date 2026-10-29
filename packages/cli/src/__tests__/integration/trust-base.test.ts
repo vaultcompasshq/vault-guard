@@ -176,6 +176,25 @@ describe('pull-request mode (--trust-base)', () => {
       expect(r.log).toContain('config changed in this pull request');
     });
 
+    it('audit 2026-10-27 NB2: entropy_threshold and local and nested configs are named, none applied', async () => {
+      seedBase();
+      addSecret();
+      write(
+        '.vault-guard.json',
+        JSON.stringify({ fail_on: 'medium', entropy_threshold: 7.9 }),
+      );
+      write('.vault-guard.local.json', JSON.stringify({ ignore: { paths: ['**'] } }));
+      write('src/.vault-guard.json', JSON.stringify({ ignore: { paths: ['**'] } }));
+      commit('feature');
+      const r = await capture(() => scanCommand('.', 'json', false, undefined, 'base-snapshot'));
+      expect(r.code).toBe(1);
+      const doc = JSON.parse(r.stdout) as { trustBase: { proposals: string[] } };
+      expect(doc.trustBase.proposals).toEqual([
+        'config changed in this pull request (entropy_threshold raised from 3.5 to 7.9)',
+        'other control files changed in this pull request (2 files: .vault-guard.local.json, src/.vault-guard.json)',
+      ]);
+    });
+
     it('a baseline rewritten to carry the new finding', async () => {
       seedBase();
       addSecret();

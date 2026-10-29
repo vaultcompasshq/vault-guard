@@ -191,3 +191,37 @@ consistency, not correctness. The independent evidence is
 `demotion_explanations` (each demoted run decoded outside vault-guard with
 `base64 -d` and identified with `file -`) and `group_explanations` (each
 grouped file read by hand), added after reading the files.
+
+## 1.12.1: drift check for a release that did not change detection
+
+`2026-10-28-1.12.1.json` compares the published 1.12.0 with 1.12.1 built
+from source (plus a trust-base report change that does not touch
+detection) on three public repositories: Yelp/detect-secrets and
+gitleaks/gitleaks at the commits the 1.12.0 run used, and urllib3/urllib3 at
+its 1.12.0 commit. 1.12.1 changed the pull-request file set and the
+fingerprint keying for linked paths; `git diff v1.12.0 v1.12.1` over the
+scanner, placeholder, entropy and data-shape code is empty. So the
+expected result is no difference at all, and `--release-drift` explains
+nothing away: it lists every finding one build has and the other does not,
+keyed by rule, file, line, offset, severity, source and both fingerprints,
+and compares exit code, files scanned, blocking, demoted, grouped and
+unscannable counts, plain and `--trust-base`.
+
+To regenerate, with both CLIs built or installed and each clone prepared as
+above:
+
+```
+node bench/real-repos/run.cjs --release-drift <dir-with-the-clones> \
+  bench/real-repos/2026-10-28-1.12.1.json 1.12.0 <1.12.0 cli-entry.js> <branch cli-entry.js> \
+  detect-secrets=Yelp/detect-secrets gitleaks=gitleaks/gitleaks urllib3=urllib3/urllib3
+```
+
+The `builds` labels and `hand_checks` are filled in by hand after the run.
+
+In the recorded run nothing moved: no finding added or lost and every
+count equal in both modes on all three, and the plain-scan counts equal the
+1.12.0 record's (detect-secrets 213 files, 73 findings, 38 blocking;
+gitleaks 450, 414, 389; urllib3 170, 2, 2). Every finding sits in test data,
+test sources, a committed baseline, a rule config or a test server's
+certificates, as `hand_checks.false_positives` says. Wall time is not a
+measurement here: the load average was 21 to 34 on 8 cores throughout.

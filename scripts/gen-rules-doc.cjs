@@ -113,6 +113,67 @@ function main() {
       'exactly on the boundary.',
   );
   lines.push('');
+  // Written by hand from isNonSecretConnectionString and isPlaceholderSecret in
+  // packages/core/src/utils/placeholder.ts; update it when those change.
+  lines.push('## Connection strings that are not reported');
+  lines.push('');
+  lines.push(
+    'The four connection-string rules skip a URL that looks like a sample rather than a deployment. ' +
+      '`packages/core/src/utils/placeholder.ts` holds two marker lists, and they apply to different ' +
+      'parts of the URL:',
+  );
+  lines.push('');
+  lines.push(
+    '- the STANDARD list (`example`, `dummy`, `placeholder`, `changeme`, `redacted`, `your_token`, ' +
+      '`replace_me` and the rest of `STANDARD_MARKERS`) is checked against the WHOLE URL, so a marker ' +
+      'in the user, password, host, database name or query skips it;',
+  );
+  lines.push(
+    '- the AGGRESSIVE list (`test`, `secret`, `password`, `demo`, `sample`, `fake`, `mock`, `qwerty`, ' +
+      '`your_` and the rest of `AGGRESSIVE_MARKERS`) is checked against the PASSWORD only, as a ' +
+      'substring, case-insensitive. A marker in the user, host or database name does not skip the URL.',
+  );
+  lines.push('');
+  lines.push('A URL is also skipped when:');
+  lines.push('');
+  lines.push(
+    '- its host is local or reserved: `localhost`, `127.0.0.1`, `0.0.0.0`, `::1`, ' +
+      '`host.docker.internal`, a host ending in `.local`, `.localhost`, `.test`, `.example` or ' +
+      '`.invalid`, or a bare host with no dot (a docker-compose service name such as `db`);',
+  );
+  lines.push(
+    '- its password is a known default (`postgres`, `admin`, `root` and the rest of ' +
+      '`PLACEHOLDER_PASSWORDS`), the same as the user name, an all-caps name such as `DBPASS`, one ' +
+      'starting with `$`, `<` or `{`, or eight or more characters drawn from at most two distinct ' +
+      'characters.',
+  );
+  lines.push('');
+  lines.push(
+    'Examples, each on a host that is not local (`db.internal.acme-corp.net`) and with a password ' +
+      'that has none of the above, unless the example says otherwise:',
+  );
+  lines.push('');
+  lines.push(
+    '- `postgres://admin:<password>@db.internal.example.net:5432/prod`: skipped, `example` (standard) ' +
+      'in the host. The same holds for a database named `example_db` on the acme-corp host, a user ' +
+      'named `dummy`, or a database named `prod_your_tokens`.',
+  );
+  lines.push(
+    '- A password such as `Xk9vSecretLmR7wTp4N` or `Xk9vQz2Lm7Test4N` on the acme-corp host: skipped, ' +
+      'because the password contains `secret` or `test` (aggressive).',
+  );
+  lines.push(
+    '- User `testuser` and database `demo` on the acme-corp host, with a password that has no marker: ' +
+      'reported. The aggressive list does not look outside the password.',
+  );
+  lines.push('');
+  lines.push(
+    'This is a known gap, not a design goal: a real URL whose user, host, database name or query ' +
+      'contains a standard marker, or whose password contains any marker from either list, is not ' +
+      'reported. To see the rules fire while testing, use a non-local host with no marker in it and a ' +
+      'random password with no marker in it.',
+  );
+  lines.push('');
   lines.push('## Patterns');
   lines.push('');
   lines.push('| ID | Severity | Min entropy | Regex flags | Regex source |');

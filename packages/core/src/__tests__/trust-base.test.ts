@@ -10,6 +10,7 @@ import {
   BASELINE_PROPOSAL_LINE,
   CONFIG_ADDED_LINE,
   BASELINE_ADDED_LINE,
+  OTHER_CONTROL_FILES_LINE,
 } from '../trust-base';
 import { ConfigError } from '../errors';
 
@@ -279,6 +280,230 @@ describe('loadTrustedControls', () => {
       const controls = loadTrustedControls(root, 'base-snapshot');
       expect(controls.configShapeChange).toBe('mode');
       expect(controls.proposals).toContain('config file mode changed in this pull request');
+    });
+  });
+
+  /**
+   * Audit 2026-10-27 NB2: the summary named four levers and was silent on the
+   * rest, so a head that raised entropy_threshold, or added a local or nested
+   * config the base run never reads, printed a proposal line that a reviewer
+   * would read as complete. Every top-level setting that differs is now named,
+   * and every other control file the head touched is listed by path.
+   */
+  describe('the proposal summary names every head change the run ignores', () => {
+    function configLine(head: unknown, base: unknown = { fail_on: 'medium' }): string {
+      seed(root, base);
+      write(root, '.vault-guard.json', JSON.stringify(head));
+      commit(root, 'feature');
+      const controls = loadTrustedControls(root, 'base-snapshot');
+      expect(controls.config).toEqual(base);
+      const line = controls.proposals.find(p => p.startsWith(CONFIG_PROPOSAL_LINE));
+      expect(line).toBeDefined();
+      return line as string;
+    }
+
+    it('names a raised entropy_threshold with both values', () => {
+      expect(configLine({ fail_on: 'medium', entropy_threshold: 7.9 })).toContain(
+        'entropy_threshold raised from 3.5 to 7.9',
+      );
+    });
+
+    it('names a lowered entropy_threshold too', () => {
+      expect(
+        configLine({ fail_on: 'medium', entropy_threshold: 2 }, { fail_on: 'medium', entropy_threshold: 4 }),
+      ).toContain('entropy_threshold lowered from 4 to 2');
+    });
+
+    it('names extra_patterns_unsafe being turned on', () => {
+      expect(configLine({ fail_on: 'medium', extra_patterns_unsafe: true })).toContain(
+        'extra_patterns_unsafe turned on',
+      );
+    });
+
+    it('names removals, not only additions', () => {
+      const line = configLine(
+        { fail_on: 'medium' },
+        {
+          fail_on: 'medium',
+          ignore: { paths: ['a/**'] },
+          severity_overrides: { anthropic: 'critical' },
+          extra_patterns: [{ id: 'x', regex: 'xyz[0-9]{8}', severity: 'high' }],
+        },
+      );
+      expect(line).toContain('1 pattern removed from ignore');
+      expect(line).toContain('1 severity override removed');
+      expect(line).toContain('1 extra pattern removed');
+    });
+
+    it('counts an ignore entry moved between paths and patterns as added', () => {
+      expect(
+        configLine(
+          { fail_on: 'medium', ignore: { patterns: ['a/**'] } },
+          { fail_on: 'medium', ignore: { paths: ['a/**'] } },
+        ),
+      ).toContain('1 pattern added to ignore');
+    });
+
+    it('names fail_on raised, so a changed fail_on is never silent', () => {
+      expect(configLine({ fail_on: 'low' })).toContain('fail_on raised');
+    });
+
+    it('names a changed extra pattern whose count did not move', () => {
+      expect(
+        configLine(
+          { fail_on: 'medium', extra_patterns: [{ id: 'x', regex: 'abc[0-9]{8}', severity: 'high' }] },
+          { fail_on: 'medium', extra_patterns: [{ id: 'x', regex: 'xyz[0-9]{8}', severity: 'high' }] },
+        ),
+      ).toContain('extra_patterns changed');
+    });
+
+    it('says which way a changed severity override moved', () => {
+      const lowered = configLine(
+        { fail_on: 'medium', severity_overrides: { anthropic: 'off', github: 'low' } },
+        { fail_on: 'medium', severity_overrides: { anthropic: 'critical', github: 'high' } },
+      );
+      expect(lowered).toContain('2 severity overrides lowered');
+      expect(lowered).not.toContain('added');
+    });
+
+    it('says raised for a stricter severity override', () => {
+      const raised = configLine(
+        { fail_on: 'medium', severity_overrides: { anthropic: 'critical' } },
+        { fail_on: 'medium', severity_overrides: { anthropic: 'off' } },
+      );
+      expect(raised).toContain('1 severity override raised');
+      expect(raised).not.toContain('added');
+    });
+
+    it('says an entropy_threshold that is not a number is not a number, not a move to the default', () => {
+      const line = configLine(
+        { fail_on: 'medium', entropy_threshold: '4.5' },
+        { fail_on: 'medium', entropy_threshold: 4.5 },
+      );
+      expect(line).toContain(
+        'entropy_threshold changed (not a number at the head; the base rules use 4.5)',
+      );
+      expect(line).not.toContain('lowered');
+    });
+
+    it('escapes C1 control and bidi characters in an echoed path', () => {
+      seed(root);
+      const bidi = 'a‮b/.vault-guard.json';
+      const c1 = 'c\u0085d/.vault-guard.local.json';
+      write(root, bidi, JSON.stringify({ fail_on: 'none' }));
+      write(root, c1, JSON.stringify({ fail_on: 'none' }));
+      commit(root, 'feature');
+      const line = loadTrustedControls(root, 'base-snapshot').proposals[0];
+      expect(line).toBe(
+        `${OTHER_CONTROL_FILES_LINE} (2 files: "a\\u202eb/.vault-guard.json", "c\\u0085d/.vault-guard.local.json")`,
+      );
+      expect(line).not.toMatch(/[\u0080-\u009f‪-‮⁦-⁩]/);
+    });
+
+    it('counts unrecognised top-level keys without echoing their names', () => {
+      const line = configLine({ fail_on: 'medium', 'evil\nkey': 1 });
+      expect(line).toContain('1 unrecognised top-level key changed');
+      expect(line).not.toContain('evil');
+    });
+
+    it('says so when the head config is not a JSON object', () => {
+      seed(root);
+      write(root, '.vault-guard.json', '{ not json');
+      commit(root, 'feature');
+      const line = loadTrustedControls(root, 'base-snapshot').proposals.find(p =>
+        p.startsWith(CONFIG_PROPOSAL_LINE),
+      );
+      expect(line).toContain('not a JSON object at the head');
+    });
+
+    it('names the path when the head config is a different file from the base one', () => {
+      seed(root);
+      write(root, 'src/.vault-guard.json', JSON.stringify({ fail_on: 'medium' }));
+      commit(root, 'feature');
+      const controls = loadTrustedControls(path.join(root, 'src'), 'base-snapshot');
+      expect(controls.config).toEqual({ fail_on: 'medium' });
+      const line = controls.proposals.find(p => p.startsWith(CONFIG_PROPOSAL_LINE));
+      expect(line).toBe(
+        `${CONFIG_PROPOSAL_LINE} (read from src/.vault-guard.json at the head instead of .vault-guard.json)`,
+      );
+    });
+
+    it('lists a head-added .vault-guard.local.json that the committed config shadows', () => {
+      seed(root);
+      write(root, '.vault-guard.local.json', JSON.stringify({ ignore: { paths: ['**'] } }));
+      commit(root, 'feature');
+      const controls = loadTrustedControls(root, 'base-snapshot');
+      expect(controls.configChanged).toBe(false);
+      expect(controls.proposals).toEqual([
+        `${OTHER_CONTROL_FILES_LINE} (1 file: .vault-guard.local.json)`,
+      ]);
+    });
+
+    it('lists a head-added nested config and a nested baseline by path', () => {
+      seed(root);
+      write(root, 'src/.vault-guard.json', JSON.stringify({ ignore: { paths: ['**'] } }));
+      write(root, 'lib/.vault-guard.baseline.json', JSON.stringify({ version: 1, fingerprints: ['z'] }));
+      commit(root, 'feature');
+      const controls = loadTrustedControls(root, 'base-snapshot');
+      expect(controls.proposals).toEqual([
+        `${OTHER_CONTROL_FILES_LINE} (2 files: lib/.vault-guard.baseline.json, src/.vault-guard.json)`,
+      ]);
+    });
+
+    it('lists a nested config the head modified or removed, not only added', () => {
+      write(root, 'a/.vault-guard.json', JSON.stringify({ fail_on: 'medium' }));
+      write(root, 'b/.vault-guard.local.json', JSON.stringify({ fail_on: 'medium' }));
+      seed(root);
+      write(root, 'a/.vault-guard.json', JSON.stringify({ fail_on: 'none' }));
+      fs.rmSync(path.join(root, 'b/.vault-guard.local.json'));
+      commit(root, 'feature');
+      expect(loadTrustedControls(root, 'base-snapshot').proposals).toEqual([
+        `${OTHER_CONTROL_FILES_LINE} (2 files: a/.vault-guard.json, b/.vault-guard.local.json)`,
+      ]);
+    });
+
+    it('names the first three and counts the rest', () => {
+      seed(root);
+      for (const d of ['a', 'b', 'c', 'd', 'e']) {
+        write(root, `${d}/.vault-guard.json`, JSON.stringify({ fail_on: 'none' }));
+      }
+      commit(root, 'feature');
+      expect(loadTrustedControls(root, 'base-snapshot').proposals).toEqual([
+        `${OTHER_CONTROL_FILES_LINE} (5 files: a/.vault-guard.json, b/.vault-guard.json, c/.vault-guard.json, and 2 more)`,
+      ]);
+    });
+
+    it('does not list the config or baseline that already has its own line', () => {
+      seed(root);
+      write(root, '.vault-guard.json', JSON.stringify({ fail_on: 'none' }));
+      write(root, '.vault-guard.baseline.json', JSON.stringify({ version: 1, fingerprints: ['aaa', 'b'] }));
+      commit(root, 'feature');
+      const proposals = loadTrustedControls(root, 'base-snapshot').proposals;
+      expect(proposals.some(p => p.startsWith(OTHER_CONTROL_FILES_LINE))).toBe(false);
+    });
+
+    it('reproduces the audit case: every lever named, none applied', () => {
+      seed(root);
+      write(
+        root,
+        '.vault-guard.json',
+        JSON.stringify({
+          fail_on: 'none',
+          ignore: { paths: ['src/**'] },
+          severity_overrides: { anthropic: 'off' },
+          entropy_threshold: 7.9,
+        }),
+      );
+      write(root, '.vault-guard.local.json', JSON.stringify({ ignore: { paths: ['**'] } }));
+      write(root, 'src/.vault-guard.json', JSON.stringify({ ignore: { paths: ['**'] } }));
+      commit(root, 'feature');
+      const controls = loadTrustedControls(root, 'base-snapshot');
+      expect(controls.config).toEqual({ fail_on: 'medium' });
+      expect(controls.proposals).toEqual([
+        `${CONFIG_PROPOSAL_LINE} (1 pattern added to ignore, fail_on lowered, ` +
+          '1 severity override added, entropy_threshold raised from 3.5 to 7.9)',
+        `${OTHER_CONTROL_FILES_LINE} (2 files: .vault-guard.local.json, src/.vault-guard.json)`,
+      ]);
     });
   });
 

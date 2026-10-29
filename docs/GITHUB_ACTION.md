@@ -341,7 +341,7 @@ of its own:
         id: vg
         with:
           format: sarif
-      # Pinned to a commit, not to `v3`: this runs in your repository with the
+      # Pinned to a commit, not to a tag: this runs in your repository with the
       # permission above. Same SHA `vault-guard init` scaffolds.
       - uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
         if: always() && steps.vg.outputs.results-file != '' && steps.vg.outputs.exit-code != '2'
