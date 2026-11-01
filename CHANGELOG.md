@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.1] - 2026-11-01
+
+A patch release. This is a security release from the 2026-11-01 cohesion
+audit: the postgres and mysql URL check now ends at the first delimiter so a
+marker later on the line cannot hide a credential, `install-hook` merges into
+a foreign hook instead of overwriting it and never takes a mention of the
+command for an installation, and the mcp `zod` floor is raised.
+
 ### Security
 
 - A postgres or mysql URL match ran to the next whitespace, so the text after
