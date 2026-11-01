@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The release workflow now sets `permissions: contents: read` at the top
+  level. `prepare` and `release` already declared their own grants;
+  `smoke-published`, which had no block, is now limited to read.
+- This repository's own `.guardrails.yaml` passes `require-frozen: false` to
+  the intent gate, since no intent contract is frozen here yet. The gate
+  stays enabled. Neither change touches a published package.
+
 ## [1.13.0] - 2026-10-28
 
 A minor release. This is a security release that closes gaps found in the
