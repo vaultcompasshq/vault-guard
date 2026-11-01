@@ -225,3 +225,20 @@ gitleaks 450, 414, 389; urllib3 170, 2, 2). Every finding sits in test data,
 test sources, a committed baseline, a rule config or a test server's
 certificates, as `hand_checks.false_positives` says. Wall time is not a
 measurement here: the load average was 21 to 34 on 8 cores throughout.
+
+## 2026-11-01: two public repositories at 1.13.0
+
+`2026-11-01-1.13.0.json` records a plain scan of diegosouzapw/OmniRoute
+and safishamsi/graphify with the published 1.13.0 CLI. It is one build,
+not a comparison: this pass did not rebuild an older CLI beside it.
+
+Each repository was cloned at depth 1 at the tip of its default branch.
+The scan ran on that tree, before any later fetch of history. Three runs,
+median wall time, `--format json` and `--fail-on none`. Findings are rule,
+file, line, offset, severity, source and both fingerprints. Never the
+value. `blocking_matches` is 0 because fail-on is none; `by_severity` is
+the detection count.
+
+`hand_checks` classifies the findings above low. OmniRoute's three runs
+spread widely, and the load average was high, so the wall time is a noisy
+measurement.
