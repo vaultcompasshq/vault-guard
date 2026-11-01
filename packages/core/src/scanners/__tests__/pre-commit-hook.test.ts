@@ -5,6 +5,9 @@ import os from 'os';
 import path from 'path';
 import { execSync } from 'child_process';
 
+const GIT_IDENTITY =
+  'git -c user.name=Test -c user.email=test@example.invalid -c commit.gpgsign=false';
+
 // Drives a real commit with a stub vault-guard exiting `exitCode` on PATH,
 // and returns both whether the commit was refused and the captured output
 // -- so tests can assert the hook's own explanation actually printed, not
@@ -27,7 +30,9 @@ function driveCommitWithStub(
     let committed = true;
     let output = '';
     try {
-      execSync(`git commit -q -m "should be blocked (exit ${exitCode})"`, {
+      // The fixture carries its own identity and never signs, so the test does
+      // not depend on a global git config (CI runners have none).
+      execSync(`${GIT_IDENTITY} commit -q -m "should be blocked (exit ${exitCode})"`, {
         cwd: dir,
         env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ''}` },
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -312,19 +317,269 @@ describe('PreCommitHook', () => {
       expect(fs.readFileSync(cmdPath, 'utf-8')).toBe(foreign);
     });
 
-    it('should overwrite non-vault-guard hook', () => {
-      fs.mkdirSync(hooksDir, { recursive: true });
-      fs.writeFileSync(hookPath, '#!/bin/sh\necho "other hook"', { mode: 0o755 });
-      process.chdir(testDir);
+    describe('a foreign pre-commit hook is merged into, never overwritten', () => {
+      const FOREIGN = '#!/bin/sh\n# team hook\nnpm run lint-staged\necho "team hook ran"\n';
 
-      const result = preCommitHook.install({ manager: 'native' });
+      function writeForeign(text: string, mode = 0o755): void {
+        fs.mkdirSync(hooksDir, { recursive: true });
+        fs.writeFileSync(hookPath, text, { mode });
+        fs.chmodSync(hookPath, mode);
+      }
 
-      expect(result.success).toBe(true);
-      expect(result.message).toContain('Pre-commit hook installed');
+      it('keeps every foreign line byte for byte, adds the marked stanza, and keeps the executable bit', () => {
+        writeForeign(FOREIGN);
+        process.chdir(testDir);
 
-      const hookContent = fs.readFileSync(hookPath, 'utf-8');
-      expect(hookContent).toContain('vault-guard');
-      expect(hookContent).toContain('scan --staged');
+        const result = preCommitHook.install({ manager: 'native' });
+
+        expect(result.success).toBe(true);
+        expect(result.message).toContain('Pre-commit hook installed');
+        expect(result.message).toContain('merged into your existing hook');
+        const after = fs.readFileSync(hookPath, 'utf-8');
+        expect(after).toContain('# --- vault-guard ---');
+        expect(after).toContain('# --- end vault-guard ---');
+        expect(after).toContain('vault-guard scan --staged');
+        // Removing the stanza gives the foreign hook back exactly.
+        expect(after.replace(/# --- vault-guard ---[\s\S]*# --- end vault-guard ---\n/, '')).toBe(FOREIGN);
+        expect(fs.statSync(hookPath).mode & 0o777).toBe(0o755);
+      });
+
+      it('merges rather than adopts a foreign hook whose comment mentions vault-guard and scan --staged (NB5)', () => {
+        const text =
+          '#!/bin/sh\n# team lint hook. TODO: also run vault-guard (scan --staged) once the team agrees.\nnpm run lint-staged\n';
+        writeForeign(text);
+        process.chdir(testDir);
+
+        expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(false);
+        const result = preCommitHook.install({ manager: 'native' });
+
+        expect(result.success).toBe(true);
+        expect(result.message).not.toMatch(/already installed/i);
+        const after = fs.readFileSync(hookPath, 'utf-8');
+        expect(after).toContain('# --- vault-guard ---');
+        expect(after).toContain('npm run lint-staged');
+        expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(true);
+      });
+
+      it('leaves an own hook unchanged and says it is already installed', () => {
+        process.chdir(testDir);
+        expect(preCommitHook.install({ manager: 'native' }).success).toBe(true);
+        const first = fs.readFileSync(hookPath, 'utf-8');
+
+        const again = preCommitHook.install({ manager: 'native' });
+
+        expect(again.message).toMatch(/Hook already installed/);
+        expect(fs.readFileSync(hookPath, 'utf-8')).toBe(first);
+      });
+
+      it('writes the full script over an empty or whitespace-only hook', () => {
+        writeForeign('  \n\n');
+        process.chdir(testDir);
+
+        const result = preCommitHook.install({ manager: 'native' });
+
+        expect(result.success).toBe(true);
+        const after = fs.readFileSync(hookPath, 'utf-8');
+        expect(after).toContain('# vault-guard pre-commit (installed by @vaultcompass/vault-guard)');
+        expect(after).not.toContain('# --- vault-guard ---');
+      });
+
+      it('appends nothing the second time (idempotent)', () => {
+        writeForeign(FOREIGN);
+        process.chdir(testDir);
+        expect(preCommitHook.install({ manager: 'native' }).success).toBe(true);
+        const once = fs.readFileSync(hookPath, 'utf-8');
+
+        const twice = preCommitHook.install({ manager: 'native' });
+
+        expect(twice.message).toMatch(/Hook already installed/);
+        expect(fs.readFileSync(hookPath, 'utf-8')).toBe(once);
+      });
+
+      const WIRED_MESSAGE =
+        'The pre-commit hook already mentions vault-guard scan --staged; vault-guard cannot verify that line blocks, so its own stanza was added as well';
+
+      it('adds its own stanza to a hook that already runs vault-guard scan --staged on a live line, and says so', () => {
+        const text = '#!/bin/sh\nnpm test\nvault-guard scan --staged || exit 1\n';
+        writeForeign(text);
+        process.chdir(testDir);
+
+        const result = preCommitHook.install({ manager: 'native' });
+
+        expect(result.success).toBe(true);
+        expect(result.message).toBe(WIRED_MESSAGE);
+        const after = fs.readFileSync(hookPath, 'utf-8');
+        expect(after).toContain('# --- vault-guard ---');
+        expect(after.replace(/# --- vault-guard ---[\s\S]*# --- end vault-guard ---\n/, '')).toBe(text);
+      });
+
+      it.each([
+        ['a heredoc body', '#!/bin/sh\ncat <<EOF\nvault-guard scan --staged\nEOF\n'],
+        ['a multi-line string', "#!/bin/sh\n: '\nvault-guard scan --staged\n'\n"],
+        ['a command substitution', '#!/bin/sh\nout=$(vault-guard scan --staged)\n'],
+        ['an || true', '#!/bin/sh\nvault-guard scan --staged || true\n'],
+        ['dead code after exit', '#!/bin/sh\nexit 0\nvault-guard scan --staged\n'],
+      ])('adds its own stanza to a hook that mentions the command in %s, blocks a staged secret, and adds one stanza on a second install', (_label, text) => {
+        writeForeign(text);
+        process.chdir(testDir);
+
+        const first = preCommitHook.install({ manager: 'native' });
+        expect(first.success).toBe(true);
+        expect(first.message).toBe(WIRED_MESSAGE);
+        const once = fs.readFileSync(hookPath, 'utf-8');
+        expect(once.split('# --- vault-guard ---\n')).toHaveLength(2);
+
+        const blocked = driveCommitWithStub(testDir, 1);
+        expect(blocked.committed).toBe(false);
+        expect(blocked.output).toContain('COMMIT BLOCKED: secrets detected');
+
+        const second = preCommitHook.install({ manager: 'native' });
+        expect(second.message).toMatch(/Hook already installed/);
+        expect(fs.readFileSync(hookPath, 'utf-8')).toBe(once);
+        expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(true);
+      });
+
+      it('isInstalled is false for a hook that only mentions the command, so init calls install', () => {
+        writeForeign('#!/bin/sh\nvault-guard scan --staged\n');
+        process.chdir(testDir);
+        expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(false);
+      });
+
+      it.each([
+        ['a trailing comment', '#!/bin/sh\nnpm --version >/dev/null  # TODO: && vault-guard scan --staged once the team agrees\n'],
+        ['an echoed double-quoted string', '#!/bin/sh\necho "Reminder: run (vault-guard scan --staged) before pushing"\n'],
+      ])('merges rather than adopts a hook that mentions the command in %s, and the merged hook blocks a staged secret', (_label, text) => {
+        writeForeign(text);
+        process.chdir(testDir);
+
+        expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(false);
+        const result = preCommitHook.install({ manager: 'native' });
+
+        expect(result.success).toBe(true);
+        expect(result.message).toContain('merged into your existing hook');
+        expect(fs.readFileSync(hookPath, 'utf-8')).toContain('# --- vault-guard ---');
+        const blocked = driveCommitWithStub(testDir, 1);
+        expect(blocked.committed).toBe(false);
+        expect(blocked.output).toContain('stub vault-guard ran: scan --staged');
+      });
+
+      it('still classifies vault-guard scan --staged after && on a code line as wired (the message names it)', () => {
+        writeForeign('#!/bin/sh\nnpm test && vault-guard scan --staged  # gate\n');
+        process.chdir(testDir);
+
+        const result = preCommitHook.install({ manager: 'native' });
+
+        expect(result.message).toBe(WIRED_MESSAGE);
+      });
+
+      it('uninstall of a hook that only mentions the command refuses, and leaves it and pre-commit.cmd in place', () => {
+        const text = '#!/bin/sh\nvault-guard scan --staged\n';
+        writeForeign(text);
+        const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
+        fs.writeFileSync(
+          cmdPath,
+          '@echo off\nREM vault-guard pre-commit (installed by @vaultcompass/vault-guard)\ncall vault-guard scan --staged\n',
+        );
+        process.chdir(testDir);
+
+        const result = preCommitHook.uninstall({ manager: 'native' });
+
+        expect(result.success).toBe(false);
+        expect(fs.readFileSync(hookPath, 'utf-8')).toBe(text);
+        expect(fs.existsSync(cmdPath)).toBe(true);
+      });
+
+      it('refuses to uninstall a merged hook whose stanza lost its end marker, and changes nothing', () => {
+        writeForeign(FOREIGN);
+        process.chdir(testDir);
+        preCommitHook.install({ manager: 'native' });
+        const damaged = fs.readFileSync(hookPath, 'utf-8').replace('# --- end vault-guard ---\n', '');
+        fs.writeFileSync(hookPath, damaged);
+        const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
+        expect(fs.existsSync(cmdPath)).toBe(true);
+
+        const result = preCommitHook.uninstall({ manager: 'native' });
+
+        expect(result.success).toBe(false);
+        expect(result.message).toMatch(/damaged/);
+        expect(result.message).toMatch(/by hand/);
+        expect(fs.readFileSync(hookPath, 'utf-8')).toBe(damaged);
+        expect(fs.existsSync(cmdPath)).toBe(true);
+      });
+
+      it('refuses to merge into a hook that is not a shell script, and changes nothing', () => {
+        const text = '#!/usr/bin/env python3\nprint("py hook")\n';
+        writeForeign(text);
+        process.chdir(testDir);
+
+        const result = preCommitHook.install({ manager: 'native' });
+
+        expect(result.success).toBe(false);
+        expect(result.message).toMatch(/not a shell script/);
+        expect(fs.readFileSync(hookPath, 'utf-8')).toBe(text);
+      });
+
+      it('puts the stanza before a trailing exit 0, so the scan cannot be skipped', () => {
+        writeForeign('#!/bin/sh\necho team\nexit 0\n');
+        process.chdir(testDir);
+        preCommitHook.install({ manager: 'native' });
+
+        const blocked = driveCommitWithStub(testDir, 1);
+        expect(blocked.committed).toBe(false);
+        expect(blocked.output).toContain('stub vault-guard ran: scan --staged');
+      });
+
+      it('blocks a real commit when the scan exits 1, and lets the foreign hook run and the commit through on 0', () => {
+        writeForeign('#!/bin/sh\necho "team hook ran"\n');
+        process.chdir(testDir);
+        preCommitHook.install({ manager: 'native' });
+
+        const blocked = driveCommitWithStub(testDir, 1);
+        expect(blocked.committed).toBe(false);
+        expect(blocked.output).toContain('COMMIT BLOCKED: secrets detected');
+
+        const incomplete = driveCommitWithStub(testDir, 2);
+        expect(incomplete.committed).toBe(false);
+        expect(incomplete.output).toContain('could not complete the scan');
+
+        const clean = driveCommitWithStub(testDir, 0);
+        expect(clean.committed).toBe(true);
+      });
+
+      it('uninstall after a merge gives the foreign hook back byte for byte', () => {
+        writeForeign(FOREIGN);
+        process.chdir(testDir);
+        preCommitHook.install({ manager: 'native' });
+
+        const result = preCommitHook.uninstall({ manager: 'native' });
+
+        expect(result.success).toBe(true);
+        expect(result.message).toMatch(/stanza/);
+        expect(fs.readFileSync(hookPath, 'utf-8')).toBe(FOREIGN);
+        expect(fs.statSync(hookPath).mode & 0o777).toBe(0o755);
+        expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(false);
+      });
+
+      it('uninstall leaves a foreign hook that only mentions vault-guard in a comment alone', () => {
+        const text = '#!/bin/sh\n# TODO run vault-guard (scan --staged) someday\nnpm test\n';
+        writeForeign(text);
+        process.chdir(testDir);
+
+        const result = preCommitHook.uninstall({ manager: 'native' });
+
+        expect(result.success).toBe(true);
+        expect(fs.readFileSync(hookPath, 'utf-8')).toBe(text);
+      });
+
+      it('uninstall of an owned hook removes the whole file', () => {
+        process.chdir(testDir);
+        preCommitHook.install({ manager: 'native' });
+
+        const result = preCommitHook.uninstall({ manager: 'native' });
+
+        expect(result.success).toBe(true);
+        expect(fs.existsSync(hookPath)).toBe(false);
+      });
     });
 
     it('should set executable permissions on hook file', () => {
@@ -953,7 +1208,7 @@ describe('PreCommitHook', () => {
         let committed = true;
         let output = '';
         try {
-          execSync('git commit -q -m "should be blocked"', {
+          execSync(`${GIT_IDENTITY} commit -q -m "should be blocked"`, {
             cwd: testDir,
             env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ''}` },
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -1010,7 +1265,7 @@ describe('PreCommitHook', () => {
       const result = preCommitHook.install({ manager: 'native' });
 
       // Foreign, non-vault-guard content at the REAL (non-redirected)
-      // location -- install()'s existing "overwrite a foreign hook"
+      // location -- install()'s "merge a stanza into a foreign hook"
       // behavior applies here exactly as it would for any other foreign
       // hook, never redirected to .husky/pre-commit.
       expect(result.success).toBe(true);

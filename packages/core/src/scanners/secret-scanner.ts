@@ -156,8 +156,18 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // maximum (user/password/host 256, port 8 digits, path 1024) caps the
   // per-start work and makes all four linear; no real DSN comes close to these
   // limits.
-  ['postgresql-url', { regex: /postgres(?:ql)?:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/\S{1,1024}/g, severity: 'critical', connectionString: true, valueBearing: true }],
-  ['mysql-url',      { regex: /mysql:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/\S{1,1024}/g,            severity: 'critical', connectionString: true, valueBearing: true }],
+  //
+  // The path capture of the postgres and mysql rules ends at the first character
+  // that cannot be part of the URL in the shapes found in code and config (a
+  // quote, backtick, comma, semicolon, closing brace, bracket or paren, a less-
+  // than, greater-than or pipe sign, a backslash, or whitespace; none appears
+  // unencoded in a URL, and they delimit it in XML, HTML, tables and escaped
+  // strings such as an `\n` between two lines). The placeholder check runs
+  // against this match, so it has to be the URL alone: text after the delimiter (the next JSON key, the next env
+  // entry) must not be able to skip a real DSN. {0,1024} keeps a bare trailing
+  // slash before a closing quote matching, as it did when the capture was \S.
+  ['postgresql-url', { regex: /postgres(?:ql)?:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/[^\s"'`,;}\])<>|\\]{0,1024}/g, severity: 'critical', connectionString: true, valueBearing: true }],
+  ['mysql-url',{ regex: /mysql:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/[^\s"'`,;}\])<>|\\]{0,1024}/g,            severity: 'critical', connectionString: true, valueBearing: true }],
   ['mongodb-url',    { regex: /mongodb(?:\+srv)?:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})?/g,            severity: 'critical', connectionString: true, valueBearing: true }],
   ['redis-url',      { regex: /rediss?:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})/g,                       severity: 'critical', connectionString: true, valueBearing: true }],
 

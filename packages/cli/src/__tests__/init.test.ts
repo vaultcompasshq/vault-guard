@@ -258,6 +258,31 @@ describe('vault-guard init', () => {
     expect(fs.existsSync(path.join(testDir, '.vault-guard.json'))).toBe(false);
   });
 
+  it('conflicts on a foreign hook whose comment only mentions vault-guard and scan --staged (NB5)', async () => {
+    const hook = new PreCommitHook();
+    const hookPath = hook.getPreCommitHookPath(testDir, 'native');
+    fs.mkdirSync(path.dirname(hookPath), { recursive: true });
+    const text = '#!/bin/sh\n# TODO: also run vault-guard (scan --staged) once the team agrees.\nnpm run lint-staged\n';
+    fs.writeFileSync(hookPath, text, { mode: 0o755 });
+
+    const plan = planInit({ cwd: testDir });
+    expect(plan.conflicts.some(c => c.reason === 'foreign_hook')).toBe(true);
+    expect(await initCommand({ cwd: testDir })).toBe(2);
+    expect(fs.readFileSync(hookPath, 'utf8')).toBe(text);
+  });
+
+  it('does not conflict on a hook that install-hook merged into, or on a hand-wired live invocation', async () => {
+    const hook = new PreCommitHook();
+    const hookPath = hook.getPreCommitHookPath(testDir, 'native');
+    fs.mkdirSync(path.dirname(hookPath), { recursive: true });
+    fs.writeFileSync(hookPath, '#!/bin/sh\nnpm test\nvault-guard scan --staged || exit 1\n', { mode: 0o755 });
+    expect(planInit({ cwd: testDir }).conflicts.some(c => c.reason === 'foreign_hook')).toBe(false);
+
+    fs.writeFileSync(hookPath, '#!/bin/sh\necho team\n', { mode: 0o755 });
+    expect(hook.install({ cwd: testDir, manager: 'native' }).success).toBe(true);
+    expect(planInit({ cwd: testDir }).conflicts.some(c => c.reason === 'foreign_hook')).toBe(false);
+  });
+
   it('conflict dry-run still exits 2', async () => {
     const workflowPath = path.join(testDir, '.github/workflows/vault-guard.yml');
     fs.mkdirSync(path.dirname(workflowPath), { recursive: true });

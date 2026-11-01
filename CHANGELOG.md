@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- A postgres or mysql URL match ran to the next whitespace, so the text after
+  the URL on the same line was part of it, and the sample-value check (which
+  skips a URL carrying a marker such as `example`, `dummy` or `placeholder`)
+  read that text too. A real URL followed by `"docs":"https://example.com/..."`
+  in minified JSON, by `;LEGACY=dummy` in an env line, or by any other
+  neighbour holding a marker, was skipped. The match now ends at the first
+  quote, backtick, comma, semicolon, closing brace, bracket or paren,
+  less-than, greater-than or pipe sign, backslash, or whitespace, so only the
+  URL is judged. A marker inside the URL itself (user, password, host,
+  database, query or fragment) still skips it, as
+  `docs/RULES.md` says. A query string is cut at a comma or semicolon; the
+  credential before the cut is still reported. The mongodb and redis rules
+  are unchanged. Found by an independent audit on 2026-11-01.
+- `vault-guard install-hook` (native manager) wrote its own script over any
+  existing pre-commit hook that did not contain both `vault-guard` and
+  `scan --staged` anywhere in its text, so a team's own hook was replaced with
+  a success message, and a hook that only mentioned both in a comment was taken
+  for vault-guard's and left alone while no scan ever ran. A hook is now
+  vault-guard's only when a whole line is the vault-guard header or the
+  stanza begin marker. For any other non-empty shell hook, `install-hook`
+  adds a marked stanza right after the shebang line and leaves every other
+  byte as it was; the stanza runs `vault-guard scan --staged` and blocks the
+  commit on a non-zero exit, and the rest of the hook runs as before. It is
+  idempotent. A hook that is not a shell script is refused with a message and
+  left untouched. Ownership and idempotency are by the header and the stanza
+  marker only: a mention of the command anywhere else, in a comment, a quoted
+  string, a heredoc, a multi-line string, an `|| true` or a live line, does
+  not count, and the stanza is added. A hook that already mentions
+  `vault-guard scan --staged` therefore gets the stanza too (a second scan),
+  and install says "already mentions vault-guard scan --staged; vault-guard
+  cannot verify that line blocks, so its own stanza was added as well". The
+  uninstaller removes exactly the stanza from a merged hook (and refuses,
+  changing nothing, including leaving `pre-commit.cmd` in place, when the
+  stanza's end marker is missing) and removes the file only when vault-guard
+  wrote all of it; `vault-guard init` applies the same test, so it now also
+  refuses a hook that merely mentions vault-guard in a comment or a quoted
+  string, and still reports no conflict for a hook that mentions the command
+  on a live line. Found by an independent audit on 2026-11-01.
+- The `@vaultcompass/vault-guard-mcp` dependency range for `zod` is raised from
+  `^4.6.5` to `^4.6.6`, matching the repository override, so a fresh install can
+  no longer resolve the advisory version. The `@modelcontextprotocol/sdk`
+  range is unchanged.
+
 ### Changed
 
 - The release workflow now sets `permissions: contents: read` at the top

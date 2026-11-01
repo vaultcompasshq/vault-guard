@@ -33,6 +33,142 @@ export interface InstallHookOptions {
  */
 const VAULT_GUARD_HOOK_HEADER = '# vault-guard pre-commit (installed by @vaultcompass/vault-guard)';
 
+/** The header the 1.0.x native template wrote; a hook carrying it is still ours. */
+const LEGACY_HOOK_HEADER = '# vault-guard pre-commit hook';
+
+/** Begin and end of the stanza vault-guard adds to a hook it does not own. */
+const STANZA_BEGIN = '# --- vault-guard ---';
+const STANZA_END = '# --- end vault-guard ---';
+
+/**
+ * What a pre-commit hook file is, decided by markers vault-guard itself writes
+ * for ownership and idempotency, and by a text match only for the message:
+ *
+ * - `empty`: nothing but whitespace; the full template may be written.
+ * - `owned`: a whole line is a vault-guard header, so the whole file is ours.
+ * - `merged`: a whole line is the stanza begin marker, so we added a stanza to
+ *   somebody else's hook (the husky path writes the same marker).
+ * - `wired`: somebody else's hook where, after quoted strings and a trailing
+ *   comment are removed from a line, the command `vault-guard scan --staged`
+ *   sits at a command start. Reading is per line, so this also matches a
+ *   heredoc body or a line inside a multi-line string, and it says nothing
+ *   about whether the line blocks (`|| true`, dead code). The text match is
+ *   used for the install message only; install adds its own stanza anyway, and
+ *   the uninstaller has no stanza to remove.
+ * - `foreign`: anything else. Never overwritten, never deleted.
+ *
+ * Ownership and idempotency are by header and stanza marker only. A mention of
+ * the command anywhere, in a heredoc, a multi-line string, a comment or a
+ * live line, gets the stanza.
+ *
+ * One definition shared by the native installer, `isInstalled`, the native
+ * uninstaller and `vault-guard init`, so they always agree.
+ */
+export type PreCommitHookOwnership = 'empty' | 'owned' | 'merged' | 'wired' | 'foreign';
+
+export function classifyPreCommitHook(text: string): PreCommitHookOwnership {
+  if (text.trim().length === 0) return 'empty';
+  const lines = text.split('\n').map(line => line.trimEnd());
+  if (lines.some(line => line === VAULT_GUARD_HOOK_HEADER || line === LEGACY_HOOK_HEADER)) {
+    return 'owned';
+  }
+  if (lines.some(line => line === STANZA_BEGIN)) return 'merged';
+  // A mention shaped like an invocation: after quoted strings and any trailing
+  // comment are removed from the line (codeOnly), the command sits where a
+  // command can start (line start, or after && || ; | then do { ( !). Used for
+  // the install message and init's no-conflict answer, never for ownership.
+  const invocation =
+    /(?:^|&&|\|\||;|\bthen\b|\bdo\b|[{(!|])\s*(?:(?:npx|pnpm exec|pnpm|yarn|npm exec)\s+)?vault-guard\s+scan\s+--staged(?:\s|$|[;&|)}])/;
+  if (lines.some(line => invocation.test(codeOnly(line)))) {
+    return 'wired';
+  }
+  return 'foreign';
+}
+
+/**
+ * One shell line with its single- and double-quoted strings removed and any
+ * trailing comment cut off (a `#` at line start or after whitespace, outside
+ * quotes). Line-local: a string that spans lines is not tracked, so a line
+ * inside a heredoc or a multi-line string is read as code. That is harmless
+ * because a `wired` hook still gets the stanza.
+ */
+function codeOnly(line: string): string {
+  let out = '';
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (quote === '"' && ch === '\\') i++;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '#' && (i === 0 || /\s/.test(line[i - 1]))) break;
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * The stanza added to a foreign native hook. It is placed right after the
+ * shebang (see mergeStanza), so it runs before the foreign hook's own
+ * commands and a trailing `exit 0` or `exec` there cannot skip it. On success
+ * it falls through and the foreign hook runs and exits as it always did; on a
+ * non-zero scan it blocks the commit.
+ */
+const NATIVE_HOOK_STANZA = `${STANZA_BEGIN}
+if command -v vault-guard >/dev/null 2>&1; then
+  vault_guard_status=0
+  vault-guard scan --staged || vault_guard_status=$?
+  if [ "$vault_guard_status" -ne 0 ]; then
+    echo ""
+    if [ "$vault_guard_status" -eq 2 ]; then
+      echo "❌ COMMIT BLOCKED: vault-guard could not complete the scan"
+      echo "   See the message above for what went unexamined. This commit has not been checked."
+    else
+      echo "❌ COMMIT BLOCKED: secrets detected in staged files"
+      echo "💡 Fix or unstage, then retry. Emergency bypass (discouraged): git commit --no-verify"
+    fi
+    exit 1
+  fi
+else
+  echo "❌ vault-guard: command not found (install: npm i -g @vaultcompass/vault-guard)"
+  exit 1
+fi
+${STANZA_END}
+`;
+
+/** True when git would run this hook with a POSIX shell (no shebang counts: git falls back to sh). */
+function isShellHook(text: string): boolean {
+  if (!text.startsWith('#!')) return true;
+  const firstLine = text.split('\n', 1)[0];
+  return /^#!\s*(?:\/usr\/bin\/env\s+(?:-S\s+)?)?(?:\S*\/)?(?:sh|bash|dash|zsh|ksh|ash)(?:\s|$)/.test(firstLine);
+}
+
+/** Insert the stanza after the shebang line (or at the top when there is none). */
+function mergeStanza(text: string): string {
+  if (!text.startsWith('#!')) return NATIVE_HOOK_STANZA + text;
+  const nl = text.indexOf('\n');
+  if (nl === -1) return `${text}\n${NATIVE_HOOK_STANZA}`;
+  return text.slice(0, nl + 1) + NATIVE_HOOK_STANZA + text.slice(nl + 1);
+}
+
+/**
+ * Remove exactly the stanza vault-guard added, leaving every other byte. The
+ * caller has already checked that an end marker exists; with none, the text is
+ * returned unchanged rather than truncated.
+ */
+function stripStanza(text: string): string {
+  const begin = text.search(new RegExp(`^${STANZA_BEGIN}[ \\t\\r]*$`, 'm'));
+  if (begin === -1) return text;
+  const endMatch = new RegExp(`^${STANZA_END}[ \\t\\r]*(?:\\n|$)`, 'm').exec(text.slice(begin));
+  if (!endMatch) return text;
+  return text.slice(0, begin) + text.slice(begin + endMatch.index + endMatch[0].length);
+}
+
 /**
  * Shell hook body for **native** Git hooks (`core.hooksPath` or `.git/hooks`).
  * Scans **staged files only** -- fast and matches what will actually be committed.
@@ -410,6 +546,19 @@ export class PreCommitHook {
 
     const r = readHookFile(hookPath, hookPath);
     if (r.kind !== 'file') return false;
+    // The native hook is judged by ownership markers, so a foreign hook that
+    // only mentions vault-guard is not "installed". The other managers keep
+    // the substring test: their files are a husky script or YAML, not a hook
+    // vault-guard writes whole.
+    // Under a husky-generated hooks directory native install is husky's own
+    // append path, which keeps its substring idempotency test.
+    const huskyRoute =
+      manager === 'native' && this.isHuskyGeneratedHooksDir(this.getEffectiveHooksDir(cwd).hooksDir);
+    if (manager === 'native' && !huskyRoute) {
+      const ownership = classifyPreCommitHook(r.text);
+      // `wired` is not installed: install still adds its own stanza to it.
+      return ownership === 'owned' || ownership === 'merged';
+    }
     return r.text.includes('vault-guard') && r.text.includes('scan --staged');
   }
 
@@ -485,9 +634,13 @@ export class PreCommitHook {
         fs.mkdirSync(hooksDir, { recursive: true });
       }
 
+      let merged = false;
+      let notExecutable = false;
+      let wiredMention = false;
       if (hookRead.kind === 'file') {
         const existing = hookRead.text;
-        if (existing.includes('vault-guard') && existing.includes('scan --staged')) {
+        const ownership = classifyPreCommitHook(existing);
+        if (ownership === 'owned' || ownership === 'merged') {
           // Refresh the Windows companion if missing or stale (never clobber foreign).
           const cmdOk = this.writeNativeCmdCompanion(hooksDir);
           return {
@@ -500,9 +653,29 @@ export class PreCommitHook {
             hookPath,
           };
         }
+        if (ownership === 'foreign' || ownership === 'wired') {
+          // Somebody else's hook: merge a marked stanza into it, never replace
+          // it. A line that mentions the command (wired) gets the stanza too:
+          // it may sit in a heredoc, a multi-line string, an `|| true` or dead
+          // code, and vault-guard cannot verify from text that it blocks.
+          wiredMention = ownership === 'wired';
+          if (!isShellHook(existing)) {
+            return {
+              success: false,
+              message:
+                `${this.relFromCwd(cwd, hookPath)} is not a shell script, so vault-guard cannot merge into it. ` +
+                'Add `vault-guard scan --staged` to it by hand, or run it from your hook manager.',
+            };
+          }
+          writeFileAtomically(hookPath, mergeStanza(existing), hookRead.mode);
+          merged = true;
+          notExecutable = (hookRead.mode & 0o111) === 0;
+        }
       }
 
-      writeFileAtomically(hookPath, NATIVE_HOOK_SCRIPT, 0o755);
+      if (!merged) {
+        writeFileAtomically(hookPath, NATIVE_HOOK_SCRIPT, 0o755);
+      }
       const cmdOk = this.writeNativeCmdCompanion(hooksDir);
 
       const hint = viaHooksPath
@@ -513,7 +686,14 @@ export class PreCommitHook {
 
       return {
         success: true,
-        message: `Pre-commit hook installed (${hint})`,
+        message: merged
+          ? (wiredMention
+              ? 'The pre-commit hook already mentions vault-guard scan --staged; vault-guard cannot verify that line blocks, so its own stanza was added as well'
+              : `Pre-commit hook installed (merged into your existing hook, which is otherwise unchanged; ${hint})`) +
+            (notExecutable
+              ? `. Note: ${this.relFromCwd(cwd, hookPath)} is not executable, so git will not run it until you chmod +x it`
+              : '')
+          : `Pre-commit hook installed (${hint})`,
         hookPath,
       };
     } catch (error) {
@@ -537,9 +717,12 @@ export class PreCommitHook {
     const hookPath = path.join(hooksDir, 'pre-commit');
     const hookRead = readHookFile(hookPath, this.relFromCwd(cwd, hookPath));
     if (hookRead.kind === 'refused') return { success: false, message: hookRead.message };
-    const cmdRemoved = this.removeNativeCmdCompanion(hooksDir);
 
+    // The companion is removed only once the hook itself is known to be
+    // removable: a refusal below (damaged stanza, a hook with nothing of ours
+    // to remove) deletes nothing.
     if (hookRead.kind === 'absent') {
+      const cmdRemoved = this.removeNativeCmdCompanion(hooksDir);
       return {
         success: true,
         message: cmdRemoved
@@ -549,7 +732,9 @@ export class PreCommitHook {
     }
 
     const content = hookRead.text;
-    if (!content.includes('vault-guard')) {
+    const ownership = classifyPreCommitHook(content);
+    if (ownership === 'empty' || ownership === 'foreign') {
+      const cmdRemoved = this.removeNativeCmdCompanion(hooksDir);
       return {
         success: true,
         message: cmdRemoved
@@ -558,7 +743,44 @@ export class PreCommitHook {
       };
     }
 
+    if (ownership === 'wired') {
+      return {
+        success: false,
+        message:
+          'The pre-commit hook mentions vault-guard scan --staged but vault-guard did not write it. ' +
+          'Leaving it unchanged; remove that line by hand if you want it gone.',
+      };
+    }
+
     try {
+      if (ownership === 'merged') {
+        // Remove exactly the stanza we added; the file is somebody else's. A
+        // begin marker with no end marker means the stanza was edited or cut;
+        // stripping would have to guess where it stops and could take the
+        // foreign hook's own lines with it, so refuse and change nothing.
+        if (!content.split('\n').some(line => line.trimEnd() === STANZA_END)) {
+          return {
+            success: false,
+            message:
+              'The vault-guard stanza in the pre-commit hook is damaged (its end marker is missing). ' +
+              'Leaving the hook unchanged; remove the stanza by hand.',
+          };
+        }
+        const cmdRemoved = this.removeNativeCmdCompanion(hooksDir);
+        const stripped = stripStanza(content);
+        if (stripped.trim().length === 0) {
+          fs.unlinkSync(hookPath);
+        } else {
+          writeFileAtomically(hookPath, stripped, hookRead.mode);
+        }
+        return {
+          success: true,
+          message: cmdRemoved
+            ? 'Removed the vault-guard stanza from the pre-commit hook (the rest is unchanged) and the Windows .cmd companion'
+            : 'Removed the vault-guard stanza from the pre-commit hook (the rest is unchanged)',
+        };
+      }
+      const cmdRemoved = this.removeNativeCmdCompanion(hooksDir);
       fs.unlinkSync(hookPath);
       return {
         success: true,

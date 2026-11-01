@@ -28,7 +28,7 @@ That safety argument holds only for machine-issued credentials. For anything a p
 
 The four connection-string rules skip a URL that looks like a sample rather than a deployment. `packages/core/src/utils/placeholder.ts` holds two marker lists, and they apply to different parts of the URL:
 
-- the STANDARD list (`example`, `dummy`, `placeholder`, `changeme`, `redacted`, `your_token`, `replace_me` and the rest of `STANDARD_MARKERS`) is checked against the WHOLE URL, so a marker in the user, password, host, database name or query skips it;
+- the STANDARD list (`example`, `dummy`, `placeholder`, `changeme`, `redacted`, `your_token`, `replace_me` and the rest of `STANDARD_MARKERS`) is checked against the WHOLE URL, so a marker in the user, password, host, database name, query or fragment skips it;
 - the AGGRESSIVE list (`test`, `secret`, `password`, `demo`, `sample`, `fake`, `mock`, `qwerty`, `your_` and the rest of `AGGRESSIVE_MARKERS`) is checked against the PASSWORD only, as a substring, case-insensitive. A marker in the user, host or database name does not skip the URL.
 
 A URL is also skipped when:
@@ -42,7 +42,7 @@ Examples, each on a host that is not local (`db.internal.acme-corp.net`) and wit
 - A password such as `Xk9vSecretLmR7wTp4N` or `Xk9vQz2Lm7Test4N` on the acme-corp host: skipped, because the password contains `secret` or `test` (aggressive).
 - User `testuser` and database `demo` on the acme-corp host, with a password that has no marker: reported. The aggressive list does not look outside the password.
 
-This is a known gap, not a design goal: a real URL whose user, host, database name or query contains a standard marker, or whose password contains any marker from either list, is not reported. To see the rules fire while testing, use a non-local host with no marker in it and a random password with no marker in it.
+This is a known gap, not a design goal: a real URL whose user, host, database name, query or fragment contains a standard marker, or whose password contains any marker from either list, is not reported. To see the rules fire while testing, use a non-local host with no marker in it and a random password with no marker in it.
 
 ## Patterns
 
@@ -73,8 +73,8 @@ This is a known gap, not a design goal: a real URL whose user, host, database na
 | `gcp-api-key` | critical | - | `g` | `AIza[a-zA-Z0-9_-]{35}` |
 | `gcp-oauth` | low | - | `g` | `[0-9]{1,64}-[a-zA-Z0-9_]{32}\\.apps\\.googleusercontent\\.com` |
 | `azure-storage` | critical | - | `g` | `DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{20,}` |
-| `postgresql-url` | critical | - | `g` | `postgres(?:ql)?:\\/\\/[^:@\\s]{1,256}:[^@\\s]{1,256}@[^:\\s/]{1,256}(?::\\d{1,8})?\\/\\S{1,1024}` |
-| `mysql-url` | critical | - | `g` | `mysql:\\/\\/[^:@\\s]{1,256}:[^@\\s]{1,256}@[^:\\s/]{1,256}(?::\\d{1,8})?\\/\\S{1,1024}` |
+| `postgresql-url` | critical | - | `g` | `` postgres(?:ql)?:\\/\\/[^:@\\s]{1,256}:[^@\\s]{1,256}@[^:\\s/]{1,256}(?::\\d{1,8})?\\/[^\\s"'`,;}\\])<>\|\\\\]{0,1024} `` |
+| `mysql-url` | critical | - | `g` | `` mysql:\\/\\/[^:@\\s]{1,256}:[^@\\s]{1,256}@[^:\\s/]{1,256}(?::\\d{1,8})?\\/[^\\s"'`,;}\\])<>\|\\\\]{0,1024} `` |
 | `mongodb-url` | critical | - | `g` | `mongodb(?:\\+srv)?:\\/\\/[^:@\\s]{1,256}:[^@\\s]{1,256}@[^:\\s/]{1,256}(?::\\d{1,8})?` |
 | `redis-url` | critical | - | `g` | `rediss?:\\/\\/[^:@\\s]{1,256}:[^@\\s]{1,256}@[^:\\s/]{1,256}(?::\\d{1,8})` |
 | `github-token` | critical | - | `g` | `gh[pousor]_[a-zA-Z0-9]{36}` |
