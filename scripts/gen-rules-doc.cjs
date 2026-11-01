@@ -126,7 +126,7 @@ function main() {
   lines.push(
     '- the STANDARD list (`example`, `dummy`, `placeholder`, `changeme`, `redacted`, `your_token`, ' +
       '`replace_me` and the rest of `STANDARD_MARKERS`) is checked against the WHOLE URL, so a marker ' +
-      'in the user, password, host, database name or query skips it;',
+      'in the user, password, host, database name, query or fragment skips it;',
   );
   lines.push(
     '- the AGGRESSIVE list (`test`, `secret`, `password`, `demo`, `sample`, `fake`, `mock`, `qwerty`, ' +
@@ -168,7 +168,7 @@ function main() {
   );
   lines.push('');
   lines.push(
-    'This is a known gap, not a design goal: a real URL whose user, host, database name or query ' +
+    'This is a known gap, not a design goal: a real URL whose user, host, database name, query or fragment ' +
       'contains a standard marker, or whose password contains any marker from either list, is not ' +
       'reported. To see the rules fire while testing, use a non-local host with no marker in it and a ' +
       'random password with no marker in it.',
@@ -181,8 +181,12 @@ function main() {
 
   for (const e of entries) {
     const entropy = e.minEntropy !== undefined ? String(e.minEntropy) : '-';
+    // A regex source that itself contains a backtick needs a double-backtick
+    // code span, padded with spaces, or the table cell renders broken.
+    const source = escapeMdCell(e.regexSource);
+    const sourceCell = source.includes('`') ? `\`\` ${source} \`\`` : `\`${source}\``;
     lines.push(
-      `| \`${escapeMdCell(e.id)}\` | ${escapeMdCell(e.severity)} | ${escapeMdCell(entropy)} | \`${escapeMdCell(e.regexFlags || '')}\` | \`${escapeMdCell(e.regexSource)}\` |`,
+      `| \`${escapeMdCell(e.id)}\` | ${escapeMdCell(e.severity)} | ${escapeMdCell(entropy)} | \`${escapeMdCell(e.regexFlags || '')}\` | ${sourceCell} |`,
     );
   }
   lines.push('');

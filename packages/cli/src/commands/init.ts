@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { PreCommitHook, readRegularFileNoFollow, type HookManager } from '@vaultcompass/vault-guard-core';
+import { PreCommitHook, classifyPreCommitHook, readRegularFileNoFollow, type HookManager } from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
 import {
   MANAGED_FILE_PATHS,
@@ -165,10 +165,10 @@ function foreignHookConflict(
   const hookPath = hook.getPreCommitHookPath(cwd, 'native');
   const hookRead = read(hookPath);
   if (hookRead.kind === 'linked') return linked(hookPath);
-  if (hookRead.kind === 'file' && !(hookRead.text.includes('vault-guard') && hookRead.text.includes('scan --staged'))) {
-    if (hookRead.text.trim().length > 0) {
-      return { path: hookRelativePath(cwd, hookPath), reason: 'foreign_hook' };
-    }
+  // Same ownership test as the installer and uninstaller (one helper), so a
+  // hook that only mentions vault-guard in a comment is a conflict here too.
+  if (hookRead.kind === 'file' && classifyPreCommitHook(hookRead.text) === 'foreign') {
+    return { path: hookRelativePath(cwd, hookPath), reason: 'foreign_hook' };
   }
 
   // The Windows .cmd companion is native-only and never written under

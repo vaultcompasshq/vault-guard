@@ -17,7 +17,7 @@ export async function installHookCommand(manager: HookManager = 'native'): Promi
       chalk.gray(
         '\nThe hook runs `vault-guard scan --staged` before each commit (staged files only).\n' +
           (manager === 'native'
-            ? 'Also writes optional pre-commit.cmd (Git for Windows still runs the POSIX pre-commit via sh).\n'
+            ? 'Also writes optional pre-commit.cmd, unless one vault-guard did not write is already there (Git for Windows still runs the POSIX pre-commit via sh).\n'
             : ''),
       ),
     );

@@ -356,6 +356,72 @@ describe('SecretScanner', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // The postgres and mysql URL match ends at the first URL delimiter
+  // ---------------------------------------------------------------------------
+
+  describe('postgres and mysql URL capture ends at a delimiter', () => {
+    const PG = 'postgres://appuser:Xj8kP2mQ9zRv@db.prod.acme-corp.net:5432/orders';
+    const MY = 'mysql://appuser:Xj8kP2mQ9zRv@db.prod.acme-corp.net:3306/orders';
+
+    function dsnTypes(line: string): string[] {
+      fs.writeFileSync(testFilePath, line);
+      return scanner
+        .scan(testFilePath)
+        .filter(m => ['postgresql-url', 'mysql-url'].includes(m.type))
+        .map(m => m.type);
+    }
+
+    it('reports a URL followed by a JSON sibling holding a standard marker', () => {
+      expect(dsnTypes(`{"db":"${PG}","docs":"https://example.com/setup"}`)).toEqual(['postgresql-url']);
+    });
+
+    it('reports a mysql URL followed by a JSON sibling holding a standard marker', () => {
+      expect(dsnTypes(`{"db":"${MY}","owner":"placeholder-team"}`)).toEqual(['mysql-url']);
+    });
+
+    it('reports a URL followed by a semicolon-joined env entry holding a standard marker', () => {
+      expect(dsnTypes(`DATABASE_URL=${PG};LEGACY=dummy`)).toEqual(['postgresql-url']);
+    });
+
+    it('still reports the control lines (no marker after the URL)', () => {
+      expect(dsnTypes(`{"db":"${PG}","note":"rotate quarterly"}`)).toEqual(['postgresql-url']);
+      expect(dsnTypes(`{"db":"${PG}","testing":true}`)).toEqual(['postgresql-url']);
+    });
+
+    it.each(['"', "'", '`', ',', ';', '}', ']', ')', '<', '>', '|', '\\', ' '])(
+      'ends the URL at %j so a standard marker after it cannot skip the URL',
+      delimiter => {
+        expect(dsnTypes(`x=${PG}${delimiter}dummy`)).toEqual(['postgresql-url']);
+      },
+    );
+
+    it('ends the URL at an escaped newline (backslash n) between two lines of a string', () => {
+      expect(dsnTypes(`"${PG}\\ndummy"`)).toEqual(['postgresql-url']);
+    });
+
+    it('still reports a URL whose path is only a slash before a closing quote', () => {
+      expect(dsnTypes(`const u = "postgres://appuser:Xj8kP2mQ9zRv@db.prod.acme-corp.net/";`)).toEqual([
+        'postgresql-url',
+      ]);
+    });
+
+    it.each([
+      ['user', 'postgres://dummy:Xj8kP2mQ9zRv@db.prod.acme-corp.net:5432/orders'],
+      ['password', 'postgres://appuser:Xj8kChangeme9zRv@db.prod.acme-corp.net:5432/orders'],
+      ['host', 'postgres://appuser:Xj8kP2mQ9zRv@db.example.acme-corp.net:5432/orders'],
+      ['database', 'postgres://appuser:Xj8kP2mQ9zRv@db.prod.acme-corp.net:5432/orders_example'],
+      ['query', 'postgres://appuser:Xj8kP2mQ9zRv@db.prod.acme-corp.net:5432/orders?note=placeholder'],
+      ['mysql database', 'mysql://appuser:Xj8kP2mQ9zRv@db.prod.acme-corp.net:3306/dummy_orders'],
+    ])('still skips a URL with a standard marker inside its %s', (_part, url) => {
+      expect(dsnTypes(`{"db":"${url}","other":true}`)).toEqual([]);
+    });
+
+    it('cuts a query string at a comma or semicolon but still reports the credential before the cut', () => {
+      expect(dsnTypes(`${PG}?a=1;b=2,c=3`)).toEqual(['postgresql-url']);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // Sample JWT suppression (the ubiquitous jwt.io "John Doe" token)
   // ---------------------------------------------------------------------------
 

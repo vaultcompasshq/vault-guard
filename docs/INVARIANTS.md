@@ -1461,3 +1461,130 @@ core `scan-output-groups.test.ts` (`formGroups`, `JSON and SARIF fields`),
 `content-demotion.test.ts` (`U11: the data-file classifier costs a clean copy
 nothing`); in the MCP `data-file-false-positives.test.ts` (`U10: MCP
 summaries count matches, and state groups and demotions beside them`).
+
+## A postgres or mysql URL match ends at the first URL delimiter
+
+The sample-value check on a connection string reads the regex match, so the
+match must be the URL and nothing after it. The `postgresql-url` and
+`mysql-url` path capture stops at the first double quote, single quote,
+backtick, comma, semicolon, closing brace, closing bracket, closing paren,
+less-than sign, greater-than sign, pipe, backslash or whitespace character
+(none of which appears unencoded in a URL), capped at 1024 characters. A standard marker
+(`example`, `dummy`, `placeholder` and the rest of `STANDARD_MARKERS`) in the
+next JSON key or the next env entry therefore cannot skip a real URL; a
+marker inside the URL (user, password, host, database, query, fragment) still does,
+which is what `docs/RULES.md` says. A query string is cut at a comma or
+semicolon, and the credential before the cut is still reported. The
+mongodb and redis rules end at the host or port and are unchanged.
+
+**Enforced by:** the two regexes at
+`packages/core/src/scanners/secret-scanner.ts:169` and `:170`; the check
+that reads the match is in the same file, `isNonSecretConnectionString(fullMatch)`.
+Tests, in `packages/core/src/scanners/__tests__/secret-scanner.test.ts`:
+`reports a URL followed by a JSON sibling holding a standard marker`,
+`reports a mysql URL followed by a JSON sibling holding a standard marker`,
+`reports a URL followed by a semicolon-joined env entry holding a standard
+marker`, `ends the URL at %j so a standard marker after it cannot skip the
+URL`, `still skips a URL with a standard marker inside its %s`, `cuts a query
+string at a comma or semicolon but still reports the credential before the
+cut`, `ends the URL at an escaped newline (backslash n) between two lines of a
+string`. Mutation, 2026-11-01: both regexes widened back to `\S{1,1024}`
+turned 16 of those tests red: the three audit lines, the twelve delimiter
+cases that are not whitespace (double quote, single quote, backtick, comma,
+semicolon, closing brace, bracket, paren, less-than, greater-than, pipe,
+backslash) and the escaped-newline case. Removing only the less-than,
+greater-than and pipe signs turned 3 red, one per character; removing only
+the backslash from the postgres regex turned 2 red. The audit corpus run on published 1.13.0 and on this change: lines
+1, 3 and 5 of the corpus are newly reported, the controls and the
+marker-inside-the-URL lines are unchanged, and three public repositories scan
+identically. A second corpus of 14 shapes (XML, HTML, a pipe, angle brackets,
+escaped JSON, a markdown link, a YAML flow map) reports XML, HTML, pipe and
+angle-bracket lines that the version without those three characters missed.
+
+## The native pre-commit hook has one ownership test, and a foreign hook is merged into, never replaced
+
+A native `pre-commit` file is vault-guard's only when a whole line of it is
+the vault-guard header (the current one or the 1.0.x one), or the stanza
+begin marker `# --- vault-guard ---`. Ownership and idempotency are by that
+header and that stanza marker only. A mention of `vault-guard` or
+`scan --staged` anywhere else, in a comment, a quoted string, a heredoc, a
+multi-line string, a command substitution, an `|| true`, dead code or a live
+line, is not ownership and does not stop the stanza being added. The
+classification is one function, `classifyPreCommitHook`, used by the native
+installer, `isInstalled` (native), the native uninstaller and
+`foreignHookConflict` in `init`, so the four never disagree. A fifth reading,
+`wired`, is a hook where, with quoted strings and any trailing comment removed
+from a line, the command sits at a command start. It is read per line (a
+heredoc body or a line inside a multi-line string is read as code) and it
+decides only the install message ("already mentions ... cannot verify that
+line blocks, so its own stanza was added as well"), that `init` reports no
+conflict (init then calls install, which merges), and that the uninstaller,
+with no stanza to remove, refuses and changes nothing.
+
+For a non-empty hook that is not vault-guard's, wired included, `install-hook`
+inserts a marked stanza (begin and end markers) right after the shebang line,
+so a trailing `exit` or `exec` in the foreign hook cannot skip it, and writes
+it with the file's own mode. A hand-wired hook therefore scans twice, which is
+noise and fast; a hook that claims to run the scan but does not (a heredoc, an
+`|| true`) cannot pass as installed. A second run adds nothing (the stanza
+marker is the test). Under a husky-generated hooks directory `isInstalled`
+keeps husky's substring test, as the husky append path does. A hook whose shebang is
+not a POSIX shell is refused and left untouched. The uninstaller removes
+exactly the stanza from a merged hook, restoring the foreign bytes, refuses
+(changing nothing) when the begin marker has no end marker, and deletes the
+file only when vault-guard wrote all of it. This is the
+"detect existing hooks and merge an idempotent snippet" row of
+`docs/THREAT_MODEL.md`. `init` still refuses a foreign hook rather than
+merging. The husky manager keeps its own append path and its own substring
+test (not covered here).
+
+**Enforced by:** `classifyPreCommitHook`
+(`packages/core/src/scanners/pre-commit-hook.ts:69`), `codeOnly` (`:95`),
+`mergeStanza` (`:152`) and `stripStanza` (`:164`), called from `installNative`
+(`:642`, `:670`), the native `isInstalled` branch (`:558`) and
+`uninstallNative` (`:735`; the damaged-stanza check at `:761`, its message at
+`:765`, the `stripStanza` call at `:770`), and from `foreignHookConflict` (`packages/cli/src/commands/init.ts:170`).
+Tests, in `packages/core/src/scanners/__tests__/pre-commit-hook.test.ts`:
+`keeps every foreign line byte for byte, adds the marked stanza, and keeps
+the executable bit`, `merges rather than adopts a foreign hook whose comment
+mentions vault-guard and scan --staged (NB5)`, `leaves an own hook unchanged
+and says it is already installed`, `writes the full script over an empty or
+whitespace-only hook`, `appends nothing the second time (idempotent)`,
+`refuses to merge into a hook that is not a shell script, and changes nothing`,
+`puts the stanza before a trailing exit 0, so the scan cannot be skipped`,
+`blocks a real commit when the scan exits 1, and lets the foreign hook run and
+the commit through on 0`, `uninstall after a merge gives the foreign hook back
+byte for byte`, `uninstall leaves a foreign hook that only mentions
+vault-guard in a comment alone`, `uninstall of an owned hook removes the whole
+file`; in the CLI `init.test.ts`, `conflicts on a foreign hook whose comment
+only mentions vault-guard and scan --staged (NB5)` and `does not conflict on a
+hook that install-hook merged into, or on a hand-wired live invocation`; end
+to end through the built CLI and a real `git commit`, in
+`packages/cli/src/__tests__/integration/install-hook-merge.test.ts`, `a foreign
+three-line hook is merged, keeps running, and the merged hook blocks a staged
+secret`, `NB5: a foreign hook that only mentions vault-guard in a comment is
+merged, not adopted` and `install-hook twice appends nothing, and a trailing
+exit 0 in the foreign hook does not skip the scan`, and `M1: a foreign hook
+that mentions the command in %s is merged, and the merged hook blocks a staged
+secret` (a trailing comment, an echoed string, a heredoc body, a multi-line
+string, an `|| true`). Also in the core file: `merges rather than adopts a
+hook that mentions the command in %s, and the merged hook blocks a staged
+secret`, `adds its own stanza to a hook that already runs vault-guard scan
+--staged on a live line, and says so` (pins the exact message), `adds its own
+stanza to a hook that mentions the command in %s, blocks a staged secret, and
+adds one stanza on a second install` (a heredoc body, a multi-line string, a
+command substitution, an `|| true`, dead code after `exit`), `isInstalled is
+false for a hook that only mentions the command, so init calls install`,
+`still classifies vault-guard scan --staged after && on a code line as wired
+(the message names it)`, `uninstall of a hook that only mentions the command
+refuses, and leaves it and pre-commit.cmd in place` and `refuses to uninstall
+a merged hook whose stanza lost its end marker, and changes nothing` (which
+also checks pre-commit.cmd is still there). Mutations, 2026-11-01:
+classification put back to the two substrings turned 3 tests red (the NB5
+install test and both uninstall tests); overwrite instead of merge turned 3
+red (the byte-for-byte merge, the NB5 install test and the uninstall round
+trip); the wired test put back to a whole-line comment check turned 2 red
+(the trailing-comment and the double-quoted-string cases); treating a wired
+hook as installed again (the previous behaviour, written as a cast so it
+compiles) turned 7 red in the core file (the live-line message test, the five
+mentions-the-command cases and the wired-after-and-and case).
