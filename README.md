@@ -403,7 +403,7 @@ jobs:
           path: .
           format: sarif
           sarif-output: vault-guard-results.sarif
-      - uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         # Guarded on the output being non-empty: a run that could not scan at
         # all writes no document, and handing that empty file to the uploader
         # fails the job with a parse error on top of the real message. And not

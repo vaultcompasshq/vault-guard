@@ -343,7 +343,7 @@ of its own:
           format: sarif
       # Pinned to a commit, not to a tag: this runs in your repository with the
       # permission above. Same SHA `vault-guard init` scaffolds.
-      - uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         if: always() && steps.vg.outputs.results-file != '' && steps.vg.outputs.exit-code != '2'
         with:
           sarif_file: ${{ steps.vg.outputs.results-file }}
