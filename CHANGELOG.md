@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `vault-guard install-hook` exited 0 whenever installation was refused, so a
+  caller could not tell a refusal from a success. Those refusals now exit 1.
+  A successful install still exits 0, and a usage error still exits 2.
+
 ### Security
 
 - A dependency build script runs only when that package is named in
