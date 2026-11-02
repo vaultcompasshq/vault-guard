@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- vault-guard init now writes the github/codeql-action upload-sarif pin at v4.39.1.
+- The ignore library moves from 5 to 7. Config ignore patterns, and .gitignore matching when scanning a directory outside a git repository, now follow git for negated character classes such as [!a], runs of three or more asterisks, and backslash escapes. Inside a git repository the scanned file set is unchanged.
+
 ### Fixed
 
 - `vault-guard install-hook` exited 0 whenever installation was refused, so a

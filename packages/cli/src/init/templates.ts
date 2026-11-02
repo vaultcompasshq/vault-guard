@@ -30,8 +30,8 @@ export const ACTION_TAG = 'v1.13.1';
  * applies to the scanner, and the same SHA this repository's own `ci.yml` pins,
  * so there is one value to bump rather than two spellings of it.
  */
-export const UPLOAD_SARIF_SHA = '99df26d4f13ea111d4ec1a7dddef6063f76b97e9';
-export const UPLOAD_SARIF_TAG = 'v4.37.0';
+export const UPLOAD_SARIF_SHA = '9b3254085494b55a0f7c4c2b3d2d52cc712ce370';
+export const UPLOAD_SARIF_TAG = 'v4.39.1';
 
 export const MANIFEST_RELATIVE_PATH = '.vault-guard/manifest.json';
 
