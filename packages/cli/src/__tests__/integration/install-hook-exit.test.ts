@@ -239,6 +239,20 @@ describe('install-hook exit codes', () => {
     }
   });
 
+  itPosix('exits 1, not 2, when .pre-commit-config.yaml cannot be read', () => {
+    const { repo } = freshRepo();
+    const cfg = path.join(repo, '.pre-commit-config.yaml');
+    fs.writeFileSync(cfg, 'repos: []\n');
+    fs.chmodSync(cfg, 0o000);
+    try {
+      const r = fx.runCli(['install-hook', '--manager', 'precommit'], repo);
+      expect(r.code).toBe(1);
+      expect(combined(r)).toMatch(/Failed to read \.pre-commit-config\.yaml/);
+    } finally {
+      fs.chmodSync(cfg, 0o644);
+    }
+  });
+
   it('exits 0 when a native hook is installed into an empty repository', () => {
     const { repo, hooks } = freshRepo();
 

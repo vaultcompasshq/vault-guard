@@ -993,7 +993,15 @@ export class PreCommitHook {
 
   private installPreCommitFramework(cwd: string): { success: boolean; message: string; hookPath?: string } {
     const cfg = path.join(cwd, '.pre-commit-config.yaml');
-    const cfgRead = readHookFile(cfg, '.pre-commit-config.yaml');
+    // Inside a try, like the lefthook and native readers: an unreadable
+    // config is a refusal (exit 1), not an uncaught throw (exit 2).
+    let cfgRead: ReturnType<typeof readHookFile>;
+    try {
+      cfgRead = readHookFile(cfg, '.pre-commit-config.yaml');
+    } catch (error) {
+      const hookError = new HookError(`Failed to read .pre-commit-config.yaml: ${error}`, 'install');
+      return { success: false, message: hookError.message };
+    }
     if (cfgRead.kind === 'refused') return { success: false, message: cfgRead.message };
     if (cfgRead.kind === 'file') {
       const existing = cfgRead.text;
