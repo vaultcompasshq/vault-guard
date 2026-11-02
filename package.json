@@ -53,6 +53,7 @@
   },
   "packageManager": "pnpm@9.15.9",
   "pnpm": {
+    "onlyBuiltDependencies": [],
     "overrides": {
       "esbuild": "0.28.1",
       "hono": "4.13.13",
