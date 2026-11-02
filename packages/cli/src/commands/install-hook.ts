@@ -28,5 +28,8 @@ export async function installHookCommand(manager: HookManager = 'native'): Promi
     } else {
       console.log(chalk.gray('💡 Hint: Check file permissions or merge the snippet shown above.\n'));
     }
+    // A refusal must be visible to a script. Exit 1 matches this command's
+    // unknown-manager check. Commander usage errors stay 2 (handleFatalError).
+    process.exitCode = 1;
   }
 }
