@@ -42,8 +42,8 @@ importers:
         specifier: ^8.72.1
         version: 8.72.1(eslint@10.14.0)(typescript@5.9.3)
       '@vaultcompass/conductor':
-        specifier: 0.16.0
-        version: 0.16.0
+        specifier: 0.17.0
+        version: 0.17.0
       '@vaultcompass/dep-guard':
         specifier: 0.18.1
         version: 0.18.1
@@ -1170,8 +1170,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@vaultcompass/conductor@0.16.0':
-    resolution: {integrity: sha512-ehz9ZxIxrX2FjX9Yscyim5dROFNPbUWMY9m2v5uh0pPxjAq/3Y3JNbFN7LpjvgoUCMylLj3XfyI9ogMp1XVOzg==}
+  '@vaultcompass/conductor@0.17.0':
+    resolution: {integrity: sha512-waieLoGdhxbMG+qztVzjUJ3F175wFPQmCBTOpUEe6LM01LDZSitktNmMlOQ7EGCclPoYdSFMNxTkM5RfINFhzA==}
     engines: {node: '>=22'}
     hasBin: true
 
@@ -3714,7 +3714,7 @@ snapshots:
   '@unrs/resolver-binding-win32-x64-msvc@1.12.2':
     optional: true
 
-  '@vaultcompass/conductor@0.16.0':
+  '@vaultcompass/conductor@0.17.0':
     dependencies:
       ajv: 8.20.0
       commander: 12.1.0
