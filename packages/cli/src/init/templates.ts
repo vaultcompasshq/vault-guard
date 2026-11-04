@@ -99,7 +99,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Pull-request mode reads the config and the baseline from the base
           # branch, so the base branch has to exist locally. A shallow clone

@@ -96,7 +96,13 @@ See **[docs/MCP.md](./docs/MCP.md)** for the full tool reference.
 vault-guard install-hook
 ```
 
-Installs a hook that runs `vault-guard scan --staged` before every commit. Honors `core.hooksPath` (including globally-configured hook paths). When husky 9 already owns `core.hooksPath` (its generated `.husky/_` directory), the default `native` manager detects this automatically and installs into the same tracked `pre-commit` file husky's own shim runs -- no `--manager husky` needed. This also works when the package that owns husky's `.husky` is a monorepo subdirectory rather than the repo root (`core.hooksPath` like `packages/app/.husky/_`): the tracked hook lands at `packages/app/.husky/pre-commit`, matching where husky actually runs it. **Run `install-hook` (and `init`) from the git repository root, never from a package subdirectory** -- they refuse outright otherwise. Supports all major managers:
+Installs a hook that runs `vault-guard scan --staged` before every commit. Honors `core.hooksPath` (including globally-configured hook paths). When husky 9 already owns `core.hooksPath` (its generated `.husky/_` directory), the default `native` manager detects this automatically and installs into the same tracked `pre-commit` file husky's own shim runs, so `--manager husky` is not needed.
+
+This also works when the package that owns husky's `.husky` is a monorepo subdirectory rather than the repo root (`core.hooksPath` like `packages/app/.husky/_`): the tracked hook lands at `packages/app/.husky/pre-commit`, matching where husky actually runs it.
+
+**Run `install-hook` (and `init`) from the git repository root, never from a package subdirectory.** They refuse outright otherwise.
+
+Supported managers:
 
 ```bash
 vault-guard install-hook --manager native     # default: Git hooks / hooksPath
@@ -392,7 +398,7 @@ jobs:
       # and the upload fails with a 403 that has nothing to do with the scan.
       security-events: write
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Required on pull requests: pull-request mode reads the config and
           # the baseline from the base branch, which a shallow clone does not have.
@@ -425,7 +431,7 @@ disagree.
 
 **The Action tag and the scanner version are separate numbers, and they do not
 have to match.** `vaultcompasshq/vault-guard@v1.13.1` installs
-`@vaultcompass/vault-guard@1.13.1` -- this is a package release, so the two move
+`@vaultcompass/vault-guard@1.13.1`. This is a package release, so the two move
 together. They are still allowed to come apart: `vaultcompasshq/vault-guard@v1.7.4`
 installed `@vaultcompass/vault-guard@1.7.0`, because that release changed the
 Action and nothing in the scanner, so there was no new scanner to publish. Read
@@ -535,7 +541,7 @@ would ship with its own off switch on the untrusted side. Base-ref judging is
 the floor; the only kind of change the input accepts is a tightening. If you
 need 1.6.0 behaviour while you arrange `fetch-depth: 0`, stay pinned to
 `vaultcompasshq/vault-guard@v1.6.0` until you are ready, which is a choice a
-maintainer makes on a protected branch -- knowing what it costs: **every tag
+maintainer makes on a protected branch, knowing what it costs: **every tag
 before `@v1.7.1` installs its scanner with `npx` from inside the checkout**, so
 a pull request can choose the program that scans it. Pinning back trades that
 boundary for time on a one-line checkout change.
@@ -620,14 +626,14 @@ JSON Schema for editor autocomplete: **[schemas/vault-guard-config.json](./schem
 > `pull_request` event GitHub runs the workflow file from the pull request head,
 > so an off switch would be settable by the pull request it judges. If you are
 > not ready to change the checkout, stay pinned to
-> `vaultcompasshq/vault-guard@v1.6.0` until you are -- but know the trade: every
+> `vaultcompasshq/vault-guard@v1.6.0` until you are, but know the trade: every
 > tag before `@v1.7.1` installs its scanner from inside the checkout it scans,
 > so a pull request can choose the program that judges it.
 
 > **Also moving to `@v1.7.1`.** It is an action-only release: the tag moves, the
 > npm packages stay at 1.7.0. Two things change in a workflow. The `version`
 > input takes an EXACT version now and refuses a dist-tag, so **delete
-> `version: latest`** if you have it -- the default is the scanner this tag
+> `version: latest`** if you have it; the default is the scanner this tag
 > shipped with. And the `results-file` output is empty when the scan wrote no
 > document, so a chained `upload-sarif` should be guarded on it rather than run
 > unconditionally. Pinning `@v1.7.0` keeps the old Action, the one that installs
@@ -740,13 +746,10 @@ suppressed line numbers.
 
 ---
 
-## Opt-in token telemetry, statusline and suggest-model
+## Other tools
 
-Optional local Anthropic token logging (`vault-guard proxy`), `statusline` and `suggest-model`: see [docs/token-telemetry.md](./docs/token-telemetry.md).
-
-## VS Code / Cursor extension
-
-Inline diagnostics for open files, not yet published: see [docs/vscode-extension.md](./docs/vscode-extension.md).
+- Opt-in local Anthropic token logging (`vault-guard proxy`), `statusline` and `suggest-model`: [docs/token-telemetry.md](./docs/token-telemetry.md).
+- VS Code / Cursor extension (inline diagnostics for open files, not yet published): [docs/vscode-extension.md](./docs/vscode-extension.md).
 
 ---
 
@@ -755,7 +758,7 @@ Inline diagnostics for open files, not yet published: see [docs/vscode-extension
 `--format json` prints one JSON object on stdout (diagnostics on stderr; parse stdout only):
 
 ```bash
-node packages/cli/dist/cli-entry.js scan /path/to/project --format json
+vault-guard scan /path/to/project --format json
 ```
 
 Parse `summary.secrets`, `results`, and `run` as documented in **[docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md)**.
@@ -831,10 +834,6 @@ present, zero included:
 - **Homebrew:** `packaging/homebrew/README.md`, optional tap workflow (npm remains canonical).
 
 ---
-
-## Maintainer dogfood
-
-Before tagging a release, install on a ship machine and smoke the real paths: the MCP server, the pre-commit hook, optional telemetry, and `pnpm bench` / `node bench/run.cjs --assert`.
 
 ## Development
 
