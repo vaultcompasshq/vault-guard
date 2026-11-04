@@ -246,7 +246,7 @@ jobs:
       # default token is read-only, so the upload 403s without it.
       security-events: write
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - uses: vaultcompasshq/vault-guard@v1.13.1
@@ -280,7 +280,7 @@ not a clean scan and must not be reported as findings either.
 ## Example: fail the job on secrets
 
 ```yaml
-- uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 - uses: vaultcompasshq/vault-guard@v1.13.1
   id: vg
   with:

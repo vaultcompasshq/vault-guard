@@ -101,6 +101,10 @@ pnpm release:next   # publishes to @next dist-tag; does not touch @latest
 
 Promote to `@latest` by tagging once the soak passes.
 
+## Maintainer dogfood
+
+Before tagging a release, install on a ship machine and smoke the real paths: the MCP server, the pre-commit hook, optional telemetry, and `pnpm bench` / `node bench/run.cjs --assert`.
+
 ## Pre-commit hook
 
 The project installs a `vault-guard` pre-commit hook that scans staged files.
