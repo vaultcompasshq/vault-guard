@@ -918,10 +918,15 @@ describe('.github/workflows hardening', () => {
   function disallowedGrants(text) {
     const grants = topLevelPermissions(text);
     if (grants === null) return ['missing top-level permissions'];
-    const allowed = new Set(['contents: read']);
+    // read-all grants read on every scope and write on none; scorecard.yml
+    // uses it, as the Scorecard action documents.
+    const allowed = new Set(['contents: read', 'read-all']);
     // security-events: write is the SARIF upload grant. It is allowed at
-    // the top only in a workflow that uploads a SARIF log.
-    if (text.includes('upload-sarif')) allowed.add('security-events: write');
+    // the top only in a workflow that uploads a SARIF log, by upload-sarif or
+    // by the CodeQL analyze step, which uploads its own.
+    if (text.includes('upload-sarif') || text.includes('codeql-action/analyze@')) {
+      allowed.add('security-events: write');
+    }
     return grants.filter((grant) => !allowed.has(grant));
   }
 
@@ -972,7 +977,8 @@ describe('.github/workflows hardening', () => {
     for (let s = 0; s < starts.length; s += 1) {
       const block = lines.slice(starts[s], starts[s + 1]).join('\n');
       if (!/uses:[ \t]*['"]?actions\/checkout@/.test(block)) continue;
-      if (!/^.*persist-credentials:[ \t]*false[ \t]*(?:#.*)?$/m.test(block)) {
+      // The key must start its line: a commented-out key does not count.
+      if (!/^[ \t]*persist-credentials:[ \t]*false[ \t]*(?:#.*)?$/m.test(block)) {
         missing.push(lines[starts[s]].trim());
       }
     }
@@ -980,7 +986,9 @@ describe('.github/workflows hardening', () => {
   }
 
   it('keeps top-level permissions to contents read, plus security-events write only where SARIF is uploaded', () => {
-    for (const name of ['ci.yml', 'release.yml']) {
+    const names = workflowNames();
+    expect(names).toEqual(expect.arrayContaining(['ci.yml', 'release.yml', 'codeql.yml', 'scorecard.yml']));
+    for (const name of names) {
       const extra = disallowedGrants(readWorkflow(name));
       expect({ name, extra }).toEqual({ name, extra: [] });
     }
@@ -1003,6 +1011,20 @@ describe('.github/workflows hardening', () => {
       const bad = usesRefs(readWorkflow(name)).filter((ref) => !isFullShaPin(ref));
       expect({ name, bad }).toEqual({ name, bad: [] });
     }
+  });
+
+  it('does not count a commented-out persist-credentials key', () => {
+    const step = [
+      'jobs:',
+      '  a:',
+      '    steps:',
+      '      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0',
+      '        with:',
+      '          # persist-credentials: false',
+      '      - run: true',
+    ].join('\n');
+    expect(checkoutStepsMissingCredentialsOff(step)).toHaveLength(1);
+    expect(checkoutStepsMissingCredentialsOff(step.replace('# persist', 'persist'))).toHaveLength(0);
   });
 
   it('sets persist-credentials false on every checkout', () => {

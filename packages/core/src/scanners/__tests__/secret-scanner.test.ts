@@ -419,6 +419,112 @@ describe('SecretScanner', () => {
     it('cuts a query string at a comma or semicolon but still reports the credential before the cut', () => {
       expect(dsnTypes(`${PG}?a=1;b=2,c=3`)).toEqual(['postgresql-url']);
     });
+
+    it.each(['"', "'", '`', ',', ';', '}', ']', ')', '<', '>', '|', '\\', ' '])(
+      'ends a mysql URL at %j so a standard marker after it cannot skip the URL',
+      delimiter => {
+        expect(dsnTypes(`x=${MY}${delimiter}dummy`)).toEqual(['mysql-url']);
+      },
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // The connection-string match cannot begin before the credential's own scheme
+  // ---------------------------------------------------------------------------
+
+  describe('connection-string match starts at the URL that holds the credential', () => {
+    const PW = 'Xj8kP2mQ9zRv';
+    const PG = `postgres://appuser:${PW}@db.prod.acme-corp.net:5432/orders`;
+    const MY = `mysql://appuser:${PW}@db.prod.acme-corp.net:3306/orders`;
+    const MO = `mongodb://appuser:${PW}@db.prod.acme-corp.net:27017`;
+    const RE = `redis://default:${PW}@cache.prod.acme-corp.net:6379`;
+
+    function dsnTypes(line: string): string[] {
+      fs.writeFileSync(testFilePath, line);
+      return scanner
+        .scan(testFilePath)
+        .filter(m => ['postgresql-url', 'mysql-url', 'mongodb-url', 'redis-url'].includes(m.type))
+        .map(m => m.type);
+    }
+
+    it.each([
+      ['postgresql-url', 'env', PG, `DEV=postgres://example;PROD=${PG}`],
+      ['postgresql-url', 'Markdown pair', PG, `See [dev](postgres://example),[prod](${PG})`],
+      ['mysql-url', 'env', MY, `DEV=mysql://dev_placeholder;PROD=${MY}`],
+      ['mysql-url', 'Markdown pair', MY, `See [dev](mysql://example),[prod](${MY})`],
+      ['mongodb-url', 'env', MO, `DEV=mongodb://example,PROD=${MO}`],
+      ['mongodb-url', 'Markdown pair', MO, `See [dev](mongodb://example),[prod](${MO})`],
+      ['redis-url', 'env', RE, `DEV=redis://example;PROD=${RE}`],
+      ['redis-url', 'Markdown pair', RE, `See [dev](redis://example),[prod](${RE})`],
+      ['postgresql-url', 'comma list', PG, `DATABASE_URLS=postgres://localhost,${PG}`],
+    ])(
+      'reports a %s after a host-only credential-less URL earlier on the line (%s), matched from its own scheme',
+      (type, _shape, url, line) => {
+        fs.writeFileSync(testFilePath, line);
+        const found = scanner.scan(testFilePath).filter(m => m.type === type);
+        expect(found).toHaveLength(1);
+        expect(found[0].column).toBe(line.indexOf(url));
+      },
+    );
+
+    it.each([
+      ['postgresql-url', `{"a":"postgres://admin:Xj8kP2mQ9zRv","owner":"dba@db.prod.acme-corp.net:5432/orders"}`],
+      ['mysql-url', `{"a":"mysql://admin:Xj8kP2mQ9zRv","owner":"dba@db.prod.acme-corp.net:3306/orders"}`],
+      ['mongodb-url', `{"a":"mongodb://admin:Xj8kP2mQ9zRv","owner":"dba@db.prod.acme-corp.net:27017"}`],
+      ['redis-url', `{"a":"redis://admin:Xj8kP2mQ9zRv","owner":"dba@cache.prod.acme-corp.net:6379"}`],
+    ])('ends a %s password at a double quote, so it is not joined to an at sign in a later value', (_type, line) => {
+      expect(dsnTypes(line)).toEqual([]);
+    });
+
+    it.each([
+      ['postgresql-url', 'JSON', `{"local":"postgres://localhost/example","db":"${PG}"}`],
+      ['postgresql-url', 'env', `DEV=postgres://localhost/dev_dummy;PROD=${PG}`],
+      ['mysql-url', 'JSON', `{"docs":"see mysql://dev_placeholder","db":"${MY}"}`],
+      ['mysql-url', 'env', `DEV=mysql://localhost/dev_dummy;PROD=${MY}`],
+      ['mongodb-url', 'JSON', `{"local":"mongodb://localhost/example","prod":"${MO}"}`],
+      ['mongodb-url', 'env', `DEV=mongodb://localhost/dev_dummy;PROD=${MO}`],
+      ['redis-url', 'JSON', `{"local":"redis://localhost:6379/example","prod":"${RE}"}`],
+      ['redis-url', 'env', `DEV=redis://localhost:6379/dev_dummy;PROD=${RE}`],
+      ['postgresql-url', 'env, with a port', `DEV=postgres://localhost:5432/dev_dummy;PROD=${PG}`],
+      ['mysql-url', 'env, with a port', `DEV=mysql://localhost:3306/dev_dummy;PROD=${MY}`],
+      ['mongodb-url', 'env, with a port', `DEV=mongodb://localhost:27017/dev_dummy;PROD=${MO}`],
+      ['redis-url', 'env, without a port', `DEV=redis://localhost/dev_dummy;PROD=${RE}`],
+    ])(
+      'reports a %s after a credential-less URL with a standard marker earlier on the line (%s)',
+      (type, _shape, line) => {
+        expect(dsnTypes(line)).toEqual([type]);
+      },
+    );
+
+    it.each([
+      ['postgresql-url', 'slash', `postgres://appuser:Xj8k/P2mQ9zRv@db.prod.acme-corp.net:5432/orders`],
+      ['postgresql-url', 'colon', `postgres://appuser:Xj8k:P2mQ9zRv@db.prod.acme-corp.net:5432/orders`],
+      ['postgresql-url', 'bracket', `postgres://appuser:Xj8k]P2mQ9zRv@db.prod.acme-corp.net:5432/orders`],
+      ['postgresql-url', 'at-sign', `postgres://appuser:Xj8k@P2mQ9zRv@db.prod.acme-corp.net:5432/orders`],
+      ['mysql-url', 'slash', `mysql://appuser:Xj8k/P2mQ9zRv@db.prod.acme-corp.net:3306/orders`],
+      ['mysql-url', 'colon', `mysql://appuser:Xj8k:P2mQ9zRv@db.prod.acme-corp.net:3306/orders`],
+      ['mysql-url', 'bracket', `mysql://appuser:Xj8k]P2mQ9zRv@db.prod.acme-corp.net:3306/orders`],
+      ['mysql-url', 'at-sign', `mysql://appuser:Xj8k@P2mQ9zRv@db.prod.acme-corp.net:3306/orders`],
+      ['mongodb-url', 'slash', `mongodb://appuser:Xj8k/P2mQ9zRv@db.prod.acme-corp.net:27017`],
+      ['mongodb-url', 'colon', `mongodb://appuser:Xj8k:P2mQ9zRv@db.prod.acme-corp.net:27017`],
+      ['mongodb-url', 'bracket', `mongodb://appuser:Xj8k]P2mQ9zRv@db.prod.acme-corp.net:27017`],
+      ['mongodb-url', 'at-sign', `mongodb://appuser:Xj8k@P2mQ9zRv@db.prod.acme-corp.net:27017`],
+      ['redis-url', 'slash', `redis://default:Xj8k/P2mQ9zRv@cache.prod.acme-corp.net:6379`],
+      ['redis-url', 'colon', `redis://default:Xj8k:P2mQ9zRv@cache.prod.acme-corp.net:6379`],
+      ['redis-url', 'bracket', `redis://default:Xj8k]P2mQ9zRv@cache.prod.acme-corp.net:6379`],
+      ['redis-url', 'at-sign', `redis://default:Xj8k@P2mQ9zRv@cache.prod.acme-corp.net:6379`],
+    ])('still reports a %s whose password holds a raw %s', (type, _char, url) => {
+      expect(dsnTypes(`{"db":"${url}"}`)).toEqual([type]);
+    });
+
+    it.each([
+      ['postgresql-url', `postgres://appuser:Xj8k:/P2m/Q9z:Rv@db.prod.acme-corp.net:5432/orders`],
+      ['mysql-url', `mysql://appuser:Xj8k:/P2m/Q9z:Rv@db.prod.acme-corp.net:3306/orders`],
+      ['mongodb-url', `mongodb://appuser:Xj8k:/P2m/Q9z:Rv@db.prod.acme-corp.net:27017`],
+      ['redis-url', `redis://default:Xj8k:/P2m/Q9z:Rv@cache.prod.acme-corp.net:6379`],
+    ])('still reports a %s whose password holds a colon and slashes that do not spell the scheme separator', (type, url) => {
+      expect(dsnTypes(`DATABASE_URL=${url}`)).toEqual([type]);
+    });
   });
 
   // ---------------------------------------------------------------------------

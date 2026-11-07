@@ -138,7 +138,8 @@ describe('hook installer and links', () => {
     const result = new PreCommitHook().install({ cwd: r, manager: 'husky' });
     expect(result.success).toBe(true);
     const text = fs.readFileSync(path.join(r, '.husky', 'pre-commit'), 'utf-8');
-    expect(text.startsWith(FOREIGN)).toBe(true);
+    // The stanza goes after the shebang; removing it gives the hook back.
+    expect(text.replace(/# --- vault-guard ---[\s\S]*# --- end vault-guard ---\n/, '')).toBe(FOREIGN);
     expect(text).toContain('vault-guard scan --staged');
     expect(fs.statSync(path.join(r, '.husky', 'pre-commit')).mode & 0o777).toBe(0o755);
   });

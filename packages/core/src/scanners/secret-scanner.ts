@@ -162,14 +162,16 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // quote, backtick, comma, semicolon, closing brace, bracket or paren, a less-
   // than, greater-than or pipe sign, a backslash, or whitespace; none appears
   // unencoded in a URL, and they delimit it in XML, HTML, tables and escaped
-  // strings such as an `\n` between two lines). The placeholder check runs
-  // against this match, so it has to be the URL alone: text after the delimiter (the next JSON key, the next env
-  // entry) must not be able to skip a real DSN. {0,1024} keeps a bare trailing
-  // slash before a closing quote matching, as it did when the capture was \S.
-  ['postgresql-url', { regex: /postgres(?:ql)?:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/[^\s"'`,;}\])<>|\\]{0,1024}/g, severity: 'critical', connectionString: true, valueBearing: true }],
-  ['mysql-url',{ regex: /mysql:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/[^\s"'`,;}\])<>|\\]{0,1024}/g,            severity: 'critical', connectionString: true, valueBearing: true }],
-  ['mongodb-url',    { regex: /mongodb(?:\+srv)?:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})?/g,            severity: 'critical', connectionString: true, valueBearing: true }],
-  ['redis-url',      { regex: /rediss?:\/\/[^:@\s]{1,256}:[^@\s]{1,256}@[^:\s/]{1,256}(?::\d{1,8})/g,                       severity: 'critical', connectionString: true, valueBearing: true }],
+  // strings such as an `\n` between two lines). The placeholder check runs against this match, so it has to be the URL
+  // alone: neither the text after it (the next JSON key or env entry) nor a credential-less URL before it may skip a real DSN,
+  // so the user part also stops at a slash or quote and the password part at a quote or at "://", in all four rules: no
+  // position in the password may start the scheme separator (a per-character lookahead, so each character is consumed
+  // once), and the password may not begin with "//" (so the user/password colon is never another URL's "://"). The only
+  // "://" before the at sign is then the credential's own scheme. {0,1024} keeps a bare trailing slash before a quote.
+  ['postgresql-url', { regex: /postgres(?:ql)?:\/\/[^:@\s/"'`]{1,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"'`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/[^\s"'`,;}\])<>|\\]{0,1024}/g, severity: 'critical', connectionString: true, valueBearing: true }],
+  ['mysql-url',{ regex: /mysql:\/\/[^:@\s/"'`]{1,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"'`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/[^\s"'`,;}\])<>|\\]{0,1024}/g,            severity: 'critical', connectionString: true, valueBearing: true }],
+  ['mongodb-url',    { regex: /mongodb(?:\+srv)?:\/\/[^:@\s/"'`]{1,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"'`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?/g,            severity: 'critical', connectionString: true, valueBearing: true }],
+  ['redis-url',      { regex: /rediss?:\/\/[^:@\s/"'`]{1,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"'`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})/g,                       severity: 'critical', connectionString: true, valueBearing: true }],
 
   // --- Source control tokens ---
   ['github-token',   { regex: /gh[pousor]_[a-zA-Z0-9]{36}/g,                                    severity: 'critical', valueBearing: true }],

@@ -1465,7 +1465,24 @@ summaries count matches, and state groups and demotions beside them`).
 ## A postgres or mysql URL match ends at the first URL delimiter
 
 The sample-value check on a connection string reads the regex match, so the
-match must be the URL and nothing after it. The `postgresql-url` and
+match must be the URL and nothing after it, and nothing before it: the
+matched URL cannot begin before the credential's own scheme. In all four
+rules (`postgresql-url`, `mysql-url`, `mongodb-url`, `redis-url`) the user
+part cannot hold a slash, double quote, single quote or backtick (nor a
+colon, at sign or whitespace), and the password part cannot hold a double
+quote, single quote or backtick (nor an at sign or whitespace), may not begin
+with `//`, and no position in it may start `://` (a per-character negative
+lookahead, so each character is still consumed once). The user part has no
+slash, so the user/password colon cannot be another URL's `://` (the
+password would then begin with `//`), and the password cannot hold one. The
+only `://` between the start of the match and its at sign is therefore the
+one right after the matched scheme, so a credential-less URL earlier on the
+line (host only, or with a port, path or quotes) cannot become the start of
+the match, and a standard marker in it cannot skip the real URL after it. A
+raw slash, colon or bracket in a password, a colon followed by one slash, or
+an at sign before the last one, still matches. A password that itself begins
+with `//` is no longer matched (a false negative this rule accepts). The
+`postgresql-url` and
 `mysql-url` path capture stops at the first double quote, single quote,
 backtick, comma, semicolon, closing brace, closing bracket, closing paren,
 less-than sign, greater-than sign, pipe, backslash or whitespace character
@@ -1475,10 +1492,12 @@ next JSON key or the next env entry therefore cannot skip a real URL; a
 marker inside the URL (user, password, host, database, query, fragment) still does,
 which is what `docs/RULES.md` says. A query string is cut at a comma or
 semicolon, and the credential before the cut is still reported. The
-mongodb and redis rules end at the host or port and are unchanged.
+mongodb and redis rules end at the host or port.
 
 **Enforced by:** the two regexes at
-`packages/core/src/scanners/secret-scanner.ts:169` and `:170`; the check
+`packages/core/src/scanners/secret-scanner.ts:171` and `:172`, and the user
+and password classes of those two and of the mongodb and redis regexes at
+`:173` and `:174`; the check
 that reads the match is in the same file, `isNonSecretConnectionString(fullMatch)`.
 Tests, in `packages/core/src/scanners/__tests__/secret-scanner.test.ts`:
 `reports a URL followed by a JSON sibling holding a standard marker`,
@@ -1488,7 +1507,28 @@ marker`, `ends the URL at %j so a standard marker after it cannot skip the
 URL`, `still skips a URL with a standard marker inside its %s`, `cuts a query
 string at a comma or semicolon but still reports the credential before the
 cut`, `ends the URL at an escaped newline (backslash n) between two lines of a
-string`. Mutation, 2026-11-01: both regexes widened back to `\S{1,1024}`
+string`, `ends a mysql URL at %j so a standard marker after it cannot skip the
+URL`, `reports a %s after a credential-less URL with a standard marker earlier
+on the line (%s)` (JSON and env spellings for each of the four rules, env
+with a port on the earlier URL for each, and redis without one),
+`reports a %s after a host-only credential-less URL earlier on the line (%s),
+matched from its own scheme` (env and Markdown-pair spellings for each of the
+four rules, and a comma list; each asserts the match starts at the real
+URL's own scheme), `ends a %s password at a double quote, so it is not joined
+to an at sign in a later value` (each of the four rules),
+`still reports a %s whose password holds a raw %s` (slash, colon, bracket and
+at sign for each of the four rules) and `still reports a %s whose password
+holds a colon and slashes that do not spell the scheme separator`. Mutations,
+2026-11-07: removing the `(?!\/\/)` after the user/password colon from the
+postgres regex turned its 3 host-only cases red (env, Markdown pair, comma
+list); removing the double quote from the postgres password class turned 1
+red. Mutations, 2026-11-06: the mysql path class reduced to whitespace, double quote, comma
+and semicolon turned 9 of the mysql delimiter cases red; with the first eight
+leading-URL cases (no port), the four user and password classes put back to
+the 1.13.1 ones turned all 8 red, and the redis regex alone put back turned
+its 2 red; before the `://` lookahead the four env-with-a-port cases were red
+(measured on postgres, mysql, mongodb and redis), and removing the lookahead
+from the redis regex alone turned its env-with-a-port case red. Mutation, 2026-11-01: both regexes widened back to `\S{1,1024}`
 turned 16 of those tests red: the three audit lines, the twelve delimiter
 cases that are not whitespace (double quote, single quote, backtick, comma,
 semicolon, closing brace, bracket, paren, less-than, greater-than, pipe,
@@ -1503,48 +1543,206 @@ angle-bracket lines that the version without those three characters missed.
 
 ## The native pre-commit hook has one ownership test, and a foreign hook is merged into, never replaced
 
-A native `pre-commit` file is vault-guard's only when a whole line of it is
-the vault-guard header (the current one or the 1.0.x one), or the stanza
-begin marker `# --- vault-guard ---`. Ownership and idempotency are by that
-header and that stanza marker only. A mention of `vault-guard` or
-`scan --staged` anywhere else, in a comment, a quoted string, a heredoc, a
-multi-line string, a command substitution, an `|| true`, dead code or a live
-line, is not ownership and does not stop the stanza being added. The
-classification is one function, `classifyPreCommitHook`, used by the native
-installer, `isInstalled` (native), the native uninstaller and
-`foreignHookConflict` in `init`, so the four never disagree. A fifth reading,
+A native or husky `pre-commit` file is vault-guard's whole (`owned`) only
+when its bytes, with CRLF read as LF and all trailing whitespace dropped, are a
+script vault-guard writes: the current native or husky template, or one a
+released version wrote (the 1.0.x template included), held as SHA-256 hashes.
+It is `merged` when a whole line is the stanza begin marker
+`# --- vault-guard ---` and a later whole line is the end marker. A begin
+marker with no end marker after it is `damaged`. A file that carries the
+vault-guard header line (the current one or the 1.0.x one) but is neither is
+`claimed`: lines were added to a script vault-guard wrote, or a foreign hook
+copied the line. Only `owned` and `merged` are installed. Ownership and
+idempotency are by those bytes and that complete stanza only. The header line
+alone, or a mention of `vault-guard` or `scan --staged` anywhere else, in a
+comment, a quoted string, a heredoc, a multi-line string, a command
+substitution, an `|| true`, dead code or a live line, is not ownership and
+does not stop the stanza being added. The classification is one function,
+`classifyPreCommitHook`, used by the native and husky installers,
+`isInstalled` (native and husky), both uninstallers and
+`foreignHookConflict` in `init`, so they never disagree. A further reading,
 `wired`, is a hook where, with quoted strings and any trailing comment removed
 from a line, the command sits at a command start. It is read per line (a
 heredoc body or a line inside a multi-line string is read as code) and it
 decides only the install message ("already mentions ... cannot verify that
 line blocks, so its own stanza was added as well"), that `init` reports no
 conflict (init then calls install, which merges), and that the uninstaller,
-with no stanza to remove, refuses and changes nothing.
+with no stanza to remove, changes nothing and reports the hook as kept (not
+vault-guard's to remove).
 
-For a non-empty hook that is not vault-guard's, wired included, `install-hook`
-inserts a marked stanza (begin and end markers) right after the shebang line,
-so a trailing `exit` or `exec` in the foreign hook cannot skip it, and writes
-it with the file's own mode. A hand-wired hook therefore scans twice, which is
-noise and fast; a hook that claims to run the scan but does not (a heredoc, an
-`|| true`) cannot pass as installed. A second run adds nothing (the stanza
-marker is the test). Under a husky-generated hooks directory `isInstalled`
-keeps husky's substring test, as the husky append path does. A hook whose shebang is
-not a POSIX shell is refused and left untouched. The uninstaller removes
-exactly the stanza from a merged hook, restoring the foreign bytes, refuses
-(changing nothing) when the begin marker has no end marker, and deletes the
-file only when vault-guard wrote all of it. This is the
-"detect existing hooks and merge an idempotent snippet" row of
-`docs/THREAT_MODEL.md`. `init` still refuses a foreign hook rather than
-merging. The husky manager keeps its own append path and its own substring
-test (not covered here).
+A hook that is not `owned` and not a complete stanza, but holds, in order and
+as whole lines (surrounding whitespace and CRLF aside), the signature lines of
+a script vault-guard writes or wrote, is a hook vault-guard wrote and somebody
+edited after install: lines added at the end, inserted in the middle, removed,
+or put before the shebang. The signature lines are the header line and that
+script's scan command line (`vault-guard scan --staged || status=$?` for the
+1.4.6 and later scripts, `if vault-guard scan --staged; then` for native 1.0.0
+to 1.4.5, `vault-guard scan --staged || {` for husky 1.4.4 to 1.4.5, and
+`vault-guard scan` under the 1.0.x header); the 1.0.0 to 1.4.3 husky script
+has no header line, so its pair is `vault-guard scan --staged || {` followed
+by its success line `echo "✅ vault-guard: no secrets in staged files"`. Such a
+hook is usually `claimed`; the edited headerless husky script reads `wired`.
+`install-hook` and `init` refuse it with exit 1, name the file, say it was
+edited after install, and say to remove the edits or pass `--force`; nothing
+is changed. `--force` rewrites it from the current template and says the
+edits were discarded. Both uninstallers refuse it (never report it as kept),
+so `init --revert` stops on it. A hook that carries the header line but none
+of those scan lines (a foreign hook that copied the header line, or one that
+runs the scan some other way, such as `npx vault-guard scan --staged`) keeps
+getting the stanza, with or without `--force`. An edit that removes the
+header line or the scan line itself is not detected; the hook then reads as
+`wired` or `foreign` and is treated as one.
+
+For any other non-empty hook that is not installed (wired, claimed, damaged and
+foreign alike), `install-hook` inserts a marked stanza (begin and end markers)
+right after the shebang line, so a trailing `exit` or `exec` in the hook
+cannot skip it, and writes it with the file's own mode. A hand-wired hook
+therefore scans twice, which is noise and fast; a hook that claims to run the
+scan but does not (a heredoc, an `|| true`, a header line over somebody
+else's commands) cannot pass as installed. A second run adds nothing (the
+complete stanza is the test). The husky path (`--manager husky`, and native
+install under a husky-generated hooks directory) uses the same
+classification and the same `mergeStanza` for `.husky/pre-commit`: it adopts
+only an owned script or a complete stanza, and a comment that mentions
+vault-guard is merged into, not adopted. A hook whose shebang is not a POSIX
+shell is refused and left untouched, on both paths. The uninstallers follow
+one three-way rule: an `owned` file is deleted; a `merged` file loses exactly
+the stanza (the husky uninstaller also removes the old stanza earlier versions
+appended, when the file ends with exactly those bytes), and is deleted only
+when nothing but whitespace remains, otherwise written back with its mode,
+unless what remains still holds the signature lines of a vault-guard script (it would
+keep running vault-guard's own scan), which is refused like the next case; a
+`claimed` or `damaged` file is refused with a message that names the file and
+says what to remove by hand, and nothing is changed. `init --revert` runs the
+uninstaller before it removes any other init file, and on a refusal exits 1
+with the uninstaller's message and removes nothing, so the manifest is still
+there to revert again. A `wired` hook (the user's own line runs vault-guard)
+does not stop revert: the hook is left in place, revert says so, and the
+other init files and the manifest are removed. `init --revert --dry-run` asks
+the same uninstaller with its dry-run flag, which classifies and changes
+nothing, so it predicts the refusal (exit 1) or the leave-in-place rather
+than saying it would uninstall the hook. This is the "detect existing hooks and merge an
+idempotent snippet" row of `docs/THREAT_MODEL.md`. `init` still refuses a
+`foreign` hook rather than merging; for a `wired`, `claimed` or `damaged` hook
+it reports no conflict and calls install, which merges.
 
 **Enforced by:** `classifyPreCommitHook`
-(`packages/core/src/scanners/pre-commit-hook.ts:69`), `codeOnly` (`:95`),
-`mergeStanza` (`:152`) and `stripStanza` (`:164`), called from `installNative`
-(`:642`, `:670`), the native `isInstalled` branch (`:558`) and
-`uninstallNative` (`:735`; the damaged-stanza check at `:761`, its message at
-`:765`, the `stripStanza` call at `:770`), and from `foreignHookConflict` (`packages/cli/src/commands/init.ts:170`).
+(`packages/core/src/scanners/pre-commit-hook.ts:230`) with the released-script
+hashes at `:76`, `normalizeScript` at `:100`, `isReleasedHookScript` at
+`:111` and the current templates added at `:468`; the signature lines at
+`:124` read by `isEditedWrittenScript` (`:146`), `editedRefusal` (`:155`),
+`editedUninstallRefusal` (`:163`) and `remainderRefusal` (`:177`); `codeOnly`
+(`:260`), `mergeStanza` (`:317`), `stripStanza` (`:329`) and `claimedRefusal`
+(`:338`), called from `isInstalled` (`:743`), `installNative` (`:827`; the
+edited-hook refusal and `--force` rewrite at `:840`), `uninstallNative`
+(the edited-hook refusal at `:952`, the wired hook kept at `:959`, the
+claimed refusal at `:967`, the damaged-stanza message at `:977`, the
+`stripStanza` call at `:987` and the remainder refusal at `:988`),
+`installHusky` (`:1053`; the edited-hook refusal at `:1058`) and
+`uninstallHusky` (`:1143`; the old appended stanza at `:1144`, the remainder
+refusal at `:1154`, the edited-hook refusal at `:1162`, the claimed refusal
+at `:1167`, the kept mention at `:1188`), from `foreignHookConflict`
+(`packages/cli/src/commands/init.ts:175`), `--force` passed by `applyInit`
+(`packages/cli/src/commands/init.ts:467`), and the revert order and the kept
+hook in `revertInit` (`packages/cli/src/commands/init.ts:614` and `:619`). The
+released-script hashes were computed from the template literals at every
+`v1.*` tag; the 1.0.x header one is pinned by a test below, and the seven
+others by checked-in fixture bytes of hooks rendered by install-hook from the
+published packages (1.0.0, 1.3.0, 1.4.0, 1.4.4, 1.4.6, 1.9.0, 1.12.0, native
+and husky), in `packages/core/src/scanners/__tests__/fixtures/released-hook-scripts.json`.
+Tests, in `packages/core/src/scanners/__tests__/released-hook-scripts.test.ts`:
+`has every released native and husky template`, `the %s fixture is the
+published bytes`, `the %s script is in the released table and classifies as
+owned`, `the %s script stays owned with CRLF line ends, no final newline, or
+extra trailing blank lines and spaces` and `the %s script with a line added is
+not owned`.
 Tests, in `packages/core/src/scanners/__tests__/pre-commit-hook.test.ts`:
+`uninstall deletes a hook equal to the current script, also with CRLF line
+ends or no final newline`, `uninstall deletes a hook equal to the 1.0.x
+script`, `uninstall refuses a vault-guard script with lines added to it,
+names the file, and changes nothing`, `isInstalled is false for a vault-guard
+script with lines added to it, and install refuses it, names the file, and
+changes nothing`, `install refuses a released vault-guard script with lines
+added to it, and a hook whose CRLF copy of the script has lines added`,
+`install --force rewrites a vault-guard script with lines added to it and
+says the edits were discarded`, `install --force still merges into a foreign
+hook that only carries the header line`, `uninstall refuses a merged hook
+whose remainder is still a vault-guard script with edits, and changes
+nothing`, `uninstall deletes a vault-guard script with extra trailing blank
+lines`, `uninstall leaves a hook that only runs vault-guard on a line of its
+own in place, and says it was kept`, `uninstall with dryRun changes nothing
+and gives the same answer as the real run`, `husky install merges into a hook
+with %s rather than adopting it, the staged secret is blocked, and uninstall
+gives the bytes back` (the header line alone; the header line and exit 0),
+`husky install refuses a vault-guard script with lines added to it, names the
+file, and --force rewrites it`, `husky install refuses the 1.0.0 husky script,
+which has no header line, with lines added to it`, `husky uninstall refuses a
+merged hook whose remainder is still a vault-guard script with edits`, `husky
+uninstall marks a hook that only mentions the command as kept`, `merges into a
+foreign hook that only carries the header line, the merged hook blocks a
+staged secret, and uninstall gives it back byte for byte`, `install merges
+rather than adopts a hook whose stanza lost its end marker`, `says a merged
+hook that is not executable will not run until chmod +x`, `husky install
+merges into a hook that only mentions vault-guard in a comment, rather than
+adopting it`, `husky uninstall after a merge gives the hook back byte for
+byte`, `husky uninstall refuses a vault-guard script with lines added to it,
+names the file, and changes nothing`, `husky uninstall still removes the
+stanza earlier versions appended at the end of a hook`, `puts the stanza
+before a trailing exit 0 in .husky/pre-commit, so a staged secret is
+blocked`, `merges into a .husky/pre-commit that only mentions vault-guard in a
+comment, so a staged secret is blocked`; in the CLI `init.test.ts`, `revert
+refuses with exit 1 when lines were added to the hook init wrote, names the
+hook, and removes nothing`, `merges into a hook that only carries the
+vault-guard header line, and revert gives it back byte for byte` and `bare
+init does not take a .husky/pre-commit that only runs vault-guard on a plain
+line for installed`; end to end in `install-hook-merge.test.ts`, `a foreign
+hook that only carries the vault-guard header line is merged, blocks a staged
+secret, and init --revert gives it back byte for byte`, `init --revert
+refuses with exit 1 and keeps the hook when lines were added to the hook init
+wrote`, `N2: a husky hook that %s gets the stanza after the shebang, and a
+staged secret is blocked` (ends in exit 0; only mentions vault-guard in a
+comment), `%s refuses with exit 1 a hook vault-guard wrote that was edited
+after install, and --force rewrites it and says the edits were discarded`
+(install-hook and init), `init --revert leaves a hook the user rewired to run
+vault-guard themselves, says so, and removes the other init files` and `init
+--revert --dry-run predicts the refusal for a hook vault-guard did not write
+all of, and removes nothing`, `install-hook and init --revert both refuse a
+hook init wrote with %s, and change nothing` (a line inserted at line 3; a
+template line deleted in the middle) and `init --revert --dry-run leaves a
+hook that is %s byte for byte` (owned; merged). In the core file also
+`install refuses %s with %s, uninstall refuses it, and --force rewrites it`
+style cases under `a vault-guard script edited anywhere, not only at the end,
+is still vault-guard's` (the current native script, the 1.4.6 native script,
+the 1.0.0 native script, the current husky script, the 1.4.4 husky script and
+the headerless 1.0.0 husky script, each with a line inserted at line 3, a
+template line deleted in the middle and a line prepended before the shebang,
+plus a merged hook whose remainder is each of them with a line inserted),
+`a %s hook with the header line but no scan line of a vault-guard script
+still gets the stanza` and `a husky dry-run uninstall of a hook that is %s
+changes no byte` (owned; merged); in the CLI `init.test.ts`, `revert dry-run
+leaves a %s hook that is %s, the manifest and the config byte for byte`
+(native and husky, owned and merged). Mutations, 2026-11-07: the husky
+installer adopting a `claimed` hook (K7) turned 3 red in the core file;
+dropping the 1.9.0 to 1.13.1 native hash from the released table (K2a)
+turned 1 red and dropping the 1.4.6 to 1.8.1 one (K2b) turned 2 red in
+`released-hook-scripts.test.ts`; `normalizeScript` back to dropping one
+final newline turned 8 red across the two core files; `revertInit` treating
+a kept hook as a refusal turned 1 red end to end. Second round: before the
+signature test (with only the earlier whole-script-prefix test) the 24 edited
+cases were red; `isEditedWrittenScript` always false turned 31 red in the
+core file; dropping the headerless husky signature turned 5 red; dropping the
+husky uninstaller's edited-hook refusal turned 3 red (the headerless edits,
+which were then reported as kept); the husky dry-run guard removed before the
+owned unlink turned 1 red, and before the merged write-back 1 red;
+`revertInit` passing `dryRun: false` to the uninstaller turned 6 red (4 in
+`init.test.ts`, 2 end to end). Mutations, 2026-11-06, each
+against the core file alone unless named: a header line counted as owned again turned 4 red; `.husky/pre-commit`
+merged by appending the stanza at the end turned 3 red; a husky hook that
+mentions vault-guard adopted again turned 2 red; the husky uninstaller
+deleting a claimed file turned 1 red; the not-executable note dropped
+(`notExecutable = false`) turned 1 red; `revertInit` ignoring a refusal from
+the uninstaller turned 1 red in the CLI `init.test.ts`.
+Earlier tests, in the same core file:
 `keeps every foreign line byte for byte, adds the marked stanza, and keeps
 the executable bit`, `merges rather than adopts a foreign hook whose comment
 mentions vault-guard and scan --staged (NB5)`, `leaves an own hook unchanged
