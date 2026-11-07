@@ -613,9 +613,14 @@ describe('.github/workflows/release.yml wiring', () => {
   }
 
   const prepareText = workflow.slice(workflow.indexOf('\n  prepare:'), workflow.indexOf('\n  release:'));
-  const publishText = workflow.slice(workflow.indexOf('\n  release:'), workflow.indexOf('\n  smoke-published:'));
+  const publishText = workflow.slice(workflow.indexOf('\n  release:'), workflow.indexOf('\n  github-release:'));
+  const githubReleaseText = workflow.slice(
+    workflow.indexOf('\n  github-release:'),
+    workflow.indexOf('\n  smoke-published:')
+  );
   const releaseJobSteps = () => parseSteps(prepareText, 4);
   const publishJobSteps = () => parseSteps(publishText, 6);
+  const githubReleaseJobSteps = () => parseSteps(githubReleaseText, 6);
   // The publish job cannot read steps.kind. Its gate is the output prepare
   // forwarded, spelled the same positive way.
   const PUBLISH_GATE = "needs.prepare.outputs.action_only == 'false'";
@@ -635,18 +640,19 @@ describe('.github/workflows/release.yml wiring', () => {
   ];
 
   // Every step in the job that holds id-token, in order. Checkout and
-  // Node setup run for both kinds of release, because both still cut a
-  // GitHub Release. Everything that publishes or announces a publish is
-  // gated.
+  // Node setup are ungated; everything that publishes is gated.
   const PUBLISH_JOB_STEPS = [
     'Checkout',
     'Setup Node.js',
     'Upgrade npm for OIDC trusted publishing',
     'Download the packed tarballs',
     'Publish to npm',
-    'Create GitHub Release',
-    'Create GitHub Release (action-only)',
   ];
+
+  // Every step in the job that holds contents: write, in order. Both kinds
+  // of release cut a GitHub Release, one body each, and nothing else runs
+  // there: no checkout, no install, no Node.
+  const GITHUB_RELEASE_JOB_STEPS = ['Create GitHub Release', 'Create GitHub Release (action-only)'];
 
   // Every step before the decision, in order. workflow_dispatch's branch
   // guard has to be the very first step in the job -- it runs on
@@ -684,16 +690,16 @@ describe('.github/workflows/release.yml wiring', () => {
     const publishGated = publishJobSteps()
       .filter((step) => step.if === PUBLISH_GATE)
       .map((step) => step.id);
-    // "Create GitHub Release" carries the same gate and is asserted
-    // separately below, with the body claim it guards.
     expect(publishGated.sort()).toEqual(
-      [
-        'Upgrade npm for OIDC trusted publishing',
-        'Download the packed tarballs',
-        'Publish to npm',
-        'Create GitHub Release',
-      ].sort()
+      ['Upgrade npm for OIDC trusted publishing', 'Download the packed tarballs', 'Publish to npm'].sort()
     );
+
+    // "Create GitHub Release" carries the same gate in its own job, and is
+    // asserted again below with the body claim it guards.
+    const releaseGated = githubReleaseJobSteps()
+      .filter((step) => step.if === PUBLISH_GATE)
+      .map((step) => step.id);
+    expect(releaseGated).toEqual(['Create GitHub Release']);
   });
 
   it('runs the code gates on both kinds of release', () => {
@@ -720,6 +726,7 @@ describe('.github/workflows/release.yml wiring', () => {
     expect(from).toBeGreaterThan(-1);
     expect(ids.slice(from + 1)).toEqual(STEPS_AFTER_DECISION);
     expect(publishJobSteps().map((step) => step.id)).toEqual(PUBLISH_JOB_STEPS);
+    expect(githubReleaseJobSteps().map((step) => step.id)).toEqual(GITHUB_RELEASE_JOB_STEPS);
   });
 
   it('accounts for every step in the whole release job, from the workflow_dispatch guard onward, in order', () => {
@@ -766,10 +773,10 @@ describe('.github/workflows/release.yml wiring', () => {
     const publishClaims = workflow.match(/Published `@vaultcompass\/vault-guard`/g) ?? [];
     expect(publishClaims).toHaveLength(1);
 
-    const release = publishJobSteps().find((step) => step.id === 'Create GitHub Release');
+    const release = githubReleaseJobSteps().find((step) => step.id === 'Create GitHub Release');
     expect(release.if).toBe(PUBLISH_GATE);
 
-    const actionOnlyRelease = publishJobSteps().find(
+    const actionOnlyRelease = githubReleaseJobSteps().find(
       (step) => step.id === 'Create GitHub Release (action-only)'
     );
     expect(actionOnlyRelease.if).toBe("needs.prepare.outputs.action_only == 'true'");
@@ -867,6 +874,48 @@ describe('.github/workflows/release.yml wiring', () => {
     expect(prepareText).not.toMatch(/^ {6}id-token:/m);
     expect(publishText).toMatch(/^ {6}id-token: write$/m);
     expect(publishText).toContain('needs: prepare');
+  });
+
+  // The permission keys one job grants, from its own permissions block.
+  function jobGrants(text) {
+    const block = /\n {4}permissions:\n((?: {6}[^\n]*\n)+)/.exec(text);
+    expect(block).not.toBeNull();
+    return block[1]
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '' && !line.startsWith('#'));
+  }
+
+  it('gives the publish job the OIDC token and no repository write', () => {
+    // Nothing in the publish job writes to the repository, so contents
+    // stays read. The write lives in github-release, which never sees the
+    // token.
+    expect(jobGrants(publishText)).toEqual(['contents: read', 'id-token: write']);
+  });
+
+  it('cuts the GitHub Release in its own job, after the publish, with contents write only', () => {
+    // A separate job so a failed Release can be re-run on its own. Re-running
+    // the publish job does not fail at the publish, which skips a version
+    // already on the registry; it fails at the artifact download once the
+    // packed tarballs' one-day retention has passed.
+    expect(githubReleaseText.length).toBeGreaterThan(0);
+    expect(githubReleaseText).toMatch(/^ {4}needs: \[prepare, release\]$/m);
+    expect(jobGrants(githubReleaseText)).toEqual(['contents: write']);
+    expect(githubReleaseText).not.toMatch(/^ {4}environment:/m);
+    expect(githubReleaseText).not.toContain('actions/checkout');
+    expect(githubReleaseText).not.toMatch(/\b(?:pnpm|npm|yarn) (?:install|ci|add)\b/);
+    expect(githubReleaseText).not.toContain('actions/setup-node');
+    expect(githubReleaseText).not.toMatch(/^ {6}id-token:/m);
+    // The smoke job still waits on the publish, not on the Release page.
+    const smokeText = workflow.slice(workflow.indexOf('\n  smoke-published:'));
+    expect(smokeText).toMatch(/^ {4}needs: release$/m);
+  });
+
+  it('gives the GitHub Release job no job-level if, so it runs only after a successful publish', () => {
+    // With no "if:" the job takes the default success() and waits on both
+    // prepare and release. An "if: always()" or similar would let it cut a
+    // Release page announcing a publish that failed.
+    expect(githubReleaseText).not.toMatch(/^ {4}if:/m);
   });
 
   it('calls the decision script from a step with the id the conditions read', () => {

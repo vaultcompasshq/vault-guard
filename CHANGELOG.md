@@ -7,12 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.2] - 2026-11-07
+
+A patch release with the fixes from the 2026-11-06 audit: the postgres,
+mysql, mongodb and redis rules judge only the URL that holds the credential,
+`install-hook`, `init --revert` and the uninstaller never delete or rewrite a
+hook vault-guard did not write whole, and a refused `install-hook` exits 1.
+It also moves the ignore library to 7, which changes what a config ignore
+pattern with a negated character class excludes; read the note under Changed
+before upgrading if `.vault-guard.json` has one.
+
 ### Changed
 
 - The CI conductor action pin and the @vaultcompass/conductor devDependency move to 0.18.0, and the @vaultcompass/dep-guard devDependency moves to 0.18.2, the version conductor 0.18.0 expects on a push run.
 - vault-guard init now writes the github/codeql-action upload-sarif pin at v4.39.1.
 - vault-guard init now writes the actions/checkout pin at v7.0.1 (was v4.2.2).
-- The ignore library moves from 5 to 7. Config ignore patterns, and .gitignore matching when scanning a directory outside a git repository, now follow git for negated character classes such as [!a], runs of three or more asterisks, and backslash escapes. Inside a git repository the scanned file set is unchanged.
+- The ignore library moves from 5 to 7. Config ignore patterns, and .gitignore matching when scanning a directory outside a git repository, now follow git for negated character classes such as [!a], runs of three or more asterisks, and backslash escapes. Inside a git repository, .gitignore matching is unchanged; config ignore patterns change there too.
+- A negated character class in `.vault-guard.json` `ignore.paths` or `ignore.patterns` now excludes the files git would: `[!a].cfg` skips `b.cfg` and `c.cfg` and scans `a.cfg`, inside and outside a git repository, where every release before 1.13.2 skipped `a.cfg` and scanned the other two. Outside a git repository a `.gitignore` pattern such as `[!a].txt` changes the same way. A pattern written for the old meaning now drops files out of the scan that it used to keep in, and scans the one it was written to skip; check every `[!` pattern in `ignore.paths` and `ignore.patterns` when upgrading and rewrite it for the git meaning.
+- The release workflow now creates the GitHub Release in a job of its own,
+  which holds `contents: write` and nothing else. The npm publish job keeps
+  `id-token: write` and now only reads, so a failed Release page can be
+  re-run on its own without re-publishing (issue 235). This does not touch a
+  published package.
 
 ### Fixed
 
