@@ -8,6 +8,24 @@ import { execSync } from 'child_process';
 const GIT_IDENTITY =
   'git -c user.name=Test -c user.email=test@example.invalid -c commit.gpgsign=false';
 
+/** The whole native script the 1.0.x template wrote, byte for byte. */
+const LEGACY_1_0_SCRIPT = [
+  '#!/bin/sh',
+  '# vault-guard pre-commit hook',
+  'echo "🔍 Running Vault Guard security scan..."',
+  'vault-guard scan',
+  '',
+  'if [ $? -ne 0 ]; then',
+  '  echo ""',
+  '  echo "❌ COMMIT BLOCKED: Secrets detected"',
+  `  echo "💡 Run 'vault-guard fix' to auto-fix issues"`,
+  '  exit 1',
+  'fi',
+  '',
+  'echo "✅ No secrets found, proceeding with commit"',
+  '',
+].join('\n');
+
 // Drives a real commit with a stub vault-guard exiting `exitCode` on PATH,
 // and returns both whether the commit was refused and the captured output
 // -- so tests can assert the hook's own explanation actually printed, not
@@ -271,7 +289,7 @@ describe('PreCommitHook', () => {
       fs.mkdirSync(hooksDir, { recursive: true });
       fs.writeFileSync(
         hookPath,
-        '#!/bin/sh\n# vault-guard pre-commit hook\nvault-guard scan --staged\n',
+        LEGACY_1_0_SCRIPT,
         { mode: 0o755 },
       );
       process.chdir(testDir);
@@ -287,7 +305,7 @@ describe('PreCommitHook', () => {
       fs.mkdirSync(hooksDir, { recursive: true });
       fs.writeFileSync(
         hookPath,
-        '#!/bin/sh\n# vault-guard pre-commit hook\nvault-guard scan --staged\n',
+        LEGACY_1_0_SCRIPT,
         { mode: 0o755 },
       );
       process.chdir(testDir);
@@ -303,7 +321,7 @@ describe('PreCommitHook', () => {
       fs.mkdirSync(hooksDir, { recursive: true });
       fs.writeFileSync(
         hookPath,
-        '#!/bin/sh\n# vault-guard pre-commit hook\nvault-guard scan --staged\n',
+        LEGACY_1_0_SCRIPT,
         { mode: 0o755 },
       );
       const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
@@ -580,6 +598,256 @@ describe('PreCommitHook', () => {
         expect(result.success).toBe(true);
         expect(fs.existsSync(hookPath)).toBe(false);
       });
+
+      it('says a merged hook that is not executable will not run until chmod +x', () => {
+        writeForeign(FOREIGN, 0o644);
+        process.chdir(testDir);
+
+        const result = preCommitHook.install({ manager: 'native' });
+
+        expect(result.success).toBe(true);
+        expect(result.message).toContain('is not executable, so git will not run it until you chmod +x it');
+      });
+    });
+
+    describe('a hook is vault-guard\'s whole only when its bytes are a script vault-guard wrote', () => {
+      function writeHook(text: string, mode = 0o755): void {
+        fs.mkdirSync(hooksDir, { recursive: true });
+        fs.writeFileSync(hookPath, text, { mode });
+        fs.chmodSync(hookPath, mode);
+      }
+
+      function installedScript(): string {
+        process.chdir(testDir);
+        expect(preCommitHook.install({ manager: 'native' }).success).toBe(true);
+        return fs.readFileSync(hookPath, 'utf-8');
+      }
+
+      it('uninstall deletes a hook equal to the current script, also with CRLF line ends or no final newline', () => {
+        const script = installedScript();
+        for (const variant of [script, script.replace(/\n/g, '\r\n'), script.replace(/\n$/, '')]) {
+          writeHook(variant);
+          const result = preCommitHook.uninstall({ manager: 'native' });
+          expect(result.success).toBe(true);
+          expect(fs.existsSync(hookPath)).toBe(false);
+        }
+      });
+
+      it('uninstall deletes a hook equal to the 1.0.x script', () => {
+        writeHook(LEGACY_1_0_SCRIPT);
+        process.chdir(testDir);
+
+        const result = preCommitHook.uninstall({ manager: 'native' });
+
+        expect(result.success).toBe(true);
+        expect(fs.existsSync(hookPath)).toBe(false);
+      });
+
+      it('uninstall refuses a vault-guard script with lines added to it, names the file, and changes nothing', () => {
+        const script = installedScript();
+        const edited = `${script}# team addition\nnpm run lint-staged\n`;
+        writeHook(edited);
+        const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
+        expect(fs.existsSync(cmdPath)).toBe(true);
+
+        const result = preCommitHook.uninstall({ manager: 'native' });
+
+        expect(result.success).toBe(false);
+        expect(result.message).toContain('pre-commit');
+        expect(result.message).toContain('vault-guard did not write all of it');
+        expect(result.message).toMatch(/by hand/);
+        expect(fs.readFileSync(hookPath, 'utf-8')).toBe(edited);
+        expect(fs.existsSync(cmdPath)).toBe(true);
+      });
+
+      it('isInstalled is false for a vault-guard script with lines added to it, and install refuses it, names the file, and changes nothing', () => {
+        const script = installedScript();
+        const edited = `${script}# team addition\n`;
+        writeHook(edited);
+
+        expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(false);
+        const result = preCommitHook.install({ manager: 'native' });
+
+        expect(result.success).toBe(false);
+        expect(result.message).toContain('.git/hooks/pre-commit');
+        expect(result.message).toMatch(/edited after install/);
+        expect(result.message).toMatch(/remove the edits/);
+        expect(result.message).toContain('--force');
+        expect(fs.readFileSync(hookPath, 'utf-8')).toBe(edited);
+      });
+
+      it('install refuses a released vault-guard script with lines added to it, and a hook whose CRLF copy of the script has lines added', () => {
+        const released = [
+          '#!/bin/sh',
+          '# vault-guard pre-commit (installed by @vaultcompass/vault-guard)',
+          'set -e',
+          '',
+          '# Re-attach stdin for GUI git clients.',
+          'if [ -t 0 ]; then :; else exec </dev/tty 2>/dev/null || true; fi',
+          '',
+          'if ! command -v vault-guard >/dev/null 2>&1; then',
+          '  echo "❌ vault-guard: command not found (install: npm i -g @vaultcompass/vault-guard)"',
+          '  exit 1',
+          'fi',
+          '',
+          'echo "🔍 vault-guard: scanning staged files..."',
+          'if vault-guard scan --staged; then',
+          '  echo "✅ vault-guard: no secrets in staged files"',
+          '  exit 0',
+          'fi',
+          '',
+          'echo ""',
+          'echo "❌ COMMIT BLOCKED: secrets detected in staged files"',
+          'echo "💡 Fix or unstage, then retry. Emergency bypass (discouraged): git commit --no-verify"',
+          'exit 1',
+          '',
+        ].join('\n');
+        process.chdir(testDir);
+        for (const edited of [
+          `${released}\n# team addition\n`,
+          `${installedScript().replace(/\n/g, '\r\n')}npm test\r\n`,
+          `${LEGACY_1_0_SCRIPT}npm test\n`,
+        ]) {
+          writeHook(edited);
+          const result = preCommitHook.install({ manager: 'native' });
+          expect(result.success).toBe(false);
+          expect(result.message).toMatch(/edited after install/);
+          expect(fs.readFileSync(hookPath, 'utf-8')).toBe(edited);
+        }
+      });
+
+      it('install --force rewrites a vault-guard script with lines added to it and says the edits were discarded', () => {
+        const script = installedScript();
+        writeHook(`${script}npm run lint-staged\n`);
+
+        const result = preCommitHook.install({ manager: 'native', force: true });
+
+        expect(result.success).toBe(true);
+        expect(result.message).toMatch(/edits .*discarded/);
+        expect(fs.readFileSync(hookPath, 'utf-8')).toBe(script);
+        expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(true);
+      });
+
+      it('install --force still merges into a foreign hook that only carries the header line', () => {
+        const foreign =
+          '#!/bin/sh\n# vault-guard pre-commit (installed by @vaultcompass/vault-guard)\necho "team hook ran"\n';
+        writeHook(foreign);
+        process.chdir(testDir);
+
+        const result = preCommitHook.install({ manager: 'native', force: true });
+
+        expect(result.success).toBe(true);
+        const after = fs.readFileSync(hookPath, 'utf-8');
+        expect(after.replace(/# --- vault-guard ---[\s\S]*# --- end vault-guard ---\n/, '')).toBe(foreign);
+      });
+
+      it('uninstall refuses a merged hook whose remainder is still a vault-guard script with edits, and changes nothing', () => {
+        const script = installedScript();
+        // A stanza merged into an edited vault-guard script (what an earlier
+        // install on this branch's history could leave): after the stanza is
+        // removed, the rest still runs vault-guard's own scan.
+        writeHook('#!/bin/sh\necho "team hook ran"\n');
+        expect(preCommitHook.install({ manager: 'native' }).success).toBe(true);
+        const stanza = /# --- vault-guard ---[\s\S]*# --- end vault-guard ---\n/.exec(fs.readFileSync(hookPath, 'utf-8'))![0];
+        const nl = script.indexOf('\n');
+        const merged = `${script.slice(0, nl + 1)}${stanza}${script.slice(nl + 1)}npm test\n`;
+        writeHook(merged);
+        const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
+        expect(fs.existsSync(cmdPath)).toBe(true);
+
+        const result = preCommitHook.uninstall({ manager: 'native' });
+
+        expect(result.success).toBe(false);
+        expect(result.message).toContain('.git/hooks/pre-commit');
+        expect(result.message).toMatch(/still a hook vault-guard wrote/);
+        expect(fs.readFileSync(hookPath, 'utf-8')).toBe(merged);
+        expect(fs.existsSync(cmdPath)).toBe(true);
+      });
+
+      it('uninstall deletes a vault-guard script with extra trailing blank lines', () => {
+        const script = installedScript();
+        writeHook(`${script}\n\n`);
+
+        const result = preCommitHook.uninstall({ manager: 'native' });
+
+        expect(result.success).toBe(true);
+        expect(fs.existsSync(hookPath)).toBe(false);
+      });
+
+      it('uninstall leaves a hook that only runs vault-guard on a line of its own in place, and says it was kept', () => {
+        const wired = '#!/bin/sh\nvault-guard scan --staged\n';
+        writeHook(wired);
+        process.chdir(testDir);
+
+        const result = preCommitHook.uninstall({ manager: 'native' });
+
+        expect(result.success).toBe(false);
+        expect(result.kept).toBe(true);
+        expect(result.message).toMatch(/Leaving it unchanged/);
+        expect(fs.readFileSync(hookPath, 'utf-8')).toBe(wired);
+      });
+
+      it('uninstall with dryRun changes nothing and gives the same answer as the real run', () => {
+        const script = installedScript();
+        const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
+        const owned = preCommitHook.uninstall({ manager: 'native', dryRun: true });
+        expect(owned.success).toBe(true);
+        expect(fs.readFileSync(hookPath, 'utf-8')).toBe(script);
+        expect(fs.existsSync(cmdPath)).toBe(true);
+
+        writeHook(`${script}npm test\n`);
+        const claimed = preCommitHook.uninstall({ manager: 'native', dryRun: true });
+        expect(claimed.success).toBe(false);
+        expect(claimed.kept).toBeUndefined();
+
+        writeHook('#!/bin/sh\nvault-guard scan --staged\n');
+        const wired = preCommitHook.uninstall({ manager: 'native', dryRun: true });
+        expect(wired.success).toBe(false);
+        expect(wired.kept).toBe(true);
+
+        writeHook('#!/bin/sh\necho "team hook ran"\n');
+        expect(preCommitHook.install({ manager: 'native' }).success).toBe(true);
+        const before = fs.readFileSync(hookPath, 'utf-8');
+        const merged = preCommitHook.uninstall({ manager: 'native', dryRun: true });
+        expect(merged.success).toBe(true);
+        expect(fs.readFileSync(hookPath, 'utf-8')).toBe(before);
+        expect(fs.existsSync(cmdPath)).toBe(true);
+      });
+
+      it('merges into a foreign hook that only carries the header line, the merged hook blocks a staged secret, and uninstall gives it back byte for byte', () => {
+        const foreign =
+          '#!/bin/sh\n# vault-guard pre-commit (installed by @vaultcompass/vault-guard)\necho "team hook ran"\n';
+        writeHook(foreign);
+        process.chdir(testDir);
+
+        expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(false);
+        const install = preCommitHook.install({ manager: 'native' });
+        expect(install.success).toBe(true);
+        expect(install.message).not.toMatch(/already installed/i);
+        expect(fs.readFileSync(hookPath, 'utf-8')).toContain('# --- end vault-guard ---');
+
+        const blocked = driveCommitWithStub(testDir, 1);
+        expect(blocked.committed).toBe(false);
+        expect(blocked.output).toContain('COMMIT BLOCKED: secrets detected');
+
+        const result = preCommitHook.uninstall({ manager: 'native' });
+        expect(result.success).toBe(true);
+        expect(fs.readFileSync(hookPath, 'utf-8')).toBe(foreign);
+      });
+
+      it('install merges rather than adopts a hook whose stanza lost its end marker', () => {
+        const damaged = '#!/bin/sh\n# --- vault-guard ---\necho "team hook ran"\nexit 0\n';
+        writeHook(damaged);
+        process.chdir(testDir);
+
+        expect(preCommitHook.isInstalled({ manager: 'native' })).toBe(false);
+        const install = preCommitHook.install({ manager: 'native' });
+        expect(install.message).not.toMatch(/already installed/i);
+
+        const blocked = driveCommitWithStub(testDir, 1);
+        expect(blocked.committed).toBe(false);
+        expect(blocked.output).toContain('stub vault-guard ran: scan --staged');
+      });
     });
 
     it('should set executable permissions on hook file', () => {
@@ -653,7 +921,7 @@ describe('PreCommitHook', () => {
       fs.mkdirSync(hooksDir, { recursive: true });
       fs.writeFileSync(
         hookPath,
-        '#!/bin/sh\n# vault-guard pre-commit hook\nvault-guard scan --staged\n',
+        LEGACY_1_0_SCRIPT,
         { mode: 0o755 },
       );
       process.chdir(testDir);
@@ -727,7 +995,7 @@ describe('PreCommitHook', () => {
       fs.writeFileSync(hookPath, '#!/bin/sh\necho "pre-existing foreign hook"\n', { mode: 0o755 });
 
       const installResult = preCommitHook.install({ manager: 'husky' });
-      expect(installResult.message).toMatch(/Appended vault-guard/);
+      expect(installResult.message).toMatch(/Added the vault-guard stanza/);
       expect(fs.readFileSync(hookPath, 'utf-8')).toContain('pre-existing foreign hook');
       expect(preCommitHook.isInstalled({ manager: 'husky' })).toBe(true);
 
@@ -756,18 +1024,310 @@ describe('PreCommitHook', () => {
       const foreignContent =
         '#!/bin/sh\n# ask on #vault-guard-questions before touching this\nvault-guard scan --staged\necho done\n';
       fs.writeFileSync(hookPath, foreignContent, { mode: 0o755 });
-      expect(preCommitHook.isInstalled({ manager: 'husky' })).toBe(true);
+      // A mention is not an installation: only a script vault-guard wrote
+      // whole, or a complete stanza, is.
+      expect(preCommitHook.isInstalled({ manager: 'husky' })).toBe(false);
 
       const result = preCommitHook.uninstall({ manager: 'husky' });
 
       expect(fs.readFileSync(hookPath, 'utf-8')).toBe(foreignContent);
-      expect(preCommitHook.isInstalled({ manager: 'husky' })).toBe(true);
-      // Required: uninstall reports success only when isInstalled is
-      // false afterwards. It is still true here (we deliberately left
-      // the file untouched rather than guess at what to remove), so this
-      // must not claim success.
+      // The file still runs the command and vault-guard left it untouched
+      // rather than guess at what to remove, so this must not claim success.
       expect(result.success).toBe(false);
       expect(result.message.toLowerCase()).toMatch(/review|manually|unchanged/);
+    });
+
+    function writeHuskyHook(text: string): string {
+      fs.mkdirSync(path.join(testDir, '.husky'), { recursive: true });
+      const p = path.join(testDir, '.husky', 'pre-commit');
+      fs.writeFileSync(p, text, { mode: 0o755 });
+      return p;
+    }
+
+    it('husky install merges into a hook that only mentions vault-guard in a comment, rather than adopting it', () => {
+      process.chdir(testDir);
+      const text = '#!/usr/bin/env sh\n# later: vault-guard scan --staged\nnpm test\n';
+      const p = writeHuskyHook(text);
+
+      expect(preCommitHook.isInstalled({ manager: 'husky' })).toBe(false);
+      const result = preCommitHook.install({ manager: 'husky' });
+
+      expect(result.success).toBe(true);
+      expect(result.message).not.toMatch(/already contains/i);
+      const after = fs.readFileSync(p, 'utf-8');
+      expect(after.replace(/# --- vault-guard ---[\s\S]*# --- end vault-guard ---\n/, '')).toBe(text);
+      expect(preCommitHook.isInstalled({ manager: 'husky' })).toBe(true);
+      expect(preCommitHook.install({ manager: 'husky' }).message).toMatch(/already contains/i);
+      expect(fs.readFileSync(p, 'utf-8')).toBe(after);
+    });
+
+    it('husky uninstall after a merge gives the hook back byte for byte', () => {
+      process.chdir(testDir);
+      const text = '#!/usr/bin/env sh\nnpm test\nexit 0\n';
+      const p = writeHuskyHook(text);
+      preCommitHook.install({ manager: 'husky' });
+
+      const result = preCommitHook.uninstall({ manager: 'husky' });
+
+      expect(result.success).toBe(true);
+      expect(fs.readFileSync(p, 'utf-8')).toBe(text);
+    });
+
+    it('husky uninstall refuses a vault-guard script with lines added to it, names the file, and changes nothing', () => {
+      process.chdir(testDir);
+      preCommitHook.install({ manager: 'husky' });
+      const p = path.join(testDir, '.husky', 'pre-commit');
+      const edited = `${fs.readFileSync(p, 'utf-8')}npm run lint-staged\n`;
+      fs.writeFileSync(p, edited);
+
+      const result = preCommitHook.uninstall({ manager: 'husky' });
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('.husky/pre-commit');
+      expect(result.message).toContain('vault-guard did not write all of it');
+      expect(fs.readFileSync(p, 'utf-8')).toBe(edited);
+    });
+
+    it.each([
+      ['the header line alone', '# vault-guard pre-commit (installed by @vaultcompass/vault-guard)\n'],
+      ['the header line and exit 0', '#!/usr/bin/env sh\n# vault-guard pre-commit (installed by @vaultcompass/vault-guard)\nexit 0\n'],
+    ])('husky install merges into a hook with %s rather than adopting it, the staged secret is blocked, and uninstall gives the bytes back', (_shape, text) => {
+      process.chdir(testDir);
+      const p = writeHuskyHook(text);
+      execSync(`git config --local core.hooksPath "${path.join(testDir, '.husky')}"`, { cwd: testDir, stdio: 'ignore' });
+
+      expect(preCommitHook.isInstalled({ manager: 'husky' })).toBe(false);
+      const install = preCommitHook.install({ manager: 'husky' });
+      expect(install.success).toBe(true);
+      expect(install.message).not.toMatch(/already contains/i);
+      expect(install.message).toMatch(/Added the vault-guard stanza/);
+      expect(fs.readFileSync(p, 'utf-8')).toContain('# --- end vault-guard ---');
+
+      const blocked = driveCommitWithStub(testDir, 1);
+      expect(blocked.committed).toBe(false);
+      expect(blocked.output).toContain('stub vault-guard ran: scan --staged');
+      expect(blocked.output).toContain('COMMIT BLOCKED: secrets detected');
+
+      const result = preCommitHook.uninstall({ manager: 'husky' });
+      expect(result.success).toBe(true);
+      expect(fs.readFileSync(p, 'utf-8')).toBe(text);
+    });
+
+    it('husky install refuses a vault-guard script with lines added to it, names the file, and --force rewrites it', () => {
+      process.chdir(testDir);
+      preCommitHook.install({ manager: 'husky' });
+      const p = path.join(testDir, '.husky', 'pre-commit');
+      const script = fs.readFileSync(p, 'utf-8');
+      const edited = `${script}npm run lint-staged\n`;
+      fs.writeFileSync(p, edited);
+
+      const refused = preCommitHook.install({ manager: 'husky' });
+      expect(refused.success).toBe(false);
+      expect(refused.message).toContain('.husky/pre-commit');
+      expect(refused.message).toMatch(/edited after install/);
+      expect(refused.message).toContain('--force');
+      expect(fs.readFileSync(p, 'utf-8')).toBe(edited);
+
+      const forced = preCommitHook.install({ manager: 'husky', force: true });
+      expect(forced.success).toBe(true);
+      expect(forced.message).toMatch(/edits .*discarded/);
+      expect(fs.readFileSync(p, 'utf-8')).toBe(script);
+    });
+
+    it('husky install refuses the 1.0.0 husky script, which has no header line, with lines added to it', () => {
+      process.chdir(testDir);
+      const legacy = [
+        '#!/usr/bin/env sh',
+        'if [ -f "$(dirname "$0")/_/husky.sh" ]; then',
+        '  . "$(dirname "$0")/_/husky.sh"',
+        'fi',
+        '',
+        'if ! command -v vault-guard >/dev/null 2>&1; then',
+        '  echo "❌ vault-guard: command not found (install: npm i -g @vaultcompass/vault-guard)"',
+        '  exit 1',
+        'fi',
+        '',
+        'echo "🔍 vault-guard: scanning staged files..."',
+        'vault-guard scan --staged || {',
+        '  echo ""',
+        '  echo "❌ COMMIT BLOCKED: secrets detected in staged files"',
+        '  echo "💡 git commit --no-verify to bypass (discouraged)"',
+        '  exit 1',
+        '}',
+        'echo "✅ vault-guard: no secrets in staged files"',
+        '',
+      ].join('\n');
+      const edited = `${legacy}npm test\n`;
+      const p = writeHuskyHook(edited);
+
+      const result = preCommitHook.install({ manager: 'husky' });
+
+      expect(result.success).toBe(false);
+      expect(result.message).toMatch(/edited after install/);
+      expect(fs.readFileSync(p, 'utf-8')).toBe(edited);
+    });
+
+    it('husky uninstall refuses a merged hook whose remainder is still a vault-guard script with edits', () => {
+      process.chdir(testDir);
+      preCommitHook.install({ manager: 'husky' });
+      const p = path.join(testDir, '.husky', 'pre-commit');
+      const script = fs.readFileSync(p, 'utf-8');
+      fs.writeFileSync(p, '#!/usr/bin/env sh\nnpm test\n');
+      preCommitHook.install({ manager: 'husky' });
+      const stanza = /# --- vault-guard ---[\s\S]*# --- end vault-guard ---\n/.exec(fs.readFileSync(p, 'utf-8'))![0];
+      const nl = script.indexOf('\n');
+      const merged = `${script.slice(0, nl + 1)}${stanza}${script.slice(nl + 1)}npm test\n`;
+      fs.writeFileSync(p, merged);
+
+      const result = preCommitHook.uninstall({ manager: 'husky' });
+
+      expect(result.success).toBe(false);
+      expect(result.message).toMatch(/still a hook vault-guard wrote/);
+      expect(fs.readFileSync(p, 'utf-8')).toBe(merged);
+    });
+
+    it('husky uninstall marks a hook that only mentions the command as kept', () => {
+      process.chdir(testDir);
+      const text = '#!/bin/sh\nvault-guard scan --staged\n';
+      const p = writeHuskyHook(text);
+
+      const result = preCommitHook.uninstall({ manager: 'husky' });
+
+      expect(result.success).toBe(false);
+      expect(result.kept).toBe(true);
+      expect(fs.readFileSync(p, 'utf-8')).toBe(text);
+    });
+
+    it('husky uninstall still removes the stanza earlier versions appended at the end of a hook', () => {
+      process.chdir(testDir);
+      const text = '#!/bin/sh\necho "pre-existing foreign hook"\n';
+      const p = writeHuskyHook(
+        `${text}\n# --- vault-guard ---\nvault-guard scan --staged || {\n  echo "❌ vault-guard blocked commit"\n  exit 1\n}\n`,
+      );
+
+      const result = preCommitHook.uninstall({ manager: 'husky' });
+
+      expect(result.success).toBe(true);
+      expect(fs.readFileSync(p, 'utf-8')).toBe(text);
+    });
+  });
+
+  describe('a vault-guard script edited anywhere, not only at the end, is still vault-guard\'s', () => {
+    // Released scripts from the checked-in fixture (the em dash is a token there).
+    const released = (
+      JSON.parse(
+        fs.readFileSync(path.join(__dirname, 'fixtures', 'released-hook-scripts.json'), 'utf8'),
+      ) as { scripts: Array<{ manager: string; versions: string; lines: string[] }> }
+    ).scripts;
+    const releasedScript = (manager: string, versions: string): string =>
+      released
+        .find(s => s.manager === manager && s.versions === versions)!
+        .lines.join('\n')
+        .replace(/\{EM_DASH\}/g, String.fromCharCode(0x2014));
+
+    function currentScript(manager: 'native' | 'husky'): string {
+      process.chdir(testDir);
+      const p = manager === 'native' ? hookPath : path.join(testDir, '.husky', 'pre-commit');
+      if (fs.existsSync(p)) fs.rmSync(p);
+      expect(preCommitHook.install({ manager }).success).toBe(true);
+      const text = fs.readFileSync(p, 'utf-8');
+      fs.rmSync(p);
+      const cmd = path.join(hooksDir, 'pre-commit.cmd');
+      if (fs.existsSync(cmd)) fs.rmSync(cmd);
+      return text;
+    }
+
+    function place(manager: 'native' | 'husky', text: string): string {
+      const p = manager === 'native' ? hookPath : path.join(testDir, '.husky', 'pre-commit');
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, text, { mode: 0o755 });
+      return p;
+    }
+
+    const edits: Array<[string, (t: string) => string]> = [
+      ['a line inserted at line 3', t => { const l = t.split('\n'); l.splice(2, 0, 'export PATH="$HOME/bin:$PATH"'); return l.join('\n'); }],
+      ['a template line deleted in the middle', t => t.split('\n').filter(l => !l.includes('command -v vault-guard')).join('\n')],
+      ['a line prepended before the shebang', t => `echo "team prelude"\n${t}`],
+    ];
+
+    const cases: Array<[string, 'native' | 'husky', () => string]> = [
+      ['the current native script', 'native', () => currentScript('native')],
+      ['the 1.4.6 native script', 'native', () => releasedScript('native', '1.4.6 to 1.8.1')],
+      ['the 1.0.0 native script', 'native', () => releasedScript('native', '1.0.0 to 1.3.0')],
+      ['the current husky script', 'husky', () => currentScript('husky')],
+      ['the 1.4.4 husky script', 'husky', () => releasedScript('husky', '1.4.4 to 1.4.5')],
+      ['the headerless 1.0.0 husky script', 'husky', () => releasedScript('husky', '1.0.0 to 1.4.3')],
+    ];
+
+    for (const [label, manager, script] of cases) {
+      for (const [editLabel, edit] of edits) {
+        it(`install refuses ${label} with ${editLabel}, uninstall refuses it, and --force rewrites it`, () => {
+          const current = currentScript(manager);
+          const edited = edit(script());
+          const p = place(manager, edited);
+
+          const install = preCommitHook.install({ manager });
+          expect(install.success).toBe(false);
+          expect(install.message).toMatch(/edited after install/);
+          expect(fs.readFileSync(p, 'utf-8')).toBe(edited);
+
+          const uninstall = preCommitHook.uninstall({ manager });
+          expect(uninstall.success).toBe(false);
+          expect(uninstall.kept).toBeUndefined();
+          expect(fs.readFileSync(p, 'utf-8')).toBe(edited);
+
+          const forced = preCommitHook.install({ manager, force: true });
+          expect(forced.success).toBe(true);
+          expect(forced.discardedEdits).toBe(true);
+          expect(fs.readFileSync(p, 'utf-8')).toBe(current);
+        });
+      }
+
+      it(`uninstall refuses a merged hook whose remainder is ${label} with a line inserted at line 3`, () => {
+        const p = place(manager, '#!/bin/sh\necho "team hook ran"\n');
+        process.chdir(testDir);
+        expect(preCommitHook.install({ manager }).success).toBe(true);
+        const stanza = /# --- vault-guard ---[\s\S]*# --- end vault-guard ---\n/.exec(fs.readFileSync(p, 'utf-8'))![0];
+        const lines = script().split('\n');
+        lines.splice(2, 0, 'export PATH="$HOME/bin:$PATH"');
+        const merged = `${lines[0]}\n${stanza}${lines.slice(1).join('\n')}`;
+        fs.writeFileSync(p, merged);
+
+        const result = preCommitHook.uninstall({ manager });
+
+        expect(result.success).toBe(false);
+        expect(result.message).toMatch(/still a hook vault-guard wrote/);
+        expect(fs.readFileSync(p, 'utf-8')).toBe(merged);
+      });
+    }
+
+    it.each([
+      ['native', '#!/bin/sh\n# vault-guard pre-commit (installed by @vaultcompass/vault-guard)\nnpm test\n'],
+      ['husky', '#!/usr/bin/env sh\n# vault-guard pre-commit (installed by @vaultcompass/vault-guard)\nnpm test\n'],
+      ['native', '#!/bin/sh\n# vault-guard pre-commit (installed by @vaultcompass/vault-guard)\nnpx vault-guard scan --staged\n'],
+    ] as const)('a %s hook with the header line but no scan line of a vault-guard script still gets the stanza', (manager, text) => {
+      process.chdir(testDir);
+      const p = place(manager, text);
+
+      const install = preCommitHook.install({ manager });
+
+      expect(install.success).toBe(true);
+      expect(fs.readFileSync(p, 'utf-8')).toContain('# --- end vault-guard ---');
+      expect(preCommitHook.uninstall({ manager }).success).toBe(true);
+      expect(fs.readFileSync(p, 'utf-8')).toBe(text);
+    });
+
+    it.each(['owned', 'merged'] as const)('a husky dry-run uninstall of a hook that is %s changes no byte', kind => {
+      process.chdir(testDir);
+      const p = path.join(testDir, '.husky', 'pre-commit');
+      if (kind === 'merged') place('husky', '#!/usr/bin/env sh\nnpm test\n');
+      expect(preCommitHook.install({ manager: 'husky' }).success).toBe(true);
+      const before = fs.readFileSync(p, 'utf-8');
+
+      const result = preCommitHook.uninstall({ manager: 'husky', dryRun: true });
+
+      expect(result.success).toBe(true);
+      expect(fs.readFileSync(p, 'utf-8')).toBe(before);
     });
   });
 
@@ -994,6 +1554,40 @@ describe('PreCommitHook', () => {
         expect(output).toContain('COMMIT BLOCKED');
       },
     );
+
+    it('puts the stanza before a trailing exit 0 in .husky/pre-commit, so a staged secret is blocked', () => {
+      buildHusky9Layout(testDir);
+      fs.writeFileSync(path.join(testDir, '.husky', 'pre-commit'), '#!/usr/bin/env sh\necho team\nexit 0\n', {
+        mode: 0o755,
+      });
+      process.chdir(testDir);
+
+      const result = preCommitHook.install({ manager: 'native' });
+      expect(result.success).toBe(true);
+
+      const { committed, output } = driveCommitWithStub(testDir, 1);
+      expect(committed).toBe(false);
+      expect(output).toContain('stub vault-guard ran: scan --staged');
+      expect(output).toContain('COMMIT BLOCKED: secrets detected');
+    });
+
+    it('merges into a .husky/pre-commit that only mentions vault-guard in a comment, so a staged secret is blocked', () => {
+      buildHusky9Layout(testDir);
+      fs.writeFileSync(
+        path.join(testDir, '.husky', 'pre-commit'),
+        '#!/usr/bin/env sh\n# later: vault-guard scan --staged\necho team\n',
+        { mode: 0o755 },
+      );
+      process.chdir(testDir);
+
+      const result = preCommitHook.install({ manager: 'native' });
+      expect(result.success).toBe(true);
+      expect(result.message).not.toMatch(/already contains/i);
+
+      const { committed, output } = driveCommitWithStub(testDir, 1);
+      expect(committed).toBe(false);
+      expect(output).toContain('stub vault-guard ran: scan --staged');
+    });
 
     it('never writes under .husky/_ on uninstall either, and actually removes the tracked hook (isInstalled false afterwards)', () => {
       buildHusky9Layout(testDir);

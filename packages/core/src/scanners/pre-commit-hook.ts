@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
+import { createHash } from 'crypto';
 import { HookError } from '../errors';
 import { readRegularFileNoFollow, writeFileAtomically, type NoFollowRead } from '../utils/read-no-follow';
 
@@ -19,21 +20,46 @@ export interface InstallHookOptions {
    * directory entirely. Defaults to `process.cwd()`.
    */
   cwd?: string;
+  /**
+   * install only: rewrite a hook vault-guard wrote that was edited after
+   * install (it starts with a whole vault-guard script and has more after it)
+   * from the current template, discarding the edits. Without it, install
+   * refuses that hook and changes nothing.
+   */
+  force?: boolean;
+  /**
+   * uninstall only: decide and report what uninstall would do, and change
+   * nothing. The answer (success, kept, message) is the one the real run gives.
+   */
+  dryRun?: boolean;
+}
+
+/** What install did. `discardedEdits` is set when --force rewrote a hook vault-guard wrote that was edited after install. */
+export interface InstallHookResult {
+  success: boolean;
+  message: string;
+  hookPath?: string;
+  discardedEdits?: boolean;
+}
+
+/** What uninstall did. `kept` is set when the hook is left in place because it is not vault-guard's to remove. */
+export interface UninstallHookResult {
+  success: boolean;
+  message: string;
+  kept?: boolean;
 }
 
 /**
- * Marks a hook file vault-guard wrote WHOLE, from a template -- as
- * opposed to a stanza vault-guard appended to a pre-existing (foreign)
- * hook it does not own. uninstallHusky uses this to decide whether it is
- * safe to delete the file outright: present means the whole file is
- * vault-guard's, so removing it entirely is correct; absent (even when
- * the file mentions "vault-guard" some other way) means the file
- * predates vault-guard or was never fully vault-guard's, so it must not
- * be deleted wholesale.
+ * The header line of a hook file vault-guard writes WHOLE, from a template.
+ * The line alone does not make a file vault-guard's: lines can be added to a
+ * written hook, and a foreign hook can copy the line. A file is deleted
+ * whole only when its bytes are a script vault-guard wrote (see
+ * classifyPreCommitHook); a file that carries this line and is not such a
+ * script is `claimed`, and the uninstallers refuse it.
  */
 const VAULT_GUARD_HOOK_HEADER = '# vault-guard pre-commit (installed by @vaultcompass/vault-guard)';
 
-/** The header the 1.0.x native template wrote; a hook carrying it is still ours. */
+/** The header the 1.0.x native template wrote; read the same way as VAULT_GUARD_HOOK_HEADER. */
 const LEGACY_HOOK_HEADER = '# vault-guard pre-commit hook';
 
 /** Begin and end of the stanza vault-guard adds to a hook it does not own. */
@@ -41,13 +67,148 @@ const STANZA_BEGIN = '# --- vault-guard ---';
 const STANZA_END = '# --- end vault-guard ---';
 
 /**
- * What a pre-commit hook file is, decided by markers vault-guard itself writes
- * for ownership and idempotency, and by a text match only for the message:
+ * SHA-256 of every whole hook script a released vault-guard wrote, after
+ * normalizeScript. A hook whose normalized bytes hash to one of these is a
+ * script vault-guard rendered, so the whole file is vault-guard's. The current
+ * templates are added at load time (OWNED_SCRIPT_HASHES below), so this list
+ * only grows when a template changes in a release.
+ */
+const RELEASED_SCRIPT_SHA256: readonly string[] = [
+  // native, the 1.0.x template (header `# vault-guard pre-commit hook`)
+  'fb543a82c80a9d6789f7f663114cab0b08867420b266270a3f9090e7e4c89ae6',
+  // native, 1.0.0 to 1.3.0
+  'b79e2c3a014a0eff5a2891c17e500661a88a064fb7e106935717e6984abb78cb',
+  // native, 1.4.0 to 1.4.5
+  '3ffb98c516a789b39ec54036a3774e5f245e0438c66ef8737b56bfbcc635a4e3',
+  // native, 1.4.6 to 1.8.1
+  '4c1c2dc8935e4845ead584ff695600b2f36489648859abe82ab862fb7bff4b55',
+  // native, 1.9.0 to 1.13.1
+  'ac7d22b5b6d5db2991ef91198fbc1c0e3d92fc656868d3d88a653c99abcd3d15',
+  // husky, 1.0.0 to 1.4.3
+  'a22adc057011bfd5c78fd6f97890f056361c8d507b3e6a9822ab9750f1e81840',
+  // husky, 1.4.4 to 1.4.5
+  'a562b7f801f2b1a4b2134789b7c66775ea09f017fadaf257750cff848578f466',
+  // husky, 1.4.6 to 1.13.1
+  '3e3cba67d78e085b19d1d4127dd9858afe4ec5626c21a730d8eac52279557316',
+];
+
+/**
+ * CRLF to LF, and all trailing whitespace dropped, so a checkout's line ends
+ * or extra blank lines at the end do not change ownership. Trailing whitespace
+ * cannot add a command.
+ */
+function normalizeScript(text: string): string {
+  return text.replace(/\r\n/g, '\n').trimEnd();
+}
+
+function scriptHash(text: string): string {
+  return createHash('sha256').update(normalizeScript(text), 'utf8').digest('hex');
+}
+
+const RELEASED_SCRIPT_HASHES: ReadonlySet<string> = new Set(RELEASED_SCRIPT_SHA256);
+
+/** True when the hook is, after normalizeScript, a whole script a released version wrote (the table above only). */
+export function isReleasedHookScript(text: string): boolean {
+  return RELEASED_SCRIPT_HASHES.has(scriptHash(text));
+}
+
+/**
+ * The signature lines of every whole script vault-guard writes or wrote, in
+ * the order they appear: the header line and the scan command line of that
+ * script. The 1.0.0 to 1.4.3 husky script has no header line, so its pair is
+ * two lines only the husky scripts up to 1.4.5 have. None of these scan lines
+ * is the stanza's (`|| vault_guard_status=$?`), and the stanza earlier
+ * versions appended to a husky hook has the `|| {` line but not the success
+ * line after it.
+ */
+const WRITTEN_SCRIPT_SIGNATURES: ReadonlyArray<readonly [string, string]> = [
+  // native 1.4.6 and later, husky 1.4.6 and later (the current templates)
+  [VAULT_GUARD_HOOK_HEADER, 'vault-guard scan --staged || status=$?'],
+  // native 1.0.0 to 1.4.5
+  [VAULT_GUARD_HOOK_HEADER, 'if vault-guard scan --staged; then'],
+  // husky 1.4.4 to 1.4.5
+  [VAULT_GUARD_HOOK_HEADER, 'vault-guard scan --staged || {'],
+  // the 1.0.x native template
+  [LEGACY_HOOK_HEADER, 'vault-guard scan'],
+  // husky 1.0.0 to 1.4.3 (no header line)
+  ['vault-guard scan --staged || {', 'echo "✅ vault-guard: no secrets in staged files"'],
+];
+
+/**
+ * True when the hook holds, in order and as whole lines (surrounding
+ * whitespace and CRLF aside), the signature lines of a script vault-guard
+ * writes or wrote. Called only for a hook that is not `owned` and not a
+ * complete stanza, so it is a hook vault-guard wrote and somebody edited after
+ * install (lines added, inserted, removed or put before the shebang), which
+ * still runs vault-guard's own scan. A hook with the header line and no such
+ * scan line does not match: it gets the stanza.
+ */
+function isEditedWrittenScript(text: string): boolean {
+  const lines = text.replace(/\r\n/g, '\n').split('\n').map(line => line.trim());
+  return WRITTEN_SCRIPT_SIGNATURES.some(([first, second]) => {
+    const at = lines.indexOf(first);
+    return at !== -1 && lines.indexOf(second, at + 1) !== -1;
+  });
+}
+
+/** The install refusal for a hook vault-guard wrote that was edited after install. */
+function editedRefusal(display: string): string {
+  return (
+    `${display} is a hook vault-guard wrote that was edited after install. Leaving it unchanged: ` +
+    'remove the edits, or pass --force to rewrite it from the vault-guard template (the edits are discarded).'
+  );
+}
+
+/** The uninstall refusal for a hook vault-guard wrote that was edited after install. */
+function editedUninstallRefusal(display: string): string {
+  return (
+    `${display} is a hook vault-guard wrote that was edited after install, so vault-guard did not write all of it. ` +
+    'Leaving it unchanged. Remove the vault-guard lines by hand and keep your own, or delete the file if nothing ' +
+    'in it is yours.'
+  );
+}
+
+/** The install message after --force rewrote an edited hook. */
+function editedRewritten(display: string): string {
+  return `Rewrote ${display} from the vault-guard template; the edits in it were discarded`;
+}
+
+/** The uninstall refusal for a merged hook whose remainder is still a vault-guard script with edits. */
+function remainderRefusal(display: string): string {
+  return (
+    `Removing the vault-guard stanza from ${display} would leave a file that is still a hook vault-guard wrote, ` +
+    'with edits, and it would keep running the scan. Leaving it unchanged. Delete the file if nothing in it is ' +
+    'yours, or remove the vault-guard lines by hand and keep your own.'
+  );
+}
+
+/**
+ * The stanza earlier versions appended to the end of a husky hook. It
+ * has a begin marker and no end marker; the husky uninstaller removes it only
+ * when the file ends with exactly these bytes.
+ */
+const LEGACY_HUSKY_APPEND =
+  '\n# --- vault-guard ---\nvault-guard scan --staged || {\n  echo "❌ vault-guard blocked commit"\n  exit 1\n}\n';
+
+/**
+ * What a pre-commit hook file is, decided by the bytes and markers vault-guard
+ * itself writes for ownership and idempotency, and by a text match only for
+ * the message:
  *
  * - `empty`: nothing but whitespace; the full template may be written.
- * - `owned`: a whole line is a vault-guard header, so the whole file is ours.
- * - `merged`: a whole line is the stanza begin marker, so we added a stanza to
- *   somebody else's hook (the husky path writes the same marker).
+ * - `owned`: the bytes are a whole script vault-guard wrote (the current
+ *   native or husky template, or one a released version wrote), compared
+ *   after normalizeScript. Only this file is deleted whole on uninstall.
+ * - `merged`: a whole line is the stanza begin marker and a later whole line
+ *   is the end marker: we added a stanza to somebody else's hook.
+ * - `damaged`: a begin marker with no end marker after it. Not installed;
+ *   install adds a complete stanza, uninstall refuses.
+ * - `claimed`: a whole line is a vault-guard header, but the file is not a
+ *   script vault-guard wrote (lines added to it, or a foreign hook that copied
+ *   the header). Not installed; install merges the stanza as for any foreign
+ *   hook, except that an edited vault-guard script (the signature lines of a
+ *   script it wrote, isEditedWrittenScript) is refused unless --force; uninstall refuses and
+ *   changes nothing.
  * - `wired`: somebody else's hook where, after quoted strings and a trailing
  *   comment are removed from a line, the command `vault-guard scan --staged`
  *   sits at a command start. Reading is per line, so this also matches a
@@ -57,22 +218,26 @@ const STANZA_END = '# --- end vault-guard ---';
  *   the uninstaller has no stanza to remove.
  * - `foreign`: anything else. Never overwritten, never deleted.
  *
- * Ownership and idempotency are by header and stanza marker only. A mention of
- * the command anywhere, in a heredoc, a multi-line string, a comment or a
- * live line, gets the stanza.
+ * Ownership and idempotency are by the whole script's bytes and the complete
+ * stanza only. A header line alone, or a mention of the command anywhere, in a
+ * heredoc, a multi-line string, a comment or a live line, gets the stanza.
  *
- * One definition shared by the native installer, `isInstalled`, the native
- * uninstaller and `vault-guard init`, so they always agree.
+ * One definition shared by the native and husky installers, `isInstalled`,
+ * both uninstallers and `vault-guard init`, so they always agree.
  */
-export type PreCommitHookOwnership = 'empty' | 'owned' | 'merged' | 'wired' | 'foreign';
+export type PreCommitHookOwnership = 'empty' | 'owned' | 'merged' | 'damaged' | 'claimed' | 'wired' | 'foreign';
 
 export function classifyPreCommitHook(text: string): PreCommitHookOwnership {
   if (text.trim().length === 0) return 'empty';
+  if (OWNED_SCRIPT_HASHES.has(scriptHash(text))) return 'owned';
   const lines = text.split('\n').map(line => line.trimEnd());
-  if (lines.some(line => line === VAULT_GUARD_HOOK_HEADER || line === LEGACY_HOOK_HEADER)) {
-    return 'owned';
+  const begin = lines.indexOf(STANZA_BEGIN);
+  if (begin !== -1) {
+    return lines.indexOf(STANZA_END, begin + 1) !== -1 ? 'merged' : 'damaged';
   }
-  if (lines.some(line => line === STANZA_BEGIN)) return 'merged';
+  if (lines.some(line => line === VAULT_GUARD_HOOK_HEADER || line === LEGACY_HOOK_HEADER)) {
+    return 'claimed';
+  }
   // A mention shaped like an invocation: after quoted strings and any trailing
   // comment are removed from the line (codeOnly), the command sits where a
   // command can start (line start, or after && || ; | then do { ( !). Used for
@@ -167,6 +332,16 @@ function stripStanza(text: string): string {
   const endMatch = new RegExp(`^${STANZA_END}[ \\t\\r]*(?:\\n|$)`, 'm').exec(text.slice(begin));
   if (!endMatch) return text;
   return text.slice(0, begin) + text.slice(begin + endMatch.index + endMatch[0].length);
+}
+
+/** The uninstall refusal for a hook that carries the vault-guard header but is not a script vault-guard wrote. */
+function claimedRefusal(display: string): string {
+  return (
+    `${display} carries the vault-guard header, but vault-guard did not write all of it ` +
+    '(it differs from every script vault-guard writes). Leaving it unchanged. Remove the vault-guard ' +
+    'header and the lines vault-guard wrote by hand and keep your own, or delete the file if nothing ' +
+    'in it is yours.'
+  );
 }
 
 /**
@@ -289,7 +464,14 @@ fi
 echo "✅ vault-guard: no secrets in staged files"
 `;
 
-const LEFTHOOK_LOCAL = `# Merged by Lefthook with lefthook.yml -- added by vault-guard install-hook
+/** Every whole script vault-guard writes or has written: the current templates plus the released ones. */
+const OWNED_SCRIPT_HASHES: ReadonlySet<string> = new Set([
+  scriptHash(NATIVE_HOOK_SCRIPT),
+  scriptHash(HUSKY_HOOK_SCRIPT),
+  ...RELEASED_SCRIPT_SHA256,
+]);
+
+const LEFTHOOK_LOCAL =`# Merged by Lefthook with lefthook.yml -- added by vault-guard install-hook
 pre-commit:
   commands:
     vault-guard:
@@ -495,7 +677,7 @@ export class PreCommitHook {
     return path.join(hooksDir, 'pre-commit.cmd');
   }
 
-  install(options: InstallHookOptions = {}): { success: boolean; message: string; hookPath?: string } {
+  install(options: InstallHookOptions = {}): InstallHookResult {
     const cwd = options.cwd ?? process.cwd();
     const manager = options.manager ?? 'native';
 
@@ -503,11 +685,12 @@ export class PreCommitHook {
       return { success: false, message: 'Not a git repository' };
     }
 
+    const force = Boolean(options.force);
     switch (manager) {
       case 'native':
-        return this.installNative(cwd);
+        return this.installNative(cwd, force);
       case 'husky':
-        return this.installHusky(cwd);
+        return this.installHusky(cwd, undefined, force);
       case 'lefthook':
         return this.installLefthook(cwd);
       case 'precommit':
@@ -517,7 +700,7 @@ export class PreCommitHook {
     }
   }
 
-  uninstall(options: InstallHookOptions = {}): { success: boolean; message: string } {
+  uninstall(options: InstallHookOptions = {}): UninstallHookResult {
     const cwd = options.cwd ?? process.cwd();
     const manager = options.manager ?? 'native';
 
@@ -525,14 +708,18 @@ export class PreCommitHook {
       return { success: false, message: 'Not a git repository' };
     }
 
+    const dryRun = Boolean(options.dryRun);
     switch (manager) {
       case 'native':
-        return this.uninstallNative(cwd);
+        return this.uninstallNative(cwd, dryRun);
       case 'husky':
-        return this.uninstallHusky(cwd);
+        return this.uninstallHusky(cwd, undefined, dryRun);
       case 'lefthook':
+        // The YAML managers are not classified; a dry run only says what it would try.
+        if (dryRun) return { success: true, message: 'Would remove lefthook-local.yml if vault-guard wrote it' };
         return this.uninstallLefthook(cwd);
       case 'precommit':
+        if (dryRun) return { success: true, message: 'Would remove .pre-commit-config.yaml if vault-guard wrote it' };
         return this.uninstallPreCommitFramework(cwd);
       default:
         return { success: false, message: `Unknown hook manager: ${String(manager)}` };
@@ -546,17 +733,13 @@ export class PreCommitHook {
 
     const r = readHookFile(hookPath, hookPath);
     if (r.kind !== 'file') return false;
-    // The native hook is judged by ownership markers, so a foreign hook that
-    // only mentions vault-guard is not "installed". The other managers keep
-    // the substring test: their files are a husky script or YAML, not a hook
-    // vault-guard writes whole.
-    // Under a husky-generated hooks directory native install is husky's own
-    // append path, which keeps its substring idempotency test.
-    const huskyRoute =
-      manager === 'native' && this.isHuskyGeneratedHooksDir(this.getEffectiveHooksDir(cwd).hooksDir);
-    if (manager === 'native' && !huskyRoute) {
+    // A native or husky hook is judged by classifyPreCommitHook, so a hook that
+    // only mentions vault-guard, or only carries its header line, is not
+    // "installed". Lefthook and pre-commit keep the substring test: their
+    // files are YAML, not a hook script.
+    if (manager === 'native' || manager === 'husky') {
       const ownership = classifyPreCommitHook(r.text);
-      // `wired` is not installed: install still adds its own stanza to it.
+      // `wired`, `claimed` and `damaged` are not installed: install adds a stanza.
       return ownership === 'owned' || ownership === 'merged';
     }
     return r.text.includes('vault-guard') && r.text.includes('scan --staged');
@@ -584,7 +767,8 @@ export class PreCommitHook {
     return true;
   }
 
-  private removeNativeCmdCompanion(hooksDir: string): boolean {
+  /** @returns whether our companion was removed (or, on a dry run, would be) */
+  private removeNativeCmdCompanion(hooksDir: string, dryRun = false): boolean {
     const cmdPath = path.join(hooksDir, 'pre-commit.cmd');
     const r = readHookFile(cmdPath, cmdPath);
     if (r.kind !== 'file') return false;
@@ -592,11 +776,11 @@ export class PreCommitHook {
     if (!content.includes('vault-guard') || !content.includes('scan --staged')) {
       return false;
     }
-    fs.unlinkSync(cmdPath);
+    if (!dryRun) fs.unlinkSync(cmdPath);
     return true;
   }
 
-  private installNative(cwd: string): { success: boolean; message: string; hookPath?: string } {
+  private installNative(cwd: string, force = false): InstallHookResult {
     const { hooksDir, viaHooksPath } = this.getEffectiveHooksDir(cwd);
 
     // core.hooksPath points at husky 9's generated, gitignored directory
@@ -607,15 +791,14 @@ export class PreCommitHook {
     // directory in this branch.
     if (this.isHuskyGeneratedHooksDir(hooksDir)) {
       const huskyDir = this.resolveHuskyDir(hooksDir);
-      const result = this.installHusky(cwd, huskyDir);
+      const result = this.installHusky(cwd, huskyDir, force);
       if (!result.success) {
         return result;
       }
       const relHookPath = this.relFromCwd(cwd, result.hookPath ?? path.join(huskyDir, 'pre-commit'));
       return {
-        success: true,
+        ...result,
         message: `Hooks are managed by husky; installing into ${relHookPath}. ${result.message}`,
-        hookPath: result.hookPath,
       };
     }
 
@@ -637,6 +820,7 @@ export class PreCommitHook {
       let merged = false;
       let notExecutable = false;
       let wiredMention = false;
+      let rewroteEdited = false;
       if (hookRead.kind === 'file') {
         const existing = hookRead.text;
         const ownership = classifyPreCommitHook(existing);
@@ -653,11 +837,22 @@ export class PreCommitHook {
             hookPath,
           };
         }
-        if (ownership === 'foreign' || ownership === 'wired') {
+        if (ownership !== 'empty' && isEditedWrittenScript(existing)) {
+          // A script vault-guard wrote, with lines added after install. Merging
+          // would run the scan twice and leave vault-guard's own script behind
+          // on uninstall, so refuse; --force rewrites it from the template.
+          if (!force) {
+            return { success: false, message: editedRefusal(this.relFromCwd(cwd, hookPath)) };
+          }
+          rewroteEdited = true;
+        } else if (ownership !== 'empty') {
           // Somebody else's hook: merge a marked stanza into it, never replace
           // it. A line that mentions the command (wired) gets the stanza too:
           // it may sit in a heredoc, a multi-line string, an `|| true` or dead
-          // code, and vault-guard cannot verify from text that it blocks.
+          // code, and vault-guard cannot verify from text that it blocks. So
+          // does a hook that carries the header line but is not a script
+          // vault-guard wrote (claimed), and one whose stanza lost its end
+          // marker (damaged).
           wiredMention = ownership === 'wired';
           if (!isShellHook(existing)) {
             return {
@@ -684,6 +879,15 @@ export class PreCommitHook {
           ? 'Installed to .git/hooks/pre-commit (+ pre-commit.cmd)'
           : 'Installed to .git/hooks/pre-commit';
 
+      if (rewroteEdited) {
+        return {
+          success: true,
+          message: `${editedRewritten(this.relFromCwd(cwd, hookPath))} (${hint})`,
+          hookPath,
+          discardedEdits: true,
+        };
+      }
+
       return {
         success: true,
         message: merged
@@ -702,14 +906,14 @@ export class PreCommitHook {
     }
   }
 
-  private uninstallNative(cwd: string): { success: boolean; message: string } {
+  private uninstallNative(cwd: string, dryRun = false): UninstallHookResult {
     const { hooksDir } = this.getEffectiveHooksDir(cwd);
 
     if (this.isHuskyGeneratedHooksDir(hooksDir)) {
       const huskyDir = this.resolveHuskyDir(hooksDir);
-      const result = this.uninstallHusky(cwd, huskyDir);
+      const result = this.uninstallHusky(cwd, huskyDir, dryRun);
       return {
-        success: result.success,
+        ...result,
         message: `Hooks are managed by husky; ${result.message}`,
       };
     }
@@ -720,9 +924,9 @@ export class PreCommitHook {
 
     // The companion is removed only once the hook itself is known to be
     // removable: a refusal below (damaged stanza, a hook with nothing of ours
-    // to remove) deletes nothing.
+    // to remove) deletes nothing. On a dry run nothing is removed at all.
     if (hookRead.kind === 'absent') {
-      const cmdRemoved = this.removeNativeCmdCompanion(hooksDir);
+      const cmdRemoved = this.removeNativeCmdCompanion(hooksDir, dryRun);
       return {
         success: true,
         message: cmdRemoved
@@ -734,7 +938,7 @@ export class PreCommitHook {
     const content = hookRead.text;
     const ownership = classifyPreCommitHook(content);
     if (ownership === 'empty' || ownership === 'foreign') {
-      const cmdRemoved = this.removeNativeCmdCompanion(hooksDir);
+      const cmdRemoved = this.removeNativeCmdCompanion(hooksDir, dryRun);
       return {
         success: true,
         message: cmdRemoved
@@ -743,32 +947,51 @@ export class PreCommitHook {
       };
     }
 
+    // An edited vault-guard script is refused, never kept: revert must not go on
+    // as if the hook were the user's own.
+    if (ownership !== 'merged' && ownership !== 'owned' && isEditedWrittenScript(content)) {
+      return { success: false, message: editedUninstallRefusal(this.relFromCwd(cwd, hookPath)) };
+    }
+
     if (ownership === 'wired') {
       return {
         success: false,
+        kept: true,
         message:
           'The pre-commit hook mentions vault-guard scan --staged but vault-guard did not write it. ' +
           'Leaving it unchanged; remove that line by hand if you want it gone.',
       };
     }
 
+    if (ownership === 'claimed') {
+      return { success: false, message: claimedRefusal(this.relFromCwd(cwd, hookPath)) };
+    }
+
+    // A begin marker with no end marker means the stanza was edited or cut;
+    // stripping would have to guess where it stops and could take the foreign
+    // hook's own lines with it, so refuse and change nothing.
+    if (ownership === 'damaged') {
+      return {
+        success: false,
+        message:
+          'The vault-guard stanza in the pre-commit hook is damaged (its end marker is missing). ' +
+          'Leaving the hook unchanged; remove the stanza by hand.',
+      };
+    }
+
     try {
       if (ownership === 'merged') {
-        // Remove exactly the stanza we added; the file is somebody else's. A
-        // begin marker with no end marker means the stanza was edited or cut;
-        // stripping would have to guess where it stops and could take the
-        // foreign hook's own lines with it, so refuse and change nothing.
-        if (!content.split('\n').some(line => line.trimEnd() === STANZA_END)) {
-          return {
-            success: false,
-            message:
-              'The vault-guard stanza in the pre-commit hook is damaged (its end marker is missing). ' +
-              'Leaving the hook unchanged; remove the stanza by hand.',
-          };
-        }
-        const cmdRemoved = this.removeNativeCmdCompanion(hooksDir);
+        // Remove exactly the stanza we added; the file is somebody else's.
+        // Unless what is left is still a script vault-guard wrote, with edits:
+        // then removing the stanza would leave vault-guard's own scan running.
         const stripped = stripStanza(content);
-        if (stripped.trim().length === 0) {
+        if (stripped.trim().length > 0 && isEditedWrittenScript(stripped)) {
+          return { success: false, message: remainderRefusal(this.relFromCwd(cwd, hookPath)) };
+        }
+        const cmdRemoved = this.removeNativeCmdCompanion(hooksDir, dryRun);
+        if (dryRun) {
+          // Nothing is changed.
+        } else if (stripped.trim().length === 0) {
           fs.unlinkSync(hookPath);
         } else {
           writeFileAtomically(hookPath, stripped, hookRead.mode);
@@ -780,8 +1003,9 @@ export class PreCommitHook {
             : 'Removed the vault-guard stanza from the pre-commit hook (the rest is unchanged)',
         };
       }
-      const cmdRemoved = this.removeNativeCmdCompanion(hooksDir);
-      fs.unlinkSync(hookPath);
+      // owned: the bytes are a whole script vault-guard wrote.
+      const cmdRemoved = this.removeNativeCmdCompanion(hooksDir, dryRun);
+      if (!dryRun) fs.unlinkSync(hookPath);
       return {
         success: true,
         message: cmdRemoved
@@ -808,7 +1032,8 @@ export class PreCommitHook {
   private installHusky(
     cwd: string,
     huskyDir: string = path.join(cwd, '.husky'),
-  ): { success: boolean; message: string; hookPath?: string } {
+    force = false,
+  ): InstallHookResult {
     const hookPath = path.join(huskyDir, 'pre-commit');
     const relHookPath = this.relFromCwd(cwd, hookPath);
 
@@ -820,22 +1045,39 @@ export class PreCommitHook {
         fs.mkdirSync(huskyDir, { recursive: true });
       }
 
-      if (hookRead.kind === 'file') {
+      if (hookRead.kind === 'file' && hookRead.text.trim().length > 0) {
         const existing = hookRead.text;
-        if (existing.includes('vault-guard') && existing.includes('scan --staged')) {
+        const ownership = classifyPreCommitHook(existing);
+        // Adopted only when vault-guard wrote the whole script or a complete
+        // stanza; a mention, a header line or a damaged stanza gets the stanza.
+        if (ownership === 'owned' || ownership === 'merged') {
           return { success: true, message: 'Husky hook already contains vault-guard', hookPath };
         }
-        if (existing.includes('# --- vault-guard ---')) {
-          return { success: true, message: 'Husky hook already contains vault-guard block', hookPath };
+        // A script vault-guard wrote with lines added after install: refused
+        // unless --force, which rewrites it from the template (see installNative).
+        if (isEditedWrittenScript(existing)) {
+          if (!force) return { success: false, message: editedRefusal(relHookPath) };
+          writeFileAtomically(hookPath, HUSKY_HOOK_SCRIPT, 0o755);
+          return { success: true, message: editedRewritten(relHookPath), hookPath, discardedEdits: true };
         }
-        // An append is read, concatenate, write by temporary file and rename,
-        // so a link planted in between is replaced, never written through.
-        writeFileAtomically(
+        if (!isShellHook(existing)) {
+          return {
+            success: false,
+            message:
+              `${relHookPath} is not a shell script, so vault-guard cannot merge into it. ` +
+              'Add `vault-guard scan --staged` to it by hand.',
+          };
+        }
+        // The same stanza as the native merge, after the shebang, so a
+        // trailing `exit 0` in the hook cannot skip it. Written by temporary
+        // file and rename, so a link planted in between is replaced, never
+        // written through.
+        writeFileAtomically(hookPath, mergeStanza(existing), hookRead.mode);
+        return {
+          success: true,
+          message: `Added the vault-guard stanza to existing ${relHookPath}, after the shebang line; the rest is unchanged`,
           hookPath,
-          `${existing}\n# --- vault-guard ---\nvault-guard scan --staged || {\n  echo "❌ vault-guard blocked commit"\n  exit 1\n}\n`,
-          hookRead.mode,
-        );
-        return { success: true, message: `Appended vault-guard to existing ${relHookPath}`, hookPath };
+        };
       }
 
       writeFileAtomically(hookPath, HUSKY_HOOK_SCRIPT, 0o755);
@@ -861,19 +1103,22 @@ export class PreCommitHook {
    * and a from-scratch \`--manager husky\` install take), there is no
    * "# --- vault-guard ---" appended-block marker to strip, so the old
    * logic here matched nothing, rewrote the file byte-identical, and
-   * reported success:true with isInstalled still true. Distinguishing
-   * the two shapes vault-guard itself ever produces -- the whole-file
-   * header vs. the appended-stanza marker -- fixes this: a whole-file
-   * hook is removed entirely; an appended stanza is stripped, keeping
-   * the pre-existing foreign content; anything else that merely mentions
-   * "vault-guard" in neither recognized shape is left untouched, with an
-   * honest message and success only if it happens not to still read as
-   * installed.
+   * reported success:true with isInstalled still true. The shapes
+   * vault-guard itself produces are told apart by classifyPreCommitHook:
+   * a whole script vault-guard wrote is removed entirely; a complete
+   * stanza (and the old stanza earlier versions appended at the end, when
+   * the file ends with exactly it) is stripped, keeping the pre-existing
+   * content; a file that carries the header but is not such a script, or
+   * whose stanza lost its end marker, is refused and left untouched;
+   * anything else that merely mentions "vault-guard" is left untouched,
+   * with an honest message and success only if it does not still run the
+   * command.
    */
   private uninstallHusky(
     cwd: string,
     huskyDir: string = path.join(cwd, '.husky'),
-  ): { success: boolean; message: string } {
+    dryRun = false,
+  ): UninstallHookResult {
     const hookPath = path.join(huskyDir, 'pre-commit');
     const relHookPath = this.relFromCwd(cwd, hookPath);
     const hookRead = readHookFile(hookPath, relHookPath);
@@ -883,46 +1128,64 @@ export class PreCommitHook {
     }
 
     const content = hookRead.text;
+    const ownership = classifyPreCommitHook(content);
+
+    // vault-guard wrote the ENTIRE file (a fresh --manager husky install or
+    // the native husky redirect, this version or a released one): remove it.
+    if (ownership === 'owned') {
+      if (!dryRun) fs.unlinkSync(hookPath);
+      return { success: true, message: `Removed ${relHookPath}` };
+    }
+
+    // vault-guard added a complete stanza to somebody else's hook, and maybe
+    // an earlier version appended its old stanza at the end: strip exactly
+    // those, preserving every other byte.
+    let stripped = ownership === 'merged' ? stripStanza(content) : content;
+    if (stripped.endsWith(LEGACY_HUSKY_APPEND)) {
+      stripped = stripped.slice(0, stripped.length - LEGACY_HUSKY_APPEND.length);
+    }
+    if (stripped !== content) {
+      if (stripped.trim().length === 0) {
+        if (!dryRun) fs.unlinkSync(hookPath);
+        return { success: true, message: `Removed ${relHookPath}` };
+      }
+      // What is left is still a script vault-guard wrote, with edits: removing
+      // the stanza would leave vault-guard's own scan running.
+      if (isEditedWrittenScript(stripped)) {
+        return { success: false, message: remainderRefusal(relHookPath) };
+      }
+      if (!dryRun) writeFileAtomically(hookPath, stripped, hookRead.mode);
+      return { success: true, message: `Removed vault-guard stanza from ${relHookPath}` };
+    }
+
+    // An edited vault-guard script is refused, never kept (see uninstallNative).
+    if (isEditedWrittenScript(content)) {
+      return { success: false, message: editedUninstallRefusal(relHookPath) };
+    }
+
+    if (ownership === 'claimed') {
+      return { success: false, message: claimedRefusal(relHookPath) };
+    }
+    if (ownership === 'damaged') {
+      return {
+        success: false,
+        message:
+          `The vault-guard stanza in ${relHookPath} is damaged (its end marker is missing). ` +
+          'Leaving the hook unchanged; remove the stanza by hand.',
+      };
+    }
     if (!content.includes('vault-guard')) {
       return { success: true, message: `No vault-guard stanza in ${relHookPath}` };
     }
 
-    // vault-guard wrote the ENTIRE file from HUSKY_HOOK_SCRIPT (whether
-    // via a fresh --manager husky install or the native husky-redirect):
-    // it is safe, and correct, to remove the file outright rather than
-    // try to strip individual lines from a template vault-guard owns.
-    if (content.includes(VAULT_GUARD_HOOK_HEADER)) {
-      fs.unlinkSync(hookPath);
-      return { success: true, message: `Removed ${relHookPath}` };
-    }
-
-    // vault-guard appended a stanza to a pre-existing (foreign) hook: strip
-    // just that stanza, preserving whatever the file had before.
-    if (content.includes('# --- vault-guard ---')) {
-      const stripped = content.replace(/\n# --- vault-guard ---[\s\S]*$/m, '');
-      if (stripped.trim().length === 0) {
-        fs.unlinkSync(hookPath);
-        return { success: true, message: `Removed ${relHookPath}` };
-      }
-      writeFileAtomically(hookPath, stripped, hookRead.mode);
-      const stillInstalled = stripped.includes('vault-guard') && stripped.includes('scan --staged');
-      return {
-        success: !stillInstalled,
-        message: stillInstalled
-          ? `Removed the appended stanza from ${relHookPath}, but it still references vault-guard -- review manually`
-          : `Removed vault-guard stanza from ${relHookPath}`,
-      };
-    }
-
-    // Mentions "vault-guard" somewhere, but in NEITHER shape vault-guard
-    // itself ever writes (no whole-file header, no appended-stanza
-    // marker) -- do not guess at what to remove from a file this code did
-    // not write; leave it untouched and say so honestly. Report success
-    // only if it does not still read as installed (isInstalled uses the
-    // same two-substring check).
+    // Mentions "vault-guard" somewhere, but in no shape vault-guard itself
+    // writes -- do not guess at what to remove from a file this code did not
+    // write; leave it untouched and say so honestly. Report success only if
+    // it does not still run the command.
     const stillInstalled = content.includes('vault-guard') && content.includes('scan --staged');
     return {
       success: !stillInstalled,
+      ...(stillInstalled ? { kept: true } : {}),
       message: `${relHookPath} mentions vault-guard but does not match the shape this version writes; it may have been written by an older vault-guard, or by hand. Leaving it unchanged. Review and remove the vault-guard reference manually if needed.`,
     };
   }

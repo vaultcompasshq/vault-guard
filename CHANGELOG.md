@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `vault-guard install-hook` exited 0 whenever installation was refused, so a
   caller could not tell a refusal from a success. Those refusals now exit 1.
   A successful install still exits 0, and a usage error still exits 2.
+- The postgres, mysql, mongodb and redis URL rules now start the match at the URL that holds the credential: the matched URL cannot begin before the credential's own scheme (the user part stops at a slash or quote, the password part at a quote or `://`, and a password may not begin with `//`), so only that URL is judged by the sample-value check. A password that begins with `//` is no longer matched.
+- `vault-guard init --revert` and the uninstaller delete a pre-commit hook only when its bytes are a script vault-guard wrote (CRLF and trailing whitespace aside), remove exactly the vault-guard stanza from a hook it was merged into, and otherwise keep the hook, exit 1 and say what to remove by hand; that includes a merged hook whose remainder is still a vault-guard script with edits. `init --revert` removes the hook first and, when the hook is refused, removes no other file. A hook whose own line runs vault-guard is left in place, `init --revert` says so and removes the other init files, and `init --revert --dry-run` now predicts that, or a refusal, instead of saying it would uninstall the hook. `install-hook` and `init` report the hook as installed only for such a script or a complete stanza; a hook that only carries the vault-guard header line gets the stanza.
+- `install-hook` and `init` refuse, with exit 1, a hook vault-guard wrote that was edited after install (it still holds, in order, the header line and the scan line of a script vault-guard wrote, whether lines were added, inserted, removed or put before the shebang), name the file and say to remove the edits or pass the new `--force` flag, which rewrites the hook from the template and says the edits were discarded. The uninstallers refuse such a hook too, so `init --revert` stops on it. A hook with the header line but no such scan line still gets the stanza.
+- `install-hook` on a husky `.husky/pre-commit` adds the same marked stanza as a native merge, right after the shebang line, and takes the hook as already installed only for a script vault-guard wrote or a complete stanza, not for a mention of vault-guard.
 
 ### Security
 
@@ -26,12 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pnpm.onlyBuiltDependencies`. Nothing is named there. The native
   dependencies ship an optional platform package, and the suite passes
   without running their install scripts.
-- Workflow wiring tests now fail a top-level permission grant past
-  `contents: read` (a workflow that uploads SARIF may also grant
-  `security-events: write`), a publish job that is not in the
+- Workflow wiring tests now fail a top-level permission grant, in any
+  workflow, past `contents: read` or the write-free `read-all` (a workflow
+  that uploads SARIF may also grant `security-events: write`), a publish job that is not in the
   `npm-publish` environment, an action reference that is not a
   40-character commit SHA, or a checkout that does not set
-  `persist-credentials: false`.
+  `persist-credentials: false` (a commented-out key does not count).
 
 ## [1.13.1] - 2026-11-01
 

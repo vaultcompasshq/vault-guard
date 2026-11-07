@@ -140,12 +140,94 @@ describe('vault-guard init', () => {
     expect(hook.isInstalled({ cwd: testDir, manager: 'native' })).toBe(false);
   });
 
+  it('revert refuses with exit 1 when lines were added to the hook init wrote, names the hook, and removes nothing', async () => {
+    expect(await initCommand({ cwd: testDir })).toBe(0);
+    const hookFile = path.join(testDir, 'hooks', 'pre-commit');
+    const edited = `${fs.readFileSync(hookFile, 'utf-8')}# team addition\nnpm run lint-staged\n`;
+    fs.writeFileSync(hookFile, edited);
+
+    const errors: string[] = [];
+    const spy = jest.spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
+      errors.push(a.map(String).join(' '));
+    });
+    let code: number;
+    try {
+      code = await initCommand({ cwd: testDir, revert: true });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(code).toBe(1);
+    expect(fs.readFileSync(hookFile, 'utf-8')).toBe(edited);
+    expect(fs.existsSync(path.join(testDir, '.vault-guard.json'))).toBe(true);
+    expect(fs.existsSync(path.join(testDir, MANIFEST_RELATIVE_PATH))).toBe(true);
+    const text = errors.join('\n');
+    expect(text).toContain('hooks/pre-commit');
+    expect(text).toContain('vault-guard did not write all of it');
+
+    const result = revertInit({ cwd: testDir });
+    expect(result.ok).toBe(false);
+    expect(result.conflicts).toEqual([
+      expect.objectContaining({ path: 'hooks/pre-commit', reason: 'hook_not_removed' }),
+    ]);
+  });
+
+  it('merges into a hook that only carries the vault-guard header line, and revert gives it back byte for byte', async () => {
+    const hookFile = path.join(testDir, 'hooks', 'pre-commit');
+    const foreign =
+      '#!/bin/sh\n# vault-guard pre-commit (installed by @vaultcompass/vault-guard)\necho "team hook ran"\n';
+    fs.mkdirSync(path.dirname(hookFile), { recursive: true });
+    fs.writeFileSync(hookFile, foreign, { mode: 0o755 });
+
+    const plan = planInit({ cwd: testDir });
+    expect(plan.conflicts).toEqual([]);
+    expect(plan.hook?.installed).toBe(false);
+    expect(await initCommand({ cwd: testDir })).toBe(0);
+    expect(fs.readFileSync(hookFile, 'utf-8')).toContain('# --- end vault-guard ---');
+
+    expect(await initCommand({ cwd: testDir, revert: true })).toBe(0);
+    expect(fs.readFileSync(hookFile, 'utf-8')).toBe(foreign);
+  });
+
   it('revert dry-run does not delete files', async () => {
     expect(await initCommand({ cwd: testDir })).toBe(0);
     expect(await initCommand({ cwd: testDir, revert: true, dryRun: true })).toBe(0);
 
     expect(fs.existsSync(path.join(testDir, '.vault-guard.json'))).toBe(true);
     expect(fs.existsSync(path.join(testDir, MANIFEST_RELATIVE_PATH))).toBe(true);
+  });
+
+  it.each([
+    ['native', 'owned'],
+    ['native', 'merged'],
+    ['husky', 'owned'],
+    ['husky', 'merged'],
+  ] as const)('revert dry-run leaves a %s hook that is %s, the manifest and the config byte for byte', async (manager, kind) => {
+    const hookFile =
+      manager === 'native' ? path.join(testDir, 'hooks', 'pre-commit') : path.join(testDir, '.husky', 'pre-commit');
+    if (kind === 'merged') {
+      fs.mkdirSync(path.dirname(hookFile), { recursive: true });
+      fs.writeFileSync(hookFile, '#!/bin/sh\necho "team hook ran"\n', { mode: 0o755 });
+      // init refuses a foreign husky hook, so the stanza goes in first; init then finds it installed.
+      expect(new PreCommitHook().install({ cwd: testDir, manager }).success).toBe(true);
+    }
+    expect(await initCommand({ cwd: testDir, manager })).toBe(0);
+    const read = (p: string): string => fs.readFileSync(path.join(testDir, p), 'utf-8');
+    const hookBefore = fs.readFileSync(hookFile, 'utf-8');
+    expect(hookBefore.includes('# --- end vault-guard ---')).toBe(kind === 'merged');
+    const manifestBefore = read(MANIFEST_RELATIVE_PATH);
+    const configBefore = read('.vault-guard.json');
+
+    const result = revertInit({ cwd: testDir, dryRun: true });
+
+    expect(result.ok).toBe(true);
+    expect(result.actions.some(a => a.detail === 'would uninstall hook')).toBe(true);
+    expect(fs.readFileSync(hookFile, 'utf-8')).toBe(hookBefore);
+    expect(read(MANIFEST_RELATIVE_PATH)).toBe(manifestBefore);
+    expect(read('.vault-guard.json')).toBe(configBefore);
+    expect(await initCommand({ cwd: testDir, revert: true, dryRun: true })).toBe(0);
+    expect(fs.readFileSync(hookFile, 'utf-8')).toBe(hookBefore);
+    expect(read(MANIFEST_RELATIVE_PATH)).toBe(manifestBefore);
   });
 
   it('emits JSON manifest in --json mode', async () => {
@@ -510,9 +592,11 @@ describe('vault-guard init', () => {
 
     it('bare init reports already installed when .husky/pre-commit already has the vault-guard stanza', () => {
       buildHusky9Layout(testDir);
+      // A complete stanza, the shape install-hook adds. A bare
+      // `vault-guard scan --staged` line is a mention, not an installation.
       fs.writeFileSync(
         path.join(testDir, '.husky', 'pre-commit'),
-        '#!/usr/bin/env sh\nvault-guard scan --staged\n',
+        '#!/usr/bin/env sh\n# --- vault-guard ---\nvault-guard scan --staged || exit 1\n# --- end vault-guard ---\nnpm test\n',
         { mode: 0o755 },
       );
 
@@ -531,6 +615,26 @@ describe('vault-guard init', () => {
       // never relativized), resolved against git's own (symlink-resolved)
       // worktree root for this relative core.hooksPath.
       expect(plan.hook?.path).toBe(path.join(fs.realpathSync(testDir), '.husky', 'pre-commit'));
+    });
+
+    it('bare init does not take a .husky/pre-commit that only runs vault-guard on a plain line for installed', () => {
+      buildHusky9Layout(testDir);
+      fs.writeFileSync(
+        path.join(testDir, '.husky', 'pre-commit'),
+        '#!/usr/bin/env sh\nvault-guard scan --staged\n',
+        { mode: 0o755 },
+      );
+
+      const plan = planInit({
+        cwd: testDir,
+        manager: 'native',
+        skipConfig: true,
+        skipWorkflow: true,
+        skipAgentRules: true,
+      });
+
+      expect(plan.ok).toBe(true);
+      expect(plan.hook?.installed).toBe(false);
     });
 
     it('names .husky/pre-commit as the conflict when a foreign tracked hook already exists there', async () => {

@@ -22,6 +22,8 @@ export interface InitOptions {
   skipWorkflow?: boolean;
   skipConfig?: boolean;
   skipAgentRules?: boolean;
+  /** Rewrite a hook vault-guard wrote that was edited after install, discarding the edits. */
+  force?: boolean;
 }
 
 export interface InitConflict {
@@ -32,7 +34,10 @@ export interface InitConflict {
     | 'manifest_mismatch'
     | 'not_a_git_repository'
     | 'foreign_hook'
-    | 'linked_hook';
+    | 'linked_hook'
+    | 'hook_not_removed';
+  /** For `hook_not_removed`: the uninstaller's own message, naming the file and what to do. */
+  detail?: string;
 }
 
 export interface InitAdvisory {
@@ -288,6 +293,8 @@ function conflictGuidance(c: InitConflict): string {
       return 'An existing pre-commit hook is present without vault-guard. Merge `vault-guard scan --staged` manually, or remove the foreign hook if unused.';
     case 'linked_hook':
       return 'This hook file (or its directory) is a symlink or not a regular file; vault-guard does not read or write through a link. Replace the link with the file itself, then re-run vault-guard init.';
+    case 'hook_not_removed':
+      return `Fix ${c.path} as described, then re-run vault-guard init --revert. The other init files and the manifest are still in place.`;
     default:
       return 'Resolve manually, then re-run vault-guard init.';
   }
@@ -457,7 +464,12 @@ export function applyInit(plan: InitResult, options: InitOptions = {}): InitResu
     // Always call install for native when planning a hook: first-time write, or
     // idempotent refresh of the optional pre-commit.cmd companion.
     if (!plan.hook.installed || manager === 'native') {
-      const result = hook.install({ cwd, manager });
+      const result = hook.install({ cwd, manager, force: Boolean(options.force) });
+      if (result.success && result.discardedEdits) {
+        plan.actions = plan.actions.map(a =>
+          a.kind === 'hook-install' ? { ...a, detail: `${a.detail ?? manager}; ${result.message}` } : a,
+        );
+      }
       if (!result.success && !plan.hook.installed) {
         return {
           ...plan,
@@ -590,6 +602,39 @@ export function revertInit(options: InitOptions = {}): InitResult {
   const actions: InitPlannedAction[] = [];
   const filePaths = [...manifest.files.map(f => f.path)].reverse();
 
+  // The hook goes first: when the uninstaller refuses (a hook vault-guard did
+  // not write all of it, a damaged stanza), revert stops with nothing removed,
+  // so the manifest is still there to run revert again once the hook is fixed.
+  // A hook the uninstaller leaves in place as not vault-guard's to remove (the
+  // user's own line runs vault-guard) does not stop revert: it is said, and the
+  // other init files go. A dry run asks the same uninstaller, which changes
+  // nothing, so it predicts the same refusal or leave-in-place.
+  let hookKept: string | undefined;
+  if (manifest.hookManager) {
+    const hookResult = new PreCommitHook().uninstall({
+      cwd,
+      manager: manifest.hookManager as HookManager,
+      dryRun,
+    });
+    if (hookResult.kept) {
+      hookKept = hookResult.message;
+    } else if (!hookResult.success) {
+      return {
+        ok: false,
+        dryRun,
+        reverted: false,
+        alreadyInitialized: false,
+        actions: [],
+        advisories: [],
+        conflicts: [
+          { path: manifest.hookPath ?? 'pre-commit', reason: 'hook_not_removed', detail: hookResult.message },
+        ],
+        manifestPath: MANIFEST_RELATIVE_PATH,
+        mcpMergeHint: MCP_MERGE_HINT,
+      };
+    }
+  }
+
   for (const rel of filePaths) {
     actions.push({
       kind: 'skip',
@@ -606,14 +651,12 @@ export function revertInit(options: InitOptions = {}): InitResult {
     actions.push({
       kind: 'hook-install',
       path: manifest.hookPath ?? 'pre-commit',
-      detail: dryRun ? 'would uninstall hook' : 'uninstalled hook',
+      detail: hookKept
+        ? `${dryRun ? 'would leave hook in place' : 'left hook in place'}: ${hookKept}`
+        : dryRun
+          ? 'would uninstall hook'
+          : 'uninstalled hook',
     });
-    if (!dryRun) {
-      new PreCommitHook().uninstall({
-        cwd,
-        manager: manifest.hookManager as HookManager,
-      });
-    }
   }
 
   actions.push({
@@ -649,6 +692,15 @@ export function revertInit(options: InitOptions = {}): InitResult {
 function printHuman(result: InitResult, options: InitOptions): void {
   if (options.revert) {
     if (!result.ok) {
+      const hookConflict = result.conflicts.find(c => c.reason === 'hook_not_removed');
+      if (hookConflict) {
+        console.error(
+          chalk.red(result.dryRun ? '❌ Revert would stop, nothing would be removed:' : '❌ Revert stopped, nothing removed:'),
+          hookConflict.detail ?? hookConflict.path,
+        );
+        console.error(chalk.gray(`      → ${conflictGuidance(hookConflict)}`));
+        return;
+      }
       console.error(chalk.red('❌ Revert failed:'), 'no valid init manifest found');
       return;
     }
@@ -677,6 +729,13 @@ function printHuman(result: InitResult, options: InitOptions): void {
       }
     }
     console.error(chalk.gray('\nResolve manually, then re-run vault-guard init.'));
+    return;
+  }
+
+  if (!result.ok) {
+    // applyInit appends the failed step last (hook install, file or manifest write).
+    const failed = result.actions[result.actions.length - 1];
+    console.error(chalk.red.bold('❌ Init stopped:'), failed?.detail ?? 'unknown failure');
     return;
   }
 

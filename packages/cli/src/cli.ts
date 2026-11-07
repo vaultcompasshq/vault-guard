@@ -139,6 +139,11 @@ export function buildCli(): Command {
     .option('--skip-workflow', 'Do not create .github/workflows/vault-guard.yml', false)
     .option('--skip-config', 'Do not create .vault-guard.json', false)
     .option('--skip-agent-rules', 'Do not create .vault-guard/mcp-snippet.json or agent-rules.md', false)
+    .option(
+      '--force',
+      'Rewrite a pre-commit hook vault-guard wrote that was edited after install, discarding the edits',
+      false,
+    )
     .action(
       async (options: {
         dryRun?: boolean;
@@ -149,6 +154,7 @@ export function buildCli(): Command {
         skipWorkflow?: boolean;
         skipConfig?: boolean;
         skipAgentRules?: boolean;
+        force?: boolean;
       }) => {
         const m = (options.manager ?? 'native').toLowerCase();
         if (!['native', 'husky', 'lefthook', 'precommit'].includes(m)) {
@@ -165,6 +171,7 @@ export function buildCli(): Command {
           skipWorkflow: Boolean(options.skipWorkflow),
           skipConfig: Boolean(options.skipConfig),
           skipAgentRules: Boolean(options.skipAgentRules),
+          force: Boolean(options.force),
         });
         setExitCode(exitCode);
       },
@@ -179,7 +186,12 @@ export function buildCli(): Command {
       'Hook integration: native | husky | lefthook | precommit',
       'native',
     )
-    .action(async (options: { manager: string }) => {
+    .option(
+      '--force',
+      'Rewrite a pre-commit hook vault-guard wrote that was edited after install, discarding the edits',
+      false,
+    )
+    .action(async (options: { manager: string; force?: boolean }) => {
       const m = (options.manager ?? 'native').toLowerCase() as
         | 'native'
         | 'husky'
@@ -190,7 +202,7 @@ export function buildCli(): Command {
         process.exitCode = 1;
         return;
       }
-      await installHookCommand(m);
+      await installHookCommand(m, { force: Boolean(options.force) });
     });
 
   // Tokens command

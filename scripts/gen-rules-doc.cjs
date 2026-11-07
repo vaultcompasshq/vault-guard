@@ -125,8 +125,12 @@ function main() {
   lines.push('');
   lines.push(
     '- the STANDARD list (`example`, `dummy`, `placeholder`, `changeme`, `redacted`, `your_token`, ' +
-      '`replace_me` and the rest of `STANDARD_MARKERS`) is checked against the WHOLE URL, so a marker ' +
-      'in the user, password, host, database name, query or fragment skips it;',
+      '`replace_me` and the rest of `STANDARD_MARKERS`) is checked against the WHOLE URL match, so a ' +
+      'marker in the user, password, host, database name, query or fragment skips it. The match is the ' +
+      'URL alone: it ends at the first quote, comma, semicolon or other delimiter after the path, and ' +
+      'it cannot begin before the credential\'s own scheme (its user part cannot hold a slash or a ' +
+      'quote, and its password part cannot begin with `//` or hold a quote or `://`), so neither the next JSON key or env ' +
+      'entry nor a credential-less URL earlier on the line is part of it;',
   );
   lines.push(
     '- the AGGRESSIVE list (`test`, `secret`, `password`, `demo`, `sample`, `fake`, `mock`, `qwerty`, ' +

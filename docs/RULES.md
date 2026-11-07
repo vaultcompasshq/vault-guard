@@ -28,7 +28,7 @@ That safety argument holds only for machine-issued credentials. For anything a p
 
 The four connection-string rules skip a URL that looks like a sample rather than a deployment. `packages/core/src/utils/placeholder.ts` holds two marker lists, and they apply to different parts of the URL:
 
-- the STANDARD list (`example`, `dummy`, `placeholder`, `changeme`, `redacted`, `your_token`, `replace_me` and the rest of `STANDARD_MARKERS`) is checked against the WHOLE URL, so a marker in the user, password, host, database name, query or fragment skips it;
+- the STANDARD list (`example`, `dummy`, `placeholder`, `changeme`, `redacted`, `your_token`, `replace_me` and the rest of `STANDARD_MARKERS`) is checked against the WHOLE URL match, so a marker in the user, password, host, database name, query or fragment skips it. The match is the URL alone: it ends at the first quote, comma, semicolon or other delimiter after the path, and it cannot begin before the credential's own scheme (its user part cannot hold a slash or a quote, and its password part cannot begin with `//` or hold a quote or `://`), so neither the next JSON key or env entry nor a credential-less URL earlier on the line is part of it;
 - the AGGRESSIVE list (`test`, `secret`, `password`, `demo`, `sample`, `fake`, `mock`, `qwerty`, `your_` and the rest of `AGGRESSIVE_MARKERS`) is checked against the PASSWORD only, as a substring, case-insensitive. A marker in the user, host or database name does not skip the URL.
 
 A URL is also skipped when:
@@ -73,10 +73,10 @@ This is a known gap, not a design goal: a real URL whose user, host, database na
 | `gcp-api-key` | critical | - | `g` | `AIza[a-zA-Z0-9_-]{35}` |
 | `gcp-oauth` | low | - | `g` | `[0-9]{1,64}-[a-zA-Z0-9_]{32}\\.apps\\.googleusercontent\\.com` |
 | `azure-storage` | critical | - | `g` | `DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{20,}` |
-| `postgresql-url` | critical | - | `g` | `` postgres(?:ql)?:\\/\\/[^:@\\s]{1,256}:[^@\\s]{1,256}@[^:\\s/]{1,256}(?::\\d{1,8})?\\/[^\\s"'`,;}\\])<>\|\\\\]{0,1024} `` |
-| `mysql-url` | critical | - | `g` | `` mysql:\\/\\/[^:@\\s]{1,256}:[^@\\s]{1,256}@[^:\\s/]{1,256}(?::\\d{1,8})?\\/[^\\s"'`,;}\\])<>\|\\\\]{0,1024} `` |
-| `mongodb-url` | critical | - | `g` | `mongodb(?:\\+srv)?:\\/\\/[^:@\\s]{1,256}:[^@\\s]{1,256}@[^:\\s/]{1,256}(?::\\d{1,8})?` |
-| `redis-url` | critical | - | `g` | `rediss?:\\/\\/[^:@\\s]{1,256}:[^@\\s]{1,256}@[^:\\s/]{1,256}(?::\\d{1,8})` |
+| `postgresql-url` | critical | - | `g` | `` postgres(?:ql)?:\\/\\/[^:@\\s/"'`]{1,256}:(?!\\/\\/)(?:(?!:\\/\\/)[^@\\s"'`]){1,256}@[^:\\s/]{1,256}(?::\\d{1,8})?\\/[^\\s"'`,;}\\])<>\|\\\\]{0,1024} `` |
+| `mysql-url` | critical | - | `g` | `` mysql:\\/\\/[^:@\\s/"'`]{1,256}:(?!\\/\\/)(?:(?!:\\/\\/)[^@\\s"'`]){1,256}@[^:\\s/]{1,256}(?::\\d{1,8})?\\/[^\\s"'`,;}\\])<>\|\\\\]{0,1024} `` |
+| `mongodb-url` | critical | - | `g` | `` mongodb(?:\\+srv)?:\\/\\/[^:@\\s/"'`]{1,256}:(?!\\/\\/)(?:(?!:\\/\\/)[^@\\s"'`]){1,256}@[^:\\s/]{1,256}(?::\\d{1,8})? `` |
+| `redis-url` | critical | - | `g` | `` rediss?:\\/\\/[^:@\\s/"'`]{1,256}:(?!\\/\\/)(?:(?!:\\/\\/)[^@\\s"'`]){1,256}@[^:\\s/]{1,256}(?::\\d{1,8}) `` |
 | `github-token` | critical | - | `g` | `gh[pousor]_[a-zA-Z0-9]{36}` |
 | `github-pat` | critical | - | `g` | `github_pat_[a-zA-Z0-9_]{82}` |
 | `gitlab-token` | critical | - | `g` | `glpat-[a-zA-Z0-9_-]{20}` |
