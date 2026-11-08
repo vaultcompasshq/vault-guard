@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.3] - 2026-11-09
+
+A patch release with the fixes from the 2026-11-08 re-grade: the postgres,
+mysql, mongodb and redis URL rules report a DSN with a single quote in the
+password again, match the scheme in any case and report a redis URL without a
+port; `init --revert` and the uninstaller no longer remove a stanza the user
+edited or report as uninstalled a hook that still runs vault-guard; and
+`install-hook` and `init` no longer report as installed a native hook git will
+not run for want of the execute bit.
+
 ### Fixed
 
 - The postgres, mysql, mongodb and redis URL rules report a DSN whose password holds a single quote again, as 1.13.1 did; 1.13.2 stopped reporting it. A single quote is legal unencoded in a URL password. docs/RULES.md now lists false negatives the rules still accept. They include a raw double quote or backtick in the password, a slash or any quote in the user part, an empty user part (`redis://:password@host:6379`), a userinfo with no colon, and a password that begins with `//`.
