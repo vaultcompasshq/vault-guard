@@ -1470,7 +1470,7 @@ matched URL cannot begin before the credential's own scheme. In all four
 rules (`postgresql-url`, `mysql-url`, `mongodb-url`, `redis-url`) the user
 part cannot hold a slash, double quote, single quote or backtick (nor a
 colon, at sign or whitespace), and the password part cannot hold a double
-quote, single quote or backtick (nor an at sign or whitespace), may not begin
+quote or backtick (nor an at sign or whitespace), may not begin
 with `//`, and no position in it may start `://` (a per-character negative
 lookahead, so each character is still consumed once). The user part has no
 slash, so the user/password colon cannot be another URL's `://` (the
@@ -1479,25 +1479,48 @@ only `://` between the start of the match and its at sign is therefore the
 one right after the matched scheme, so a credential-less URL earlier on the
 line (host only, or with a port, path or quotes) cannot become the start of
 the match, and a standard marker in it cannot skip the real URL after it. A
-raw slash, colon or bracket in a password, a colon followed by one slash, or
-an at sign before the last one, still matches. A password that itself begins
-with `//` is no longer matched (a false negative this rule accepts). The
+raw slash, colon, bracket or single quote in a password (a single quote is a
+sub-delimiter, legal unencoded in URL userinfo), a colon followed by one
+slash, or an at sign before the last one, still matches. The false negatives
+these classes accept, each a DSN holding a real credential that is not
+reported: a raw double quote or backtick in the password, a slash, single
+quote, double quote or backtick in the user part, an empty user part
+(`redis://:pw@host:6379`, `postgres://:pw@host/db`) or a userinfo with no
+colon (`redis://pw@host:6379`), both because the user class is `{1,256}` and
+the user/password colon is required, and a password that itself begins with
+`//`. Because the password may hold a single quote, a
+single-quoted credential-less URL can be joined to an at sign in a later
+single-quoted value on the same line and reported (a false positive this rule
+accepts, also for redis now that its port is optional:
+`{'url':'redis://cache:6379','owner':'ops@host'}`; listed in `docs/RULES.md`); the user part still stops at a single quote, so a single-quoted
+value cannot become the password of a URL whose user part runs into it. The
 `postgresql-url` and
 `mysql-url` path capture stops at the first double quote, single quote,
 backtick, comma, semicolon, closing brace, closing bracket, closing paren,
-less-than sign, greater-than sign, pipe, backslash or whitespace character
-(none of which appears unencoded in a URL), capped at 1024 characters. A standard marker
+less-than sign, greater-than sign, pipe, backslash or whitespace character,
+capped at 1024 characters. Several of these (the single quote, comma,
+semicolon and parens) are legal unencoded in a URL path; a path holding one is
+cut short there and the credential before the cut is still reported. A standard marker
 (`example`, `dummy`, `placeholder` and the rest of `STANDARD_MARKERS`) in the
 next JSON key or the next env entry therefore cannot skip a real URL; a
 marker inside the URL (user, password, host, database, query, fragment) still does,
 which is what `docs/RULES.md` says. A query string is cut at a comma or
 semicolon, and the credential before the cut is still reported. The
-mongodb and redis rules end at the host or port.
+mongodb and redis rules end at the host or port. All four rules carry the
+`i` flag, so the scheme matches in any case (`POSTGRES://`, `MongoDB+SRV://`);
+every other part of the four regexes is a negated class or a digit run, which
+the flag does not change. The redis port is optional, and the redis host
+stops at the same delimiters as the postgres path (and at a colon, slash or
+whitespace), so without a port a standard marker in the next value or env
+entry still cannot skip the URL. Not matched, documented in `docs/RULES.md`:
+an IPv6 host in brackets (the host class and the local-host check in
+`isNonSecretConnectionString` would both have to change), a JDBC URL with
+the credential in its query string, and a scheme-relative `//user:pw@host`.
 
 **Enforced by:** the two regexes at
-`packages/core/src/scanners/secret-scanner.ts:171` and `:172`, and the user
+`packages/core/src/scanners/secret-scanner.ts:177` and `:178`, and the user
 and password classes of those two and of the mongodb and redis regexes at
-`:173` and `:174`; the check
+`:179` and `:180`; the check
 that reads the match is in the same file, `isNonSecretConnectionString(fullMatch)`.
 Tests, in `packages/core/src/scanners/__tests__/secret-scanner.test.ts`:
 `reports a URL followed by a JSON sibling holding a standard marker`,
@@ -1517,8 +1540,28 @@ four rules, and a comma list; each asserts the match starts at the real
 URL's own scheme), `ends a %s password at a double quote, so it is not joined
 to an at sign in a later value` (each of the four rules),
 `still reports a %s whose password holds a raw %s` (slash, colon, bracket and
-at sign for each of the four rules) and `still reports a %s whose password
-holds a colon and slashes that do not spell the scheme separator`. Mutations,
+at sign for each of the four rules), `still reports a %s whose password
+holds a colon and slashes that do not spell the scheme separator`,
+`reports a %s whose password holds a single quote` (each of the four rules,
+env and JSON spellings), `reports a postgres DSN whose password holds both a
+slash and a single quote` and `ends a %s user part at a single quote, so a
+later single-quoted value is not read as its password` (each of the four
+rules). Mutations, 2026-11-08: putting the single quote back into the four
+password classes turned the 5 single-quote cases red; removing the quotes
+from the postgres user class turned its user-part case red. Scheme case
+and the redis port, 2026-11-08: `reports a %s whose scheme is not lower case
+(%s)` (each of the four rules), `still skips a DSN with an upper-case scheme
+and a standard marker in it`, `reports a redis-url without a port (%s)` (env,
+rediss, a database path, JSON), `ends a redis host without a port at %j, so a
+standard marker after it cannot skip the URL` (the twelve non-whitespace
+delimiters) and `still skips a redis URL without a port on a local or bare
+host`. Mutations, 2026-11-08: the `i` flag removed from the postgres regex
+turned its 2 upper-case cases red; the redis host class put back to
+`[^:\s/]` turned the 12 delimiter cases red. Measured the same day with the
+audit's 48-line DSN corpus: 39 matches on 38 lines before, 41 on 40 after
+(the upper-case and the redis-without-port lines added, every earlier row at
+its earlier column); the three public-repository baselines (detect-secrets,
+gitleaks, urllib3) gave the audit's row hashes unchanged. Mutations,
 2026-11-07: removing the `(?!\/\/)` after the user/password colon from the
 postgres regex turned its 3 host-only cases red (env, Markdown pair, comma
 list); removing the double quote from the postgres password class turned 1
@@ -1613,7 +1656,51 @@ when nothing but whitespace remains, otherwise written back with its mode,
 unless what remains still holds the signature lines of a vault-guard script (it would
 keep running vault-guard's own scan), which is refused like the next case; a
 `claimed` or `damaged` file is refused with a message that names the file and
-says what to remove by hand, and nothing is changed. `init --revert` runs the
+says what to remove by hand, and nothing is changed. The marked block of a
+`merged` file is removed only when it is a stanza vault-guard released: the
+text from the begin marker line to the end marker line, with CRLF read as LF
+and trailing whitespace dropped from every line, must hash to one of the
+released stanza hashes (the 1.13.1 to 1.13.2 stanza, held as a SHA-256
+literal, plus the current stanza), and the file must hold exactly one begin
+marker line and one end marker line (after the husky uninstaller has taken
+off the old appended stanza). A block with a line added, removed or changed
+between its markers is refused with a message that names the file and says
+the stanza was edited after install; a file with more than one begin or end
+marker is refused with a message that names the file and says it holds more
+than one stanza; in both cases nothing is changed, on the native and the
+husky path, and a dry run gives the same answer. When the stanza comes off and
+what remains still runs `vault-guard scan` on a line of its own (read as code,
+at a command start, with or without a package runner and with any flags: a
+vault-guard script whose scan line gained a flag or a second space, or whose
+header line was deleted, all of which install merges into), the remainder is
+written back, so the hook is exactly what it was before install, and the
+uninstaller reports the hook as kept (`kept`, not success, the same as a
+`wired` hook), never as uninstalled; `init --revert` then says it left the
+hook in place, exits 0 and removes the other init files. The `.cmd`
+companion stays, as for a `wired` hook. A native hook git runs directly (not
+the tracked `.husky/pre-commit` under a husky-generated hooks directory,
+which husky 9 runs through `sh`) is not installed without an execute bit, on
+any platform but Windows: `isInstalled` is false for it, so `init` calls
+install. Install then sets the execute bit on an `owned` file (a script
+vault-guard wrote whole) and says it did; for any other non-empty hook
+without the bit (`merged`, `claimed`, `wired`, `damaged` or `foreign`, except
+an edited vault-guard script, which keeps its own refusal and `--force`
+rewrite) it refuses with exit 1 before writing anything, names the file and
+says to `chmod +x` it, because setting the bit would also start running
+somebody else's lines. `install-hook` and `init` never report such a hook as
+installed. Uninstall has no `--force`:
+the install-only `--force` rewrites a hook from the template, and nothing
+lets uninstall discard the lines a user put inside the stanza. Known limits,
+not covered by these rules (2026-11-08 review): the execute-bit rule is on the
+native path only, so with husky 8 (git runs `.husky/pre-commit` directly)
+and `--manager husky`, a non-executable hook is still reported installed while
+git skips it (the default native manager on the same repository refuses it);
+the bit test reads any of the three execute bits, not whether the running
+user may execute the file, so a hook at mode 0610 owned by that user counts
+as executable; install still reports a merged hook whose stanza was edited
+as already installed, while uninstall refuses that same hook as edited; and a
+hook that is only a shebang with no final newline comes back from uninstall
+with a newline added after the shebang (mergeStanza inserts one). `init --revert` runs the
 uninstaller before it removes any other init file, and on a refusal exits 1
 with the uninstaller's message and removes nothing, so the manifest is still
 there to revert again. A `wired` hook (the user's own line runs vault-guard)
@@ -1629,19 +1716,27 @@ it reports no conflict and calls install, which merges.
 **Enforced by:** `classifyPreCommitHook`
 (`packages/core/src/scanners/pre-commit-hook.ts:230`) with the released-script
 hashes at `:76`, `normalizeScript` at `:100`, `isReleasedHookScript` at
-`:111` and the current templates added at `:468`; the signature lines at
+`:111` and the current templates added at `:585`; the signature lines at
 `:124` read by `isEditedWrittenScript` (`:146`), `editedRefusal` (`:155`),
 `editedUninstallRefusal` (`:163`) and `remainderRefusal` (`:177`); `codeOnly`
-(`:260`), `mergeStanza` (`:317`), `stripStanza` (`:329`) and `claimedRefusal`
-(`:338`), called from `isInstalled` (`:743`), `installNative` (`:827`; the
-edited-hook refusal and `--force` rewrite at `:840`), `uninstallNative`
-(the edited-hook refusal at `:952`, the wired hook kept at `:959`, the
-claimed refusal at `:967`, the damaged-stanza message at `:977`, the
-`stripStanza` call at `:987` and the remainder refusal at `:988`),
-`installHusky` (`:1053`; the edited-hook refusal at `:1058`) and
-`uninstallHusky` (`:1143`; the old appended stanza at `:1144`, the remainder
-refusal at `:1154`, the edited-hook refusal at `:1162`, the claimed refusal
-at `:1167`, the kept mention at `:1188`), from `foreignHookConflict`
+(`:260`), `mergeStanza` (`:317`), the released-stanza hashes at `:333` with
+`normalizeStanza` (`:343`), the current stanza added at `:359`,
+`isReleasedHookStanza` (`:362`), `stripReleasedStanza` (`:384`),
+`editedStanzaRefusal` (`:398`), `stillRunsScan` (`:413`), `keptRemainder`
+(`:419`), `lacksExecuteBit` (`:432`), `notExecutableRefusal` (`:437`),
+`multipleStanzaRefusal` (`:447`) and `claimedRefusal` (`:455`), called from
+`isInstalled` (`:860`; the execute bit at `:866`), `installNative` (the
+not-executable refusal at `:959`, the owned or merged check at `:962`, the
+execute bit set at `:965`; the edited-hook refusal and `--force` rewrite at
+`:981`), `uninstallNative` (the edited-hook refusal at `:1089`, the wired
+hook kept at `:1096`, the claimed refusal at `:1104`, the damaged-stanza
+message at `:1114`, the `stripReleasedStanza` call at `:1127` with its two
+refusals at `:1128` and `:1129`, the remainder refusal at `:1131` and the
+kept remainder at `:1140`), `installHusky` (`:1206`; the edited-hook refusal
+at `:1211`) and `uninstallHusky` (the old appended stanza at `:1299`, the
+`stripReleasedStanza` call at `:1303`, the remainder refusal at `:1315`, the
+kept remainder at `:1320`, the edited-hook refusal at `:1329`, the claimed
+refusal at `:1334`, the kept mention at `:1355`), from `foreignHookConflict`
 (`packages/cli/src/commands/init.ts:175`), `--force` passed by `applyInit`
 (`packages/cli/src/commands/init.ts:467`), and the revert order and the kept
 hook in `revertInit` (`packages/cli/src/commands/init.ts:614` and `:619`). The
@@ -1681,8 +1776,7 @@ merged hook whose remainder is still a vault-guard script with edits`, `husky
 uninstall marks a hook that only mentions the command as kept`, `merges into a
 foreign hook that only carries the header line, the merged hook blocks a
 staged secret, and uninstall gives it back byte for byte`, `install merges
-rather than adopts a hook whose stanza lost its end marker`, `says a merged
-hook that is not executable will not run until chmod +x`, `husky install
+rather than adopts a hook whose stanza lost its end marker`, `husky install
 merges into a hook that only mentions vault-guard in a comment, rather than
 adopting it`, `husky uninstall after a merge gives the hook back byte for
 byte`, `husky uninstall refuses a vault-guard script with lines added to it,
@@ -1721,7 +1815,55 @@ plus a merged hook whose remainder is each of them with a line inserted),
 still gets the stanza` and `a husky dry-run uninstall of a hook that is %s
 changes no byte` (owned; merged); in the CLI `init.test.ts`, `revert dry-run
 leaves a %s hook that is %s, the manifest and the config byte for byte`
-(native and husky, owned and merged). Mutations, 2026-11-07: the husky
+(native and husky, owned and merged). The released-stanza rule, 2026-11-08:
+in `released-hook-scripts.test.ts`, `has every released stanza`, `the %s
+stanza fixture is the released bytes`, `the %s stanza is in the released
+stanza table, also with CRLF line ends or trailing spaces` and `the %s stanza
+with a line added inside its markers, or a line changed, is not a released
+stanza`; in `pre-commit-hook.test.ts`, under `uninstall strips a marked block
+only when it is a stanza vault-guard released`, `%s uninstall refuses a
+merged hook with %s, names the file, and changes no byte` (native and husky,
+each with a user line inside the markers, a user line replacing a stanza
+line, a CRLF stanza with a user line inside the markers, and two stanzas;
+each compares the hook's SHA-256 before and after, and a dry run's answer
+with the real run's), `%s uninstall still strips an unmodified stanza, also
+with CRLF line ends` and `%s uninstall strips the stanza 1.13.1 and 1.13.2
+merged`; end to end in `install-hook-merge.test.ts`, `init --revert refuses
+with exit 1 and changes nothing when a line was added inside the merged
+stanza` and `init --revert refuses with exit 1 and changes nothing when a
+line was added inside the husky stanza`. Mutations, 2026-11-08: the
+released-stanza comparison disabled turned 6 red; the one-begin-one-end
+marker count disabled turned 2 red (the two-stanza cases); a wrong literal
+for the 1.13.1 stanza hash turned 1 red in `released-hook-scripts.test.ts`
+(the current stanza has the same bytes, so only the table test sees it);
+the comparison disabled in a rebuilt CLI turned both end-to-end stanza tests
+red. The kept remainder, 2026-11-08: in `pre-commit-hook.test.ts`, under
+`uninstall reports a hook whose remainder still runs vault-guard as kept, not
+uninstalled`, `%s uninstall strips the stanza from a vault-guard script with
+%s, keeps the hook, and says so` (native and husky, each with a double space
+in the scan line, a flag added to the scan line, and the header line deleted;
+each checks the message, the file bytes and that a dry run gives the same
+answer and changes nothing), and `a %s hook with the header line but no scan
+line of a vault-guard script still gets the stanza` (its `npx vault-guard
+scan --staged` case is now kept); end to end, `init --revert says the hook
+was left in place, not uninstalled, for a hook init wrote with %s` (the same
+three shapes) and `init --revert refuses with exit 1, not uninstalled, a
+merged hook holding two stanzas`. Mutation, 2026-11-08: the still-runs check
+always false turned 7 red in the core file and 3 red end to end. The execute
+bit (issue 232), 2026-11-08: in `pre-commit-hook.test.ts`, `refuses to merge
+into a hook that is not executable, names it, and changes no byte or mode
+(issue 232)`, `refuses a merged hook that lost its execute bit instead of
+saying it is already installed (issue 232)` and `makes a hook vault-guard
+wrote whole executable again, says so, and the hook then blocks a staged
+secret (issue 232)`; end to end, `issue 232: install-hook refuses with exit 1
+a foreign hook that is not executable, and changes nothing`, `issue 232: %s
+refuses with exit 1 a merged hook that lost its execute bit, never says
+installed` and `issue 232: %s makes a hook vault-guard wrote executable
+again, and a staged secret is then blocked` (install-hook and init; each
+first commits a staged secret through the non-executable hook as the
+control). Mutation, 2026-11-08: the execute-bit check always false turned 3
+red in the core file and 5 red end to end.
+Mutations, 2026-11-07: the husky
 installer adopting a `claimed` hook (K7) turned 3 red in the core file;
 dropping the 1.9.0 to 1.13.1 native hash from the released table (K2a)
 turned 1 red and dropping the 1.4.6 to 1.8.1 one (K2b) turned 2 red in
@@ -1786,3 +1928,28 @@ trip); the wired test put back to a whole-line comment check turned 2 red
 hook as installed again (the previous behaviour, written as a cast so it
 compiles) turned 7 red in the core file (the live-line message test, the five
 mentions-the-command cases and the wired-after-and-and case).
+
+## A failed npm publish is never announced, and only the packed tarball is published
+
+In `.github/workflows/release.yml`, the publish job and the github-release
+job carry no `continue-on-error`, so a failed "Publish to npm" fails the
+publish job and github-release, which takes the default `success()`, does
+not cut a Release page for it. "Publish to npm" runs under `set -euo
+pipefail` and publishes each package with exactly `npm publish
+"./${tarball}" --access public`, where the tarball is the one file `find`
+returns in that package's downloaded `pack-out` directory (the tarball
+prepare checked against its package.json) and `test -n` stops the step when
+there is none; it never publishes from a package directory. A version
+already on the registry is skipped: the `npm view` check echoes the skip and
+returns before the publish, so a failed mid-release can be re-run.
+
+**Enforced by:** tests in `scripts/tests/release-kind.test.mjs`, under
+`.github/workflows/release.yml wiring`: `lets no publish failure pass: no
+continue-on-error in the publish job or the Release job`, `publishes each
+package from its packed tarball, never from a directory` and `skips a version
+already on the registry and returns before publishing it`, beside `gives the
+GitHub Release job no job-level if, so it runs only after a successful
+publish`. Mutations, 2026-11-08, each made to release.yml in place and
+restored: `continue-on-error: true` on "Publish to npm" turned 1 red;
+publishing `"./${dir}"` instead of the tarball turned 1 red; the skip
+without its `return 0` turned 1 red.

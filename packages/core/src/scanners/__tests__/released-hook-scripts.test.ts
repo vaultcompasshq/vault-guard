@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
-import { classifyPreCommitHook, isReleasedHookScript } from '../pre-commit-hook';
+import { classifyPreCommitHook, isReleasedHookScript, isReleasedHookStanza } from '../pre-commit-hook';
 
 interface ReleasedScript {
   manager: 'native' | 'husky';
@@ -69,6 +69,41 @@ describe('hook scripts released versions wrote', () => {
     'the %s script with a line added is not owned',
     (_label, s) => {
       expect(classifyPreCommitHook(`${s.text}npm run lint-staged\n`)).not.toBe('owned');
+    },
+  );
+});
+
+describe('hook stanzas released versions merged', () => {
+  const stanzas = (
+    JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'released-hook-scripts.json'), 'utf8')) as {
+      stanzas: Array<{ versions: string; sha256: string; lines: string[] }>;
+    }
+  ).stanzas.map(s => ({ ...s, text: s.lines.join('\n') }));
+
+  it('has every released stanza', () => {
+    expect(stanzas.map(s => s.versions)).toEqual(['1.13.1 to 1.13.2']);
+  });
+
+  it.each(stanzas.map(s => [s.versions, s] as const))('the %s stanza fixture is the released bytes', (_label, s) => {
+    expect(createHash('sha256').update(s.text, 'utf8').digest('hex')).toBe(s.sha256);
+  });
+
+  it.each(stanzas.map(s => [s.versions, s] as const))(
+    'the %s stanza is in the released stanza table, also with CRLF line ends or trailing spaces',
+    (_label, s) => {
+      expect(isReleasedHookStanza(s.text)).toBe(true);
+      expect(isReleasedHookStanza(s.text.replace(/\n/g, '\r\n'))).toBe(true);
+      expect(isReleasedHookStanza(s.text.replace(/\n/g, '  \n'))).toBe(true);
+    },
+  );
+
+  it.each(stanzas.map(s => [s.versions, s] as const))(
+    'the %s stanza with a line added inside its markers, or a line changed, is not a released stanza',
+    (_label, s) => {
+      expect(isReleasedHookStanza(s.text.replace('# --- end vault-guard ---', 'echo keep-me\n# --- end vault-guard ---'))).toBe(
+        false,
+      );
+      expect(isReleasedHookStanza(s.text.replace('vault_guard_status=0', 'vault_guard_status=0; export X=1'))).toBe(false);
     },
   );
 });

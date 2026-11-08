@@ -270,5 +270,35 @@
         ""
       ]
     }
+  ],
+  "about_stanzas": "The marked stanza released vault-guard versions merged into a hook they did not write, byte for byte from the released source, joined with LF and ending with a newline; sha256 is over those exact bytes. The uninstallers strip a marked block only when it equals one of these (CRLF and trailing whitespace aside).",
+  "stanzas": [
+    {
+      "versions": "1.13.1 to 1.13.2",
+      "sha256": "bf29511d37d34ceb01ffd8c8a003b80453e9a1a801af5eab6557efc5993e08b3",
+      "lines": [
+        "# --- vault-guard ---",
+        "if command -v vault-guard >/dev/null 2>&1; then",
+        "  vault_guard_status=0",
+        "  vault-guard scan --staged || vault_guard_status=$?",
+        "  if [ \"$vault_guard_status\" -ne 0 ]; then",
+        "    echo \"\"",
+        "    if [ \"$vault_guard_status\" -eq 2 ]; then",
+        "      echo \"❌ COMMIT BLOCKED: vault-guard could not complete the scan\"",
+        "      echo \"   See the message above for what went unexamined. This commit has not been checked.\"",
+        "    else",
+        "      echo \"❌ COMMIT BLOCKED: secrets detected in staged files\"",
+        "      echo \"💡 Fix or unstage, then retry. Emergency bypass (discouraged): git commit --no-verify\"",
+        "    fi",
+        "    exit 1",
+        "  fi",
+        "else",
+        "  echo \"❌ vault-guard: command not found (install: npm i -g @vaultcompass/vault-guard)\"",
+        "  exit 1",
+        "fi",
+        "# --- end vault-guard ---",
+        ""
+      ]
+    }
   ]
 }

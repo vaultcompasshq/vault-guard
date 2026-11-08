@@ -129,8 +129,8 @@ function main() {
       'marker in the user, password, host, database name, query or fragment skips it. The match is the ' +
       'URL alone: it ends at the first quote, comma, semicolon or other delimiter after the path, and ' +
       'it cannot begin before the credential\'s own scheme (its user part cannot hold a slash or a ' +
-      'quote, and its password part cannot begin with `//` or hold a quote or `://`), so neither the next JSON key or env ' +
-      'entry nor a credential-less URL earlier on the line is part of it;',
+      'quote, and its password part cannot begin with `//` or hold a double quote, a backtick or `://`), so neither the ' +
+      'next JSON key or env entry nor a credential-less URL earlier on the line is part of it;',
   );
   lines.push(
     '- the AGGRESSIVE list (`test`, `secret`, `password`, `demo`, `sample`, `fake`, `mock`, `qwerty`, ' +
@@ -176,6 +176,44 @@ function main() {
       'contains a standard marker, or whose password contains any marker from either list, is not ' +
       'reported. To see the rules fire while testing, use a non-local host with no marker in it and a ' +
       'random password with no marker in it.',
+  );
+  lines.push('');
+  // Written by hand from the four connection-string regexes in
+  // packages/core/src/scanners/secret-scanner.ts; update it when they change.
+  lines.push('## Connection strings the rules do not match');
+  lines.push('');
+  lines.push(
+    'These shapes hold a real credential but are not reported by the four connection-string rules. Each is a ' +
+      'false negative the rules accept, not a sample-value skip:',
+  );
+  lines.push('');
+  lines.push(
+    '- a raw double quote or backtick in the password (neither is legal unencoded in a URL; percent-encoded, ' +
+      '`%22` or `%60`, is reported). A single quote in the password is reported;',
+  );
+  lines.push('- a single quote, double quote, backtick or slash in the user part;');
+  lines.push(
+    '- an empty user part (`redis://:password@host:6379`, `postgres://:password@host/db`), the usual shape of a ' +
+      'redis AUTH password with no ACL user;',
+  );
+  lines.push('- a userinfo with no colon, the password alone (`redis://password@host:6379`);');
+  lines.push('- a password that begins with `//`;');
+  lines.push('- an IPv6 host in brackets, such as `@[2001:db8::1]:5432`;');
+  lines.push(
+    '- a JDBC URL whose credential is in the query string (`jdbc:postgresql://host/db?user=app&password=...`); a JDBC ' +
+      'URL with `user:password@` in it is reported;',
+  );
+  lines.push('- a scheme-relative URL with no scheme (`//user:password@host`).');
+  lines.push('');
+  lines.push(
+    'The scheme is matched in any case (`POSTGRES://` and `Postgres://` are reported), and a redis URL is reported ' +
+      'with or without a port.',
+  );
+  lines.push('');
+  lines.push(
+    'A false positive the rules accept: because a password may hold a single quote, a credential-less URL inside a ' +
+      'single-quoted value can be joined to an at sign in a later single-quoted value on the same line and reported ' +
+      "(for example `{'url':'redis://cache:6379','owner':'ops@host'}`).",
   );
   lines.push('');
   lines.push('## Patterns');

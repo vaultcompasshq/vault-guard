@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The postgres, mysql, mongodb and redis URL rules report a DSN whose password holds a single quote again, as 1.13.1 did; 1.13.2 stopped reporting it. A single quote is legal unencoded in a URL password. docs/RULES.md now lists false negatives the rules still accept. They include a raw double quote or backtick in the password, a slash or any quote in the user part, an empty user part (`redis://:password@host:6379`), a userinfo with no colon, and a password that begins with `//`.
+- `vault-guard init --revert` and the uninstaller remove the vault-guard stanza from a merged hook only when the lines between its markers are a stanza vault-guard released (CRLF and trailing whitespace aside). A stanza with a line added, removed or changed inside it, or a hook with more than one stanza, is refused with exit 1, the hook is named and nothing is changed, on the native and the husky path; before, the whole marked block was removed with any line the user had put inside it, and revert said the hook was uninstalled.
+- `vault-guard init --revert` no longer says "uninstalled hook" while the hook still runs vault-guard. When the stanza comes off a hook whose own lines still run `vault-guard scan` (for example a hook vault-guard wrote whose scan line gained a flag or a second space, or whose header line was deleted), the hook is given back as it was before install and revert says it left the hook in place.
+- `vault-guard install-hook` and `init` no longer report a native pre-commit hook as installed when git will not run it for want of the execute bit, so a staged secret no longer passes after a "successful" install (closes 232). A hook vault-guard wrote whole is made executable again and the message says so; a hook with somebody else's lines in it, merged or not, is refused with exit 1, named and left unchanged, with a note to run chmod +x on it, since that would also start running those lines. Windows and the husky 9 tracked hook, which husky runs through sh, are unaffected.
+- The postgres, mysql, mongodb and redis URL rules now match the scheme in any case (`POSTGRES://` was not reported), and the redis rule reports a URL without a port. A credential-less redis URL in a single-quoted value followed on the same line by a single-quoted value with an at sign can now be reported, as the other three rules already could. Shapes docs/RULES.md lists as still not reported include an IPv6 host in brackets, a JDBC URL with the credential in its query string, and a scheme-relative URL.
+
+### Changed
+
+- Release workflow tests now fail a publish step or job marked continue-on-error, a publish from a package directory instead of the packed tarball, and a skip of an already-published version that does not return before publishing. The workflow itself is unchanged.
+
 ## [1.13.2] - 2026-11-07
 
 A patch release with the fixes from the 2026-11-06 audit: the postgres,

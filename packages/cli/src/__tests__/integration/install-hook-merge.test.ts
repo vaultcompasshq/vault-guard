@@ -128,6 +128,124 @@ describe('install-hook merges into a foreign native hook', () => {
     expect(fs.readFileSync(hook, 'utf-8')).toBe(foreign);
   });
 
+  itPosix('issue 232: install-hook refuses with exit 1 a foreign hook that is not executable, and changes nothing', () => {
+    const foreign = '#!/bin/sh\n# team hook\necho "team hook ran"\n';
+    const { repo, hook, env } = repoWithHook(foreign);
+    fs.chmodSync(hook, 0o644);
+
+    const install = fx.runCli(['install-hook'], repo, env);
+
+    expect(install.code).toBe(1);
+    expect(install.stdout + install.stderr).toContain('.git/hooks/pre-commit');
+    expect(install.stdout + install.stderr).toMatch(/not executable/);
+    expect(install.stdout + install.stderr).not.toMatch(/installed/i);
+    expect(fs.readFileSync(hook, 'utf-8')).toBe(foreign);
+    expect(fs.statSync(hook).mode & 0o777).toBe(0o644);
+  });
+
+  itPosix.each([
+    ['install-hook', ['install-hook']],
+    ['init', INIT_HOOK_ONLY],
+  ])('issue 232: %s refuses with exit 1 a merged hook that lost its execute bit, never says installed', (_label, args) => {
+    const { repo, hook, env } = repoWithHook('#!/bin/sh\necho "team hook ran"\n');
+    expect(fx.runCli(['install-hook'], repo, env).code).toBe(0);
+    fs.chmodSync(hook, 0o644);
+    const merged = fs.readFileSync(hook, 'utf-8');
+
+    const run = fx.runCli(args, repo, env);
+
+    expect(run.code).toBe(1);
+    expect(run.stdout + run.stderr).toMatch(/not executable/);
+    expect(run.stdout + run.stderr).not.toMatch(/already installed/i);
+    expect(fs.readFileSync(hook, 'utf-8')).toBe(merged);
+    expect(fs.statSync(hook).mode & 0o777).toBe(0o644);
+  });
+
+  itPosix.each([
+    ['install-hook', ['install-hook']],
+    ['init', INIT_HOOK_ONLY],
+  ])('issue 232: %s makes a hook vault-guard wrote executable again, and a staged secret is then blocked', (_label, args) => {
+    const { repo, hook, env } = repoWithHook('');
+    fs.rmSync(hook);
+    expect(fx.runCli(['install-hook'], repo, env).code).toBe(0);
+    fs.chmodSync(hook, 0o644);
+    // The control: git skips the non-executable hook, so a staged secret passes.
+    fx.write(repo, 'src/config.ts', `export const key = '${fx.AWS_KEY}';\n`);
+    expect(commit(repo, env).code).toBe(0);
+
+    const run = fx.runCli(args, repo, env);
+
+    expect(run.code).toBe(0);
+    expect(fs.statSync(hook).mode & 0o111).not.toBe(0);
+    fx.write(repo, 'src/second.ts', `export const key = '${fx.AWS_KEY}';\n`);
+    const blocked = commit(repo, env);
+    expect(blocked.code).not.toBe(0);
+    expect(blocked.output).toContain('COMMIT BLOCKED: secrets detected');
+  });
+
+  itPosix('init --revert refuses with exit 1 and changes nothing when a line was added inside the merged stanza', () => {
+    const foreign = '#!/bin/sh\n# team hook\necho "team hook ran"\n';
+    const { repo, hook, env } = repoWithHook(foreign);
+    expect(fx.runCli(['install-hook'], repo, env).code).toBe(0);
+    expect(fx.runCli(INIT_HOOK_ONLY, repo, env).code).toBe(0);
+    const edited = fs
+      .readFileSync(hook, 'utf-8')
+      .replace('# --- end vault-guard ---\n', 'echo USERLINE-keep-me-in\n# --- end vault-guard ---\n');
+    fs.writeFileSync(hook, edited);
+    const again = fx.runCli(['install-hook'], repo, env);
+    expect(again.code).toBe(0);
+    const manifest = path.join(repo, '.vault-guard', 'manifest.json');
+    const manifestBefore = fs.readFileSync(manifest, 'utf-8');
+
+    const revert = fx.runCli(['init', '--revert'], repo, env);
+
+    expect(revert.code).toBe(1);
+    expect(revert.stdout + revert.stderr).toContain('.git/hooks/pre-commit');
+    expect(revert.stdout + revert.stderr).toMatch(/stanza .*was edited after install/);
+    expect(revert.stdout + revert.stderr).not.toMatch(/uninstalled hook/);
+    expect(fs.readFileSync(hook, 'utf-8')).toBe(edited);
+    expect(fs.readFileSync(manifest, 'utf-8')).toBe(manifestBefore);
+  });
+
+  itPosix.each([
+    ['a double space in the scan line', (t: string) => t.replace('vault-guard scan --staged || status=$?', 'vault-guard  scan --staged || status=$?')],
+    ['a flag added to the scan line', (t: string) => t.replace('vault-guard scan --staged || status=$?', 'vault-guard scan --staged --fail-on high || status=$?')],
+    ['the header line deleted', (t: string) => t.replace('# vault-guard pre-commit (installed by @vaultcompass/vault-guard)\n', '')],
+  ])('init --revert says the hook was left in place, not uninstalled, for a hook init wrote with %s', (_label, edit) => {
+    const { repo, hook, env } = repoWithHook('');
+    fs.rmSync(hook);
+    expect(fx.runCli(INIT_HOOK_ONLY, repo, env).code).toBe(0);
+    const edited = edit(fs.readFileSync(hook, 'utf-8'));
+    fs.writeFileSync(hook, edited);
+    expect(fx.runCli(['install-hook'], repo, env).code).toBe(0);
+    expect(fs.readFileSync(hook, 'utf-8')).toContain('# --- end vault-guard ---');
+
+    const revert = fx.runCli(['init', '--revert'], repo, env);
+
+    expect(revert.code).toBe(0);
+    expect(revert.stdout + revert.stderr).toMatch(/left hook in place/);
+    expect(revert.stdout + revert.stderr).toMatch(/still runs vault-guard scan/);
+    expect(revert.stdout + revert.stderr).not.toMatch(/uninstalled hook/);
+    expect(fs.readFileSync(hook, 'utf-8')).toBe(edited);
+  });
+
+  itPosix('init --revert refuses with exit 1, not uninstalled, a merged hook holding two stanzas', () => {
+    const { repo, hook, env } = repoWithHook('#!/bin/sh\necho "team hook ran"\n');
+    expect(fx.runCli(['install-hook'], repo, env).code).toBe(0);
+    expect(fx.runCli(INIT_HOOK_ONLY, repo, env).code).toBe(0);
+    const twice = fs
+      .readFileSync(hook, 'utf-8')
+      .replace(/(# --- vault-guard ---[\s\S]*# --- end vault-guard ---\n)/, '$1$1');
+    fs.writeFileSync(hook, twice);
+
+    const revert = fx.runCli(['init', '--revert'], repo, env);
+
+    expect(revert.code).toBe(1);
+    expect(revert.stdout + revert.stderr).toMatch(/more than one vault-guard stanza/);
+    expect(revert.stdout + revert.stderr).not.toMatch(/uninstalled hook/);
+    expect(fs.readFileSync(hook, 'utf-8')).toBe(twice);
+  });
+
   itPosix('init --revert refuses with exit 1 and keeps the hook when lines were added to the hook init wrote', () => {
     const { repo, hook, env } = repoWithHook('');
     fs.rmSync(hook);
@@ -317,5 +435,24 @@ describe('install-hook merges into a husky 9 .husky/pre-commit', () => {
     const blocked = commit(repo, env);
     expect(blocked.code).not.toBe(0);
     expect(blocked.output).toContain('COMMIT BLOCKED: secrets detected');
+  });
+
+  itPosix('init --revert refuses with exit 1 and changes nothing when a line was added inside the husky stanza', () => {
+    const tracked = '#!/usr/bin/env sh\nnpm --version >/dev/null\n';
+    const { repo, hook, env } = huskyRepo(tracked);
+    expect(fx.runCli(['install-hook'], repo, env).code).toBe(0);
+    expect(fx.runCli(['init', '--skip-workflow', '--skip-agent-rules', '--skip-config'], repo, env).code).toBe(0);
+    const edited = fs
+      .readFileSync(hook, 'utf-8')
+      .replace('# --- end vault-guard ---\n', 'echo USERLINE-keep-me-in\n# --- end vault-guard ---\n');
+    fs.writeFileSync(hook, edited);
+
+    const revert = fx.runCli(['init', '--revert'], repo, env);
+
+    expect(revert.code).toBe(1);
+    expect(revert.stdout + revert.stderr).toContain('.husky/pre-commit');
+    expect(revert.stdout + revert.stderr).toMatch(/stanza .*was edited after install/);
+    expect(revert.stdout + revert.stderr).not.toMatch(/uninstalled hook/);
+    expect(fs.readFileSync(hook, 'utf-8')).toBe(edited);
   });
 });

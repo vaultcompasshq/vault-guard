@@ -160,18 +160,24 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // The path capture of the postgres and mysql rules ends at the first character
   // that cannot be part of the URL in the shapes found in code and config (a
   // quote, backtick, comma, semicolon, closing brace, bracket or paren, a less-
-  // than, greater-than or pipe sign, a backslash, or whitespace; none appears
-  // unencoded in a URL, and they delimit it in XML, HTML, tables and escaped
-  // strings such as an `\n` between two lines). The placeholder check runs against this match, so it has to be the URL
+  // than, greater-than or pipe sign, a backslash, or whitespace; they delimit the URL in XML, HTML, tables and escaped
+  // strings such as an `\n` between two lines, and a path holding one unencoded is cut short there, the credential before
+  // it still reported). The placeholder check runs against this match, so it has to be the URL
   // alone: neither the text after it (the next JSON key or env entry) nor a credential-less URL before it may skip a real DSN,
-  // so the user part also stops at a slash or quote and the password part at a quote or at "://", in all four rules: no
+  // so the user part also stops at a slash or quote and the password part at a double quote, backtick or "://", in all four
+  // rules (a single quote is legal unencoded in URL userinfo, so the password keeps it; the cost is that a single-quoted
+  // credential-less URL can be joined to an at sign in a later single-quoted value on the same line): no
   // position in the password may start the scheme separator (a per-character lookahead, so each character is consumed
   // once), and the password may not begin with "//" (so the user/password colon is never another URL's "://"). The only
   // "://" before the at sign is then the credential's own scheme. {0,1024} keeps a bare trailing slash before a quote.
-  ['postgresql-url', { regex: /postgres(?:ql)?:\/\/[^:@\s/"'`]{1,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"'`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/[^\s"'`,;}\])<>|\\]{0,1024}/g, severity: 'critical', connectionString: true, valueBearing: true }],
-  ['mysql-url',{ regex: /mysql:\/\/[^:@\s/"'`]{1,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"'`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/[^\s"'`,;}\])<>|\\]{0,1024}/g,            severity: 'critical', connectionString: true, valueBearing: true }],
-  ['mongodb-url',    { regex: /mongodb(?:\+srv)?:\/\/[^:@\s/"'`]{1,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"'`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?/g,            severity: 'critical', connectionString: true, valueBearing: true }],
-  ['redis-url',      { regex: /rediss?:\/\/[^:@\s/"'`]{1,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"'`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})/g,                       severity: 'critical', connectionString: true, valueBearing: true }],
+  //
+  // The scheme is matched in any case (`i`; a URL scheme is case-insensitive, and every other part of these regexes is a
+  // negated class or a digit run, which the flag does not change). The redis port is optional; without one the host
+  // ends at the same delimiters as the postgres path, so the next JSON value or env entry is not read as part of it.
+  ['postgresql-url', { regex: /postgres(?:ql)?:\/\/[^:@\s/"'`]{1,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/[^\s"'`,;}\])<>|\\]{0,1024}/gi, severity: 'critical', connectionString: true, valueBearing: true }],
+  ['mysql-url',{ regex: /mysql:\/\/[^:@\s/"'`]{1,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/[^\s"'`,;}\])<>|\\]{0,1024}/gi,            severity: 'critical', connectionString: true, valueBearing: true }],
+  ['mongodb-url',    { regex: /mongodb(?:\+srv)?:\/\/[^:@\s/"'`]{1,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?/gi,            severity: 'critical', connectionString: true, valueBearing: true }],
+  ['redis-url',      { regex: /rediss?:\/\/[^:@\s/"'`]{1,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/"'`,;}\])<>|\\]{1,256}(?::\d{1,8})?/gi,      severity: 'critical', connectionString: true, valueBearing: true }],
 
   // --- Source control tokens ---
   ['github-token',   { regex: /gh[pousor]_[a-zA-Z0-9]{36}/g,                                    severity: 'critical', valueBearing: true }],

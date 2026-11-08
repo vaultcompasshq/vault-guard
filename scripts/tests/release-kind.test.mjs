@@ -918,6 +918,48 @@ describe('.github/workflows/release.yml wiring', () => {
     expect(githubReleaseText).not.toMatch(/^ {4}if:/m);
   });
 
+  // The text of the "Publish to npm" step, from its "- name:" line to the end of the job.
+  function publishStepText() {
+    const start = publishText.indexOf('\n      - name: Publish to npm\n');
+    expect(start).toBeGreaterThan(-1);
+    const next = publishText.indexOf('\n      - ', start + 1);
+    return publishText.slice(start, next === -1 ? undefined : next);
+  }
+
+  it('lets no publish failure pass: no continue-on-error in the publish job or the Release job', () => {
+    // continue-on-error on "Publish to npm" (or on the job) would mark a
+    // failed publish a success, and github-release, which waits on that
+    // success, would then announce a version that is not on the registry.
+    expect(publishText).not.toMatch(/continue-on-error/);
+    expect(githubReleaseText).not.toMatch(/continue-on-error/);
+    expect(publishStepText()).toContain('set -euo pipefail');
+    // A later set +e or set +o would undo it, and a failed core publish
+    // followed by a good mcp publish would leave the step green.
+    expect(publishStepText()).not.toMatch(/\bset\s+\+[eo]/);
+  });
+
+  it('publishes each package from its packed tarball, never from a directory', () => {
+    // The tarball is what prepare checked against its package.json; a
+    // publish from the package directory would skip that check and pack
+    // again here, in the job that holds the token.
+    const step = publishStepText();
+    expect(step).toContain(`tarball="$(find "\${pack_dir}" -name '*.tgz' -print)"`);
+    expect(step).toContain('test -n "${tarball}"');
+    const publishes = step.match(/npm publish [^\n]*/g) ?? [];
+    expect(publishes).toEqual(['npm publish "./${tarball}" --access public']);
+  });
+
+  it('skips a version already on the registry and returns before publishing it', () => {
+    // The skip is what lets a failed mid-release be re-run: without the
+    // return, the loop would go on to npm publish a version the registry
+    // already has, which fails the step.
+    const step = publishStepText();
+    expect(step).toMatch(
+      /\n {12}if \[\[ "\$\(npm view "\$\{name\}@\$\{ver\}" version 2>\/dev\/null \|\| true\)" == "\$\{ver\}" \]\]; then\n {14}echo "Skip \$\{name\}@\$\{ver\} \(already on registry\)"\n {14}return 0\n {12}fi\n/
+    );
+    expect(step.indexOf('return 0')).toBeLessThan(step.indexOf('npm publish'));
+  });
+
   it('calls the decision script from a step with the id the conditions read', () => {
     expect(workflow).toMatch(/^ {4}- name: Decide the release kind[^\n]*\n {6}id: kind$/m);
     expect(workflow).toContain('node scripts/classify-release-tag.mjs');

@@ -525,6 +525,68 @@ describe('SecretScanner', () => {
     ])('still reports a %s whose password holds a colon and slashes that do not spell the scheme separator', (type, url) => {
       expect(dsnTypes(`DATABASE_URL=${url}`)).toEqual([type]);
     });
+
+    // A single quote is a sub-delim in RFC 3986 userinfo, so a correctly
+    // written DSN may carry one unencoded in its password.
+    it.each([
+      ['postgresql-url', `postgres://appuser:Xj8kP2m'Q9zRv@db.prod.acme-corp.net:5432/orders`],
+      ['mysql-url', `mysql://appuser:Xj8kP2m'Q9zRv@db.prod.acme-corp.net:3306/orders`],
+      ['mongodb-url', `mongodb://appuser:Xj8kP2m'Q9zRv@db.prod.acme-corp.net:27017`],
+      ['redis-url', `redis://default:Xj8kP2m'Q9zRv@cache.prod.acme-corp.net:6379`],
+    ])('reports a %s whose password holds a single quote', (type, url) => {
+      expect(dsnTypes(`DATABASE_URL=${url}`)).toEqual([type]);
+      expect(dsnTypes(`{"db":"${url}"}`)).toEqual([type]);
+    });
+
+    it('reports a postgres DSN whose password holds both a slash and a single quote', () => {
+      expect(dsnTypes(`DATABASE_URL=postgres://appuser:Xj8k/P2m'Q9zRv@db.prod.acme-corp.net:5432/orders`)).toEqual([
+        'postgresql-url',
+      ]);
+    });
+
+    it.each([
+      ['postgresql-url', `{'a':'postgres://svc','b':'Xj8kP2mQ9zRv@db.prod.acme-corp.net:5432/orders'}`],
+      ['mysql-url', `{'a':'mysql://svc','b':'Xj8kP2mQ9zRv@db.prod.acme-corp.net:3306/orders'}`],
+      ['mongodb-url', `{'a':'mongodb://svc','b':'Xj8kP2mQ9zRv@db.prod.acme-corp.net:27017'}`],
+      ['redis-url', `{'a':'redis://svc','b':'Xj8kP2mQ9zRv@cache.prod.acme-corp.net:6379'}`],
+    ])('ends a %s user part at a single quote, so a later single-quoted value is not read as its password', (_type, line) => {
+      expect(dsnTypes(line)).toEqual([]);
+    });
+
+    it.each([
+      ['postgresql-url', `POSTGRES://appuser:${PW}@db.prod.acme-corp.net:5432/orders`],
+      ['postgresql-url', `PostgreSQL://appuser:${PW}@db.prod.acme-corp.net:5432/orders`],
+      ['mysql-url', `MYSQL://appuser:${PW}@db.prod.acme-corp.net:3306/orders`],
+      ['mongodb-url', `MongoDB+SRV://appuser:${PW}@cluster0.acme-corp.net`],
+      ['redis-url', `REDIS://default:${PW}@cache.prod.acme-corp.net:6379`],
+    ])('reports a %s whose scheme is not lower case (%s)', (type, url) => {
+      expect(dsnTypes(`DATABASE_URL=${url}`)).toEqual([type]);
+    });
+
+    it('still skips a DSN with an upper-case scheme and a standard marker in it', () => {
+      expect(dsnTypes(`DATABASE_URL=POSTGRES://appuser:${PW}@db.example.acme-corp.net:5432/orders`)).toEqual([]);
+    });
+
+    it.each([
+      ['env', `REDIS_URL=redis://default:${PW}@cache.prod.acme-corp.net`],
+      ['rediss env', `REDIS_URL=rediss://default:${PW}@cache.prod.acme-corp.net`],
+      ['a database path', `REDIS_URL=redis://default:${PW}@cache.prod.acme-corp.net/0`],
+      ['JSON', `{"cache":"redis://default:${PW}@cache.prod.acme-corp.net"}`],
+    ])('reports a redis-url without a port (%s)', (_shape, line) => {
+      expect(dsnTypes(line)).toEqual(['redis-url']);
+    });
+
+    it.each(['"', "'", '`', ',', ';', '}', ']', ')', '<', '>', '|', '\\'])(
+      'ends a redis host without a port at %j, so a standard marker after it cannot skip the URL',
+      delimiter => {
+        expect(dsnTypes(`x=redis://default:${PW}@cache.prod.acme-corp.net${delimiter}example`)).toEqual(['redis-url']);
+      },
+    );
+
+    it('still skips a redis URL without a port on a local or bare host', () => {
+      expect(dsnTypes(`REDIS_URL=redis://default:${PW}@localhost`)).toEqual([]);
+      expect(dsnTypes(`REDIS_URL=redis://default:${PW}@cache`)).toEqual([]);
+    });
   });
 
   // ---------------------------------------------------------------------------
