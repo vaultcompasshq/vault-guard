@@ -322,16 +322,133 @@ function mergeStanza(text: string): string {
 }
 
 /**
- * Remove exactly the stanza vault-guard added, leaving every other byte. The
- * caller has already checked that an end marker exists; with none, the text is
- * returned unchanged rather than truncated.
+ * SHA-256 of every stanza a released vault-guard merged into a hook it did not
+ * write, after normalizeStanza. A hash list rather than a render function per
+ * version, the same choice as RELEASED_SCRIPT_SHA256: the released bytes are
+ * fixed, a hash is an explicit record of exactly them, and the checked-in
+ * fixture (released-hook-scripts.json) holds the text each hash stands for.
+ * The current NATIVE_HOOK_STANZA is added at load time (RELEASED_STANZA_HASHES
+ * below); when the stanza changes in a release, its old hash stays here.
  */
-function stripStanza(text: string): string {
+const RELEASED_STANZA_SHA256: readonly string[] = [
+  // native 1.13.1 to 1.13.2, and husky 1.13.2 (1.13.1 husky appended LEGACY_HUSKY_APPEND instead)
+  'bf29511d37d34ceb01ffd8c8a003b80453e9a1a801af5eab6557efc5993e08b3',
+];
+
+/**
+ * CRLF to LF and trailing whitespace dropped from every line, ending with one
+ * newline, so a checkout's line ends or trailing spaces do not make a stanza
+ * look edited. Trailing whitespace on a line of the stanza cannot add a command.
+ */
+function normalizeStanza(block: string): string {
+  return `${block
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map(line => line.trimEnd())
+    .join('\n')
+    .trimEnd()}\n`;
+}
+
+function stanzaHash(block: string): string {
+  return createHash('sha256').update(normalizeStanza(block), 'utf8').digest('hex');
+}
+
+const RELEASED_STANZA_TABLE: ReadonlySet<string> = new Set(RELEASED_STANZA_SHA256);
+
+/** Every stanza vault-guard merges or has merged: the current one plus the released ones. */
+const RELEASED_STANZA_HASHES: ReadonlySet<string> = new Set([stanzaHash(NATIVE_HOOK_STANZA), ...RELEASED_STANZA_SHA256]);
+
+/** True when the marked block is, after normalizeStanza, a stanza a released version merged (the table above only). */
+export function isReleasedHookStanza(block: string): boolean {
+  return RELEASED_STANZA_TABLE.has(stanzaHash(block));
+}
+
+/** Where the first marked block starts and ends (its end marker line included), or undefined without both markers. */
+function stanzaBounds(text: string): { start: number; end: number } | undefined {
   const begin = text.search(new RegExp(`^${STANZA_BEGIN}[ \\t\\r]*$`, 'm'));
-  if (begin === -1) return text;
+  if (begin === -1) return undefined;
   const endMatch = new RegExp(`^${STANZA_END}[ \\t\\r]*(?:\\n|$)`, 'm').exec(text.slice(begin));
-  if (!endMatch) return text;
-  return text.slice(0, begin) + text.slice(begin + endMatch.index + endMatch[0].length);
+  if (!endMatch) return undefined;
+  return { start: begin, end: begin + endMatch.index + endMatch[0].length };
+}
+
+/**
+ * Remove the stanza vault-guard added, leaving every other byte, but only
+ * when the marked block is byte-equal (normalizeStanza aside) to a stanza
+ * vault-guard released and the file holds exactly one begin and one end
+ * marker. A block with a line added, removed or changed between its markers
+ * is `edited`: removing it would delete the user's edit. Two or more markers
+ * of either kind are `multiple`: which block vault-guard wrote cannot be told.
+ * Either way the caller refuses and changes nothing.
+ */
+function stripReleasedStanza(
+  text: string,
+): { kind: 'stripped'; text: string } | { kind: 'edited' } | { kind: 'multiple' } {
+  const lines = text.split('\n').map(line => line.trimEnd());
+  const begins = lines.filter(line => line === STANZA_BEGIN).length;
+  const ends = lines.filter(line => line === STANZA_END).length;
+  if (begins !== 1 || ends !== 1) return { kind: 'multiple' };
+  const bounds = stanzaBounds(text);
+  if (!bounds) return { kind: 'multiple' };
+  if (!RELEASED_STANZA_HASHES.has(stanzaHash(text.slice(bounds.start, bounds.end)))) return { kind: 'edited' };
+  return { kind: 'stripped', text: text.slice(0, bounds.start) + text.slice(bounds.end) };
+}
+
+/** The uninstall refusal for a merged hook whose stanza was edited after install. */
+function editedStanzaRefusal(display: string): string {
+  return (
+    `The vault-guard stanza in ${display} was edited after install: the lines between its markers differ from ` +
+    'every stanza vault-guard wrote, and removing the block would delete those edits. Leaving the hook unchanged. ' +
+    'Move your lines out of the stanza, or remove the stanza by hand.'
+  );
+}
+
+/**
+ * True when a line of the hook, read as code (codeOnly), runs `vault-guard
+ * scan` at a command start, with or without a package runner and with any
+ * flags. Wider than the `wired` reading on purpose: it decides only whether
+ * the uninstaller may say the hook is uninstalled, so a doubt reads as "still
+ * runs" and the hook is reported as kept.
+ */
+function stillRunsScan(text: string): boolean {
+  const invocation = /(?:^|&&|\|\||;|\bthen\b|\bdo\b|[{(!|])\s*(?:(?:npx|pnpm exec|pnpm|yarn|npm exec)\s+)?vault-guard\s+scan\b/;
+  return text.split('\n').some(line => invocation.test(codeOnly(line.trimEnd())));
+}
+
+/** The uninstall result after the stanza came off a hook whose own lines still run vault-guard. */
+function keptRemainder(display: string): string {
+  return (
+    `Removed the vault-guard stanza from ${display}, but the rest of the hook still runs vault-guard scan on a ` +
+    'line vault-guard did not add, so the hook was left in place. Remove that line by hand if you want ' +
+    'vault-guard gone.'
+  );
+}
+
+/**
+ * True when git would skip this native hook file for want of an execute bit.
+ * Never on Windows, where the mode bits do not decide whether Git for Windows
+ * runs a hook.
+ */
+function lacksExecuteBit(mode: number): boolean {
+  return process.platform !== 'win32' && (mode & 0o111) === 0;
+}
+
+/** The install refusal for a hook somebody else wrote, or merged into, that git does not run because it is not executable. */
+function notExecutableRefusal(display: string): string {
+  return (
+    `${display} is not executable, so git does not run it, and the vault-guard scan in it would not run either. ` +
+    'Leaving it unchanged: making it executable would also start running the commands in it that are not ' +
+    `vault-guard's. Run chmod +x ${display} if they should run, then install again, or delete the file if it ` +
+    'is not in use.'
+  );
+}
+
+/** The uninstall refusal for a hook that holds more than one stanza begin or end marker. */
+function multipleStanzaRefusal(display: string): string {
+  return (
+    `${display} holds more than one vault-guard stanza marker, so vault-guard cannot tell which block it wrote. ` +
+    'Leaving the hook unchanged; remove the extra stanza by hand.'
+  );
 }
 
 /** The uninstall refusal for a hook that carries the vault-guard header but is not a script vault-guard wrote. */
@@ -740,7 +857,15 @@ export class PreCommitHook {
     if (manager === 'native' || manager === 'husky') {
       const ownership = classifyPreCommitHook(r.text);
       // `wired`, `claimed` and `damaged` are not installed: install adds a stanza.
-      return ownership === 'owned' || ownership === 'merged';
+      if (ownership !== 'owned' && ownership !== 'merged') return false;
+      // A native hook git runs directly is not installed without its execute
+      // bit (issue 232); install then sets it on a script vault-guard wrote, or
+      // refuses. Husky 9 runs the tracked .husky/pre-commit through sh, so the
+      // husky paths do not depend on the bit.
+      if (manager === 'native' && !this.isHuskyGeneratedHooksDir(this.getEffectiveHooksDir(cwd).hooksDir)) {
+        return !lacksExecuteBit(r.mode);
+      }
+      return true;
     }
     return r.text.includes('vault-guard') && r.text.includes('scan --staged');
   }
@@ -818,22 +943,38 @@ export class PreCommitHook {
       }
 
       let merged = false;
-      let notExecutable = false;
       let wiredMention = false;
       let rewroteEdited = false;
       if (hookRead.kind === 'file') {
         const existing = hookRead.text;
         const ownership = classifyPreCommitHook(existing);
+        // Git skips a hook without its execute bit, so a non-executable hook is
+        // never reported as installed (issue 232). A script vault-guard wrote
+        // whole is made executable again; a hook with somebody else's lines in
+        // it is refused before anything is written, because the bit would also
+        // start running those lines, which may have been switched off on purpose.
+        // An edited vault-guard script keeps its own refusal below (and --force
+        // rewrites it from the template, executable).
+        const notExecutable = lacksExecuteBit(hookRead.mode);
+        if (notExecutable && ownership !== 'owned' && ownership !== 'empty' && !isEditedWrittenScript(existing)) {
+          return { success: false, message: notExecutableRefusal(this.relFromCwd(cwd, hookPath)) };
+        }
         if (ownership === 'owned' || ownership === 'merged') {
+          let madeExecutable = '';
+          if (notExecutable) {
+            fs.chmodSync(hookPath, hookRead.mode | 0o111);
+            madeExecutable = `; made ${this.relFromCwd(cwd, hookPath)} executable, since git does not run a hook without the execute bit`;
+          }
           // Refresh the Windows companion if missing or stale (never clobber foreign).
           const cmdOk = this.writeNativeCmdCompanion(hooksDir);
           return {
             success: true,
-            message: cmdOk
-              ? 'Hook already installed (POSIX + Windows .cmd companion)'
-              : fs.existsSync(cmdPath)
-                ? 'Hook already installed (left foreign pre-commit.cmd untouched)'
-                : 'Hook already installed',
+            message:
+              (cmdOk
+                ? 'Hook already installed (POSIX + Windows .cmd companion)'
+                : fs.existsSync(cmdPath)
+                  ? 'Hook already installed (left foreign pre-commit.cmd untouched)'
+                  : 'Hook already installed') + madeExecutable,
             hookPath,
           };
         }
@@ -864,7 +1005,6 @@ export class PreCommitHook {
           }
           writeFileAtomically(hookPath, mergeStanza(existing), hookRead.mode);
           merged = true;
-          notExecutable = (hookRead.mode & 0o111) === 0;
         }
       }
 
@@ -891,12 +1031,9 @@ export class PreCommitHook {
       return {
         success: true,
         message: merged
-          ? (wiredMention
-              ? 'The pre-commit hook already mentions vault-guard scan --staged; vault-guard cannot verify that line blocks, so its own stanza was added as well'
-              : `Pre-commit hook installed (merged into your existing hook, which is otherwise unchanged; ${hint})`) +
-            (notExecutable
-              ? `. Note: ${this.relFromCwd(cwd, hookPath)} is not executable, so git will not run it until you chmod +x it`
-              : '')
+          ? wiredMention
+            ? 'The pre-commit hook already mentions vault-guard scan --staged; vault-guard cannot verify that line blocks, so its own stanza was added as well'
+            : `Pre-commit hook installed (merged into your existing hook, which is otherwise unchanged; ${hint})`
           : `Pre-commit hook installed (${hint})`,
         hookPath,
       };
@@ -982,11 +1119,27 @@ export class PreCommitHook {
     try {
       if (ownership === 'merged') {
         // Remove exactly the stanza we added; the file is somebody else's.
+        // Only a block equal to a released stanza is removed: an edit between
+        // the markers, or a second stanza, is refused with nothing changed.
         // Unless what is left is still a script vault-guard wrote, with edits:
         // then removing the stanza would leave vault-guard's own scan running.
-        const stripped = stripStanza(content);
+        const display = this.relFromCwd(cwd, hookPath);
+        const strip = stripReleasedStanza(content);
+        if (strip.kind === 'edited') return { success: false, message: editedStanzaRefusal(display) };
+        if (strip.kind === 'multiple') return { success: false, message: multipleStanzaRefusal(display) };
+        const stripped = strip.text;
         if (stripped.trim().length > 0 && isEditedWrittenScript(stripped)) {
           return { success: false, message: remainderRefusal(this.relFromCwd(cwd, hookPath)) };
+        }
+        // What is left still runs vault-guard on a line of its own (a vault-guard
+        // script edited in a way the signature test does not catch, or the
+        // user's own line): the stanza comes off, giving back exactly the hook
+        // as it was before install, and the hook is reported as kept, the same
+        // as a wired hook, never as uninstalled. The .cmd companion stays, as
+        // for a wired hook.
+        if (stillRunsScan(stripped)) {
+          if (!dryRun) writeFileAtomically(hookPath, stripped, hookRead.mode);
+          return { success: false, kept: true, message: keptRemainder(display) };
         }
         const cmdRemoved = this.removeNativeCmdCompanion(hooksDir, dryRun);
         if (dryRun) {
@@ -1139,10 +1292,18 @@ export class PreCommitHook {
 
     // vault-guard added a complete stanza to somebody else's hook, and maybe
     // an earlier version appended its old stanza at the end: strip exactly
-    // those, preserving every other byte.
-    let stripped = ownership === 'merged' ? stripStanza(content) : content;
-    if (stripped.endsWith(LEGACY_HUSKY_APPEND)) {
-      stripped = stripped.slice(0, stripped.length - LEGACY_HUSKY_APPEND.length);
+    // those, preserving every other byte. The old appended stanza comes off
+    // first, by its exact bytes, so its begin marker does not count as a
+    // second stanza; the merged block is removed only when it equals a
+    // released stanza (see uninstallNative).
+    let stripped = content.endsWith(LEGACY_HUSKY_APPEND)
+      ? content.slice(0, content.length - LEGACY_HUSKY_APPEND.length)
+      : content;
+    if (ownership === 'merged') {
+      const strip = stripReleasedStanza(stripped);
+      if (strip.kind === 'edited') return { success: false, message: editedStanzaRefusal(relHookPath) };
+      if (strip.kind === 'multiple') return { success: false, message: multipleStanzaRefusal(relHookPath) };
+      stripped = strip.text;
     }
     if (stripped !== content) {
       if (stripped.trim().length === 0) {
@@ -1153,6 +1314,12 @@ export class PreCommitHook {
       // the stanza would leave vault-guard's own scan running.
       if (isEditedWrittenScript(stripped)) {
         return { success: false, message: remainderRefusal(relHookPath) };
+      }
+      // The rest still runs vault-guard on a line of its own: kept, not
+      // uninstalled (see uninstallNative).
+      if (stillRunsScan(stripped)) {
+        if (!dryRun) writeFileAtomically(hookPath, stripped, hookRead.mode);
+        return { success: false, kept: true, message: keptRemainder(relHookPath) };
       }
       if (!dryRun) writeFileAtomically(hookPath, stripped, hookRead.mode);
       return { success: true, message: `Removed vault-guard stanza from ${relHookPath}` };

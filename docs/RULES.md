@@ -28,7 +28,7 @@ That safety argument holds only for machine-issued credentials. For anything a p
 
 The four connection-string rules skip a URL that looks like a sample rather than a deployment. `packages/core/src/utils/placeholder.ts` holds two marker lists, and they apply to different parts of the URL:
 
-- the STANDARD list (`example`, `dummy`, `placeholder`, `changeme`, `redacted`, `your_token`, `replace_me` and the rest of `STANDARD_MARKERS`) is checked against the WHOLE URL match, so a marker in the user, password, host, database name, query or fragment skips it. The match is the URL alone: it ends at the first quote, comma, semicolon or other delimiter after the path, and it cannot begin before the credential's own scheme (its user part cannot hold a slash or a quote, and its password part cannot begin with `//` or hold a quote or `://`), so neither the next JSON key or env entry nor a credential-less URL earlier on the line is part of it;
+- the STANDARD list (`example`, `dummy`, `placeholder`, `changeme`, `redacted`, `your_token`, `replace_me` and the rest of `STANDARD_MARKERS`) is checked against the WHOLE URL match, so a marker in the user, password, host, database name, query or fragment skips it. The match is the URL alone: it ends at the first quote, comma, semicolon or other delimiter after the path, and it cannot begin before the credential's own scheme (its user part cannot hold a slash or a quote, and its password part cannot begin with `//` or hold a double quote, a backtick or `://`), so neither the next JSON key or env entry nor a credential-less URL earlier on the line is part of it;
 - the AGGRESSIVE list (`test`, `secret`, `password`, `demo`, `sample`, `fake`, `mock`, `qwerty`, `your_` and the rest of `AGGRESSIVE_MARKERS`) is checked against the PASSWORD only, as a substring, case-insensitive. A marker in the user, host or database name does not skip the URL.
 
 A URL is also skipped when:
@@ -43,6 +43,23 @@ Examples, each on a host that is not local (`db.internal.acme-corp.net`) and wit
 - User `testuser` and database `demo` on the acme-corp host, with a password that has no marker: reported. The aggressive list does not look outside the password.
 
 This is a known gap, not a design goal: a real URL whose user, host, database name, query or fragment contains a standard marker, or whose password contains any marker from either list, is not reported. To see the rules fire while testing, use a non-local host with no marker in it and a random password with no marker in it.
+
+## Connection strings the rules do not match
+
+These shapes hold a real credential but are not reported by the four connection-string rules. Each is a false negative the rules accept, not a sample-value skip:
+
+- a raw double quote or backtick in the password (neither is legal unencoded in a URL; percent-encoded, `%22` or `%60`, is reported). A single quote in the password is reported;
+- a single quote, double quote, backtick or slash in the user part;
+- an empty user part (`redis://:password@host:6379`, `postgres://:password@host/db`), the usual shape of a redis AUTH password with no ACL user;
+- a userinfo with no colon, the password alone (`redis://password@host:6379`);
+- a password that begins with `//`;
+- an IPv6 host in brackets, such as `@[2001:db8::1]:5432`;
+- a JDBC URL whose credential is in the query string (`jdbc:postgresql://host/db?user=app&password=...`); a JDBC URL with `user:password@` in it is reported;
+- a scheme-relative URL with no scheme (`//user:password@host`).
+
+The scheme is matched in any case (`POSTGRES://` and `Postgres://` are reported), and a redis URL is reported with or without a port.
+
+A false positive the rules accept: because a password may hold a single quote, a credential-less URL inside a single-quoted value can be joined to an at sign in a later single-quoted value on the same line and reported (for example `{'url':'redis://cache:6379','owner':'ops@host'}`).
 
 ## Patterns
 
@@ -73,10 +90,10 @@ This is a known gap, not a design goal: a real URL whose user, host, database na
 | `gcp-api-key` | critical | - | `g` | `AIza[a-zA-Z0-9_-]{35}` |
 | `gcp-oauth` | low | - | `g` | `[0-9]{1,64}-[a-zA-Z0-9_]{32}\\.apps\\.googleusercontent\\.com` |
 | `azure-storage` | critical | - | `g` | `DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{20,}` |
-| `postgresql-url` | critical | - | `g` | `` postgres(?:ql)?:\\/\\/[^:@\\s/"'`]{1,256}:(?!\\/\\/)(?:(?!:\\/\\/)[^@\\s"'`]){1,256}@[^:\\s/]{1,256}(?::\\d{1,8})?\\/[^\\s"'`,;}\\])<>\|\\\\]{0,1024} `` |
-| `mysql-url` | critical | - | `g` | `` mysql:\\/\\/[^:@\\s/"'`]{1,256}:(?!\\/\\/)(?:(?!:\\/\\/)[^@\\s"'`]){1,256}@[^:\\s/]{1,256}(?::\\d{1,8})?\\/[^\\s"'`,;}\\])<>\|\\\\]{0,1024} `` |
-| `mongodb-url` | critical | - | `g` | `` mongodb(?:\\+srv)?:\\/\\/[^:@\\s/"'`]{1,256}:(?!\\/\\/)(?:(?!:\\/\\/)[^@\\s"'`]){1,256}@[^:\\s/]{1,256}(?::\\d{1,8})? `` |
-| `redis-url` | critical | - | `g` | `` rediss?:\\/\\/[^:@\\s/"'`]{1,256}:(?!\\/\\/)(?:(?!:\\/\\/)[^@\\s"'`]){1,256}@[^:\\s/]{1,256}(?::\\d{1,8}) `` |
+| `postgresql-url` | critical | - | `gi` | `` postgres(?:ql)?:\\/\\/[^:@\\s/"'`]{1,256}:(?!\\/\\/)(?:(?!:\\/\\/)[^@\\s"`]){1,256}@[^:\\s/]{1,256}(?::\\d{1,8})?\\/[^\\s"'`,;}\\])<>\|\\\\]{0,1024} `` |
+| `mysql-url` | critical | - | `gi` | `` mysql:\\/\\/[^:@\\s/"'`]{1,256}:(?!\\/\\/)(?:(?!:\\/\\/)[^@\\s"`]){1,256}@[^:\\s/]{1,256}(?::\\d{1,8})?\\/[^\\s"'`,;}\\])<>\|\\\\]{0,1024} `` |
+| `mongodb-url` | critical | - | `gi` | `` mongodb(?:\\+srv)?:\\/\\/[^:@\\s/"'`]{1,256}:(?!\\/\\/)(?:(?!:\\/\\/)[^@\\s"`]){1,256}@[^:\\s/]{1,256}(?::\\d{1,8})? `` |
+| `redis-url` | critical | - | `gi` | `` rediss?:\\/\\/[^:@\\s/"'`]{1,256}:(?!\\/\\/)(?:(?!:\\/\\/)[^@\\s"`]){1,256}@[^:\\s/"'`,;}\\])<>\|\\\\]{1,256}(?::\\d{1,8})? `` |
 | `github-token` | critical | - | `g` | `gh[pousor]_[a-zA-Z0-9]{36}` |
 | `github-pat` | critical | - | `g` | `github_pat_[a-zA-Z0-9_]{82}` |
 | `gitlab-token` | critical | - | `g` | `glpat-[a-zA-Z0-9_-]{20}` |
