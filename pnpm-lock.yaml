@@ -51,8 +51,8 @@ importers:
         specifier: 1.10.4
         version: 1.10.4
       '@vaultcompass/vault-guard':
-        specifier: 1.13.1
-        version: 1.13.1
+        specifier: 1.13.3
+        version: 1.13.3
       eslint:
         specifier: ^10.14.0
         version: 10.14.0
@@ -1198,16 +1198,16 @@ packages:
     resolution: {integrity: sha512-Q23cer4p0QSoWeGgvVveN9qqD99EsotFveB1Vzlh/SUloJaLdbgFaLwPHll27exM2jO+x1ZUkPHEuFO9/rPG+Q==}
     hasBin: true
 
-  '@vaultcompass/vault-guard-core@1.13.1':
-    resolution: {integrity: sha512-9SVtqJ/7vfxOMRUNUtSilvYU7+0DzDevM5E9iUUPvxNgTVGLiHRK0XEyhwyaCNn1AKF3b5uNdCrkACzKrQyK8g==}
+  '@vaultcompass/vault-guard-core@1.13.3':
+    resolution: {integrity: sha512-u557a4vsEwy4hbTXKgYrLt0+15M4A85W77dwRFNBzR8gPhQsXt7d6icmtPaNtVZCvGXKY2gpk+1XHaEA/yeqrw==}
     engines: {node: '>=22.0.0', npm: '>=9.0.0', pnpm: '>=9.0.0'}
 
-  '@vaultcompass/vault-guard-telemetry@1.13.1':
-    resolution: {integrity: sha512-K0UwBYB0FyfChT2uIuM9mTW8xjpemnjsw1dE37rzIwN95hu6Yx7jsiNpegPhnWs4GH1eQNHYNbIDJ0jvuzmUsA==}
+  '@vaultcompass/vault-guard-telemetry@1.13.3':
+    resolution: {integrity: sha512-kIVX9gDXlBXXasLyZ36DnhbF6Fmm3NxVHGXP9KJu/0zftt3MQLbXc19u90gbmgobq3BkyKcoXUbeLAn7zHmVjA==}
     engines: {node: '>=22.0.0', npm: '>=9.0.0', pnpm: '>=9.0.0'}
 
-  '@vaultcompass/vault-guard@1.13.1':
-    resolution: {integrity: sha512-Ma7fv3JKnhavzzy2Nwf733CKGeloSqodDywLz2k5phvinQ7KeQk2BCHD74CbyBNFiqR43FIUWPRDMLETwHBmCQ==}
+  '@vaultcompass/vault-guard@1.13.3':
+    resolution: {integrity: sha512-GpZUcvYBmQsVsgdKKwTRXXmrFkGhWrWQk7fSDlFyK4hzoh5n46ouDpA5yTLeKQzesIpBSQ0sl7glBVSQJO3Dvg==}
     engines: {node: '>=22.0.0', npm: '>=9.0.0', pnpm: '>=9.0.0'}
     hasBin: true
 
@@ -3750,20 +3750,20 @@ snapshots:
     dependencies:
       '@vaultcompass/intent-guard-skill': 1.10.4
 
-  '@vaultcompass/vault-guard-core@1.13.1':
+  '@vaultcompass/vault-guard-core@1.13.3':
     dependencies:
-      ignore: 5.3.2
+      ignore: 7.0.14
 
-  '@vaultcompass/vault-guard-telemetry@1.13.1':
+  '@vaultcompass/vault-guard-telemetry@1.13.3':
     dependencies:
-      '@vaultcompass/vault-guard-core': 1.13.1
+      '@vaultcompass/vault-guard-core': 1.13.3
     optionalDependencies:
       better-sqlite3: 13.0.2
 
-  '@vaultcompass/vault-guard@1.13.1':
+  '@vaultcompass/vault-guard@1.13.3':
     dependencies:
-      '@vaultcompass/vault-guard-core': 1.13.1
-      '@vaultcompass/vault-guard-telemetry': 1.13.1
+      '@vaultcompass/vault-guard-core': 1.13.3
+      '@vaultcompass/vault-guard-telemetry': 1.13.3
       chalk: 4.1.2
       commander: 12.1.0
 

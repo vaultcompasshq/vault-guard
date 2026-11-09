@@ -46,7 +46,7 @@
     "@vaultcompass/conductor": "0.18.0",
     "@vaultcompass/dep-guard": "0.18.2",
     "@vaultcompass/intent-guard": "1.10.4",
-    "@vaultcompass/vault-guard": "1.13.1",
+    "@vaultcompass/vault-guard": "1.13.3",
     "eslint": "^10.14.0",
     "jest": "^30.5.2",
     "typescript": "^5.0.0"
