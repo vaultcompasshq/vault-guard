@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The CI gate pin and the vault-guard devDependency move to vault-guard 1.13.3. The conductor, dep-guard and intent-guard pins are unchanged.
+
 ## [1.13.3] - 2026-11-09
 
 A patch release with the fixes from the 2026-11-08 re-grade: the postgres,
