@@ -497,21 +497,27 @@ jobs:
           FOUND=0
           # About 20 minutes (80 attempts, 15 seconds apart). The registry can
           # serve the version metadata minutes before the tarball, and
-          # "npm install" fetches the tarball, so both must be ready.
+          # "npm install" fetches the tarball, so both must be ready. The CLI
+          # also depends on vault-guard-core and vault-guard-telemetry at this
+          # same version. Either can still be missing after the CLI tarball
+          # is visible, and installing then fails with ETARGET. That is what
+          # 1.13.3 hit, so both dependency views have to succeed first.
           for i in $(seq 1 80); do
-            if [[ "$(npm view "@vaultcompass/vault-guard@${VERSION}" version 2>/dev/null)" == "${VERSION}" ]]; then
+            if [[ "$(npm view "@vaultcompass/vault-guard@${VERSION}" version 2>/dev/null)" == "${VERSION}" ]] \
+              && [[ "$(npm view "@vaultcompass/vault-guard-core@${VERSION}" version 2>/dev/null)" == "${VERSION}" ]] \
+              && [[ "$(npm view "@vaultcompass/vault-guard-telemetry@${VERSION}" version 2>/dev/null)" == "${VERSION}" ]]; then
               TARBALL="$(npm view "@vaultcompass/vault-guard@${VERSION}" dist.tarball 2>/dev/null || true)"
               if [[ -n "${TARBALL}" ]] && curl -sfI -o /dev/null "${TARBALL}"; then
-                echo "Package and tarball visible on registry."
+                echo "Package, dependencies, and tarball visible on registry."
                 FOUND=1
                 break
               fi
             fi
-            echo "Waiting for npm registry and tarball (attempt ${i}/80)..."
+            echo "Waiting for npm registry, dependencies, and tarball (attempt ${i}/80)..."
             sleep 15
           done
           if [[ "${FOUND}" -ne 1 ]]; then
-            echo "::error::Timed out after about 20 minutes waiting for @vaultcompass/vault-guard@${VERSION} and its tarball on the npm registry."
+            echo "::error::Timed out after about 20 minutes waiting for @vaultcompass/vault-guard@${VERSION}, @vaultcompass/vault-guard-core@${VERSION}, @vaultcompass/vault-guard-telemetry@${VERSION}, and the CLI tarball on the npm registry."
             exit 1
           fi
 
