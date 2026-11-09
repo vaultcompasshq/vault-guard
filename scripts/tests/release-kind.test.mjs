@@ -792,6 +792,26 @@ describe('.github/workflows/release.yml wiring', () => {
     expect(workflow).toContain('action_only: ${{ steps.kind.outputs.action_only }}');
   });
 
+  it('waits for the CLI dependencies before installing the published package', () => {
+    // npm install of the CLI fails with ETARGET when vault-guard-core or
+    // vault-guard-telemetry at the same version is not on the registry yet.
+    // The wait that already requires the CLI tarball has to see both
+    // dependency views succeed before that install.
+    const smokeText = workflow.slice(workflow.indexOf('\n  smoke-published:'));
+    const start = smokeText.indexOf(
+      '\n      - name: Install published package and assert scan fails on fixture\n'
+    );
+    expect(start).toBeGreaterThan(-1);
+    const step = smokeText.slice(start);
+    const installAt = step.indexOf('npm install "@vaultcompass/vault-guard@${VERSION}"');
+    expect(installAt).toBeGreaterThan(-1);
+    const beforeInstall = step.slice(0, installAt);
+    expect(beforeInstall).toContain('npm view "@vaultcompass/vault-guard-core@${VERSION}" version');
+    expect(beforeInstall).toContain(
+      'npm view "@vaultcompass/vault-guard-telemetry@${VERSION}" version'
+    );
+  });
+
   it('never gates anything on the negative spelling', () => {
     // The one assertion that would catch a well-meaning edit back to
     // "!= 'true'", which reads identically and fails open.
