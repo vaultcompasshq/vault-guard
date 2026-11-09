@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The CI gate pin and the vault-guard devDependency move to vault-guard 1.13.3. The conductor, dep-guard and intent-guard pins are unchanged.
+- The CI conductor action pin and the @vaultcompass/conductor devDependency move to 0.18.1, and the dep-guard and intent-guard devDependencies move to 0.20.0 and 1.10.6, the versions conductor 0.18.1 expects on a push run.
 
 ### Fixed
 
