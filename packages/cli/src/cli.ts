@@ -75,10 +75,11 @@ export function buildCli(): Command {
       '--trust-base <ref>',
       'Pull-request mode: read .vault-guard.json, .vault-guard.local.json and the baseline from <ref> and scan the head tree. Exits 2 if <ref> cannot be read. Do not pass this from a pre-commit hook.',
     )
+    .option('--verbose', 'List the file and line of each placeholder skip. The value is not printed.', false)
     .action(
       async (
         path: string,
-        options: { format: string; staged?: boolean; failOn?: string; trustBase?: string },
+        options: { format: string; staged?: boolean; failOn?: string; trustBase?: string; verbose?: boolean },
       ) => {
         const format = options.format as OutputFormat;
         if (!(SCAN_FORMATS as readonly string[]).includes(format)) {
@@ -94,6 +95,7 @@ export function buildCli(): Command {
           Boolean(options.staged),
           options.failOn,
           options.trustBase,
+          Boolean(options.verbose),
         );
         setExitCode(exitCode);
       },

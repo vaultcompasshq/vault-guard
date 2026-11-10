@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A value declined as a placeholder is counted. The text summary prints `Skipped as placeholder: N` on every run, including zero, and JSON and SARIF carry `run.placeholder_skips`. `--verbose` lists the file and line and does not print the value. `Suppressed` is unchanged: it is still only baseline entries and inline ignore directives. Which values are skipped is unchanged.
 - The release smoke test waits until `@vaultcompass/vault-guard-core` and `@vaultcompass/vault-guard-telemetry` at the published version are visible on npm before installing the CLI. On 1.13.3 the install failed with ETARGET while those packages were still propagating.
 
 ## [1.13.3] - 2026-11-09

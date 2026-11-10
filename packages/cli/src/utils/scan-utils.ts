@@ -492,6 +492,11 @@ export interface ScanOptions {
    */
   inlineSuppressed?: { count: number; criticalVendorAnchored: number };
   /**
+   * Placeholder values the scanner declined. Not a user suppression.
+   * Locations name the file and line and never the value.
+   */
+  placeholderSkips?: { count: number; locations: Array<{ file: string; line: number }> };
+  /**
    * Pull-request mode's file set. When present, a directory target's file list
    * is the tracked files intersected with the walk's own filtering, rather than
    * a filesystem walk filtered by the gitignore tester -- so a `.gitignore` the
@@ -614,10 +619,12 @@ async function scanOneFile(
 ): Promise<ScanResult | null | undefined> {
   const entry = content?.entryFor(path.resolve(file));
   const hits: IgnoreDirectiveHits = { count: 0, lines: [] };
+  const placeholderSkips = options.placeholderSkips ? { count: 0, lines: [] as number[] } : undefined;
   const outcome = await scanFileContent(scanner, file, entry, entry ? content : undefined, {
     pathRoot,
     maxBytes: maxSize,
     ignoreHits: hits,
+    ...(placeholderSkips ? { placeholderSkips } : {}),
     // One classifier for every mode (design 2026-10-17, 4.1), applied per copy.
     classify: options.skipBinary !== false,
     budgetMs: scanBudgetMs,
@@ -651,6 +658,12 @@ async function scanOneFile(
   }
   options.scannedFiles?.add(file);
   recordInlineSuppression(hits, display, options);
+  if (options.placeholderSkips && placeholderSkips && placeholderSkips.count > 0) {
+    options.placeholderSkips.count += placeholderSkips.count;
+    for (const line of placeholderSkips.lines) {
+      options.placeholderSkips.locations.push({ file: display, line });
+    }
+  }
   const report = options.content;
   if (report) {
     if (entry) report.blobFiles++;

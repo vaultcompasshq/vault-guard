@@ -742,7 +742,10 @@ Suppressions never happen silently. Every run states how many findings the
 baseline and inline directives hid: the text summary prints a `Suppressed:`
 line (even at zero), and JSON and SARIF carry `run.baseline_suppressed` and
 `run.inline_suppressed`, with a `suppression.inline` diagnostic naming the
-suppressed line numbers.
+suppressed line numbers. A value the scanner declined as a placeholder is a
+separate tally, `Skipped as placeholder:` in the text summary and
+`run.placeholder_skips` in JSON and SARIF. `--verbose` lists that skip's file
+and line and does not print the value.
 
 ---
 
