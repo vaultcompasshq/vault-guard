@@ -927,13 +927,18 @@ export async function scanCommand(
           `${inlineSuppressed.count} by inline ignore ${inlineWord}${criticalClause}`,
       ),
     );
-    console.log(chalk.gray(`Skipped as placeholder: ${placeholderSkips.count}`));
-    if (showPlaceholderLocations) {
-      const locations = [...placeholderSkips.locations].sort((a, b) =>
-        a.file === b.file ? a.line - b.line : a.file < b.file ? -1 : 1,
-      );
-      for (const loc of locations) {
-        console.log(chalk.gray(`placeholder skip: ${loc.file}:${loc.line}`));
+    // Text mode prints this only when non-zero, same as the lines below: a
+    // clean summary is pinned byte for byte and reads at a glance. JSON and
+    // SARIF carry placeholder_skips on every run, including zero.
+    if (placeholderSkips.count > 0) {
+      console.log(chalk.gray(`Skipped as placeholder: ${placeholderSkips.count}`));
+      if (showPlaceholderLocations) {
+        const locations = [...placeholderSkips.locations].sort((a, b) =>
+          a.file === b.file ? a.line - b.line : a.file < b.file ? -1 : 1,
+        );
+        for (const loc of locations) {
+          console.log(chalk.gray(`placeholder skip: ${loc.file}:${loc.line}`));
+        }
       }
     }
 

@@ -742,10 +742,19 @@ Suppressions never happen silently. Every run states how many findings the
 baseline and inline directives hid: the text summary prints a `Suppressed:`
 line (even at zero), and JSON and SARIF carry `run.baseline_suppressed` and
 `run.inline_suppressed`, with a `suppression.inline` diagnostic naming the
-suppressed line numbers. A value the scanner declined as a placeholder is a
-separate tally, `Skipped as placeholder:` in the text summary and
-`run.placeholder_skips` in JSON and SARIF. `--verbose` lists that skip's file
-and line and does not print the value.
+suppressed line numbers. A match the scanner declined as a placeholder is a
+separate tally. The text summary prints `Skipped as placeholder: N` only when
+N is above zero, so a clean run keeps the summary a reader already knows.
+JSON and SARIF carry `run.placeholder_skips` on every run, including zero.
+`--verbose` lists each such skip's file and line when that count is above
+zero, and it never prints the value.
+
+The count is two declines only: a match `isPlaceholderSecret` declines, and a
+connection string `isNonSecretConnectionString` declines. It does not count a
+sequential run, an entropy miss, a redacted template, an environment-variable
+name, a short docker personal-access-token example, a value inside a Python
+triple-quoted string, the sample JWT, a password hash, or a PEM header with
+no body.
 
 ---
 
