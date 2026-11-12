@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { GitError } from '../errors';
-import type { IgnoreDirectiveHits, SecretScanner } from '../scanners/secret-scanner';
+import type { IgnoreDirectiveHits, PlaceholderSkipHits, SecretScanner } from '../scanners/secret-scanner';
 import type { MatchSource, SecretMatch } from '../types';
 import { BlobBatchReader, batchCheckBlobs, type BlobCheck } from './blob-reader';
 import {
@@ -433,6 +433,8 @@ export interface ScanFileContentOptions {
   pathRoot?: string;
   maxBytes?: number;
   ignoreHits?: IgnoreDirectiveHits;
+  /** Placeholder declines for this file. Folded the same way as ignoreHits. */
+  placeholderSkips?: PlaceholderSkipHits;
   /**
    * Apply the binary classifier (design 2026-10-17, section 2) to each copy.
    * Off by default, so a caller that asked for a file to be scanned gets it
@@ -486,15 +488,16 @@ function scanText(
   file: string,
   opts: ScanFileContentOptions,
   hits: IgnoreDirectiveHits | undefined,
+  placeholderSkips: PlaceholderSkipHits | undefined,
 ): CopyScan {
   const clock = opts.clock ?? defaultScanClock();
-  const pass = (h: IgnoreDirectiveHits | undefined): SecretMatch[] =>
+  const pass = (h: IgnoreDirectiveHits | undefined, p: PlaceholderSkipHits | undefined): SecretMatch[] =>
     applyPathAwareSeverity(
-      scanner.scanContent(text, { filePath: file, ignoreHits: h, pathRoot: opts.pathRoot }),
+      scanner.scanContent(text, { filePath: file, ignoreHits: h, placeholderSkips: p, pathRoot: opts.pathRoot }),
       file,
       opts.pathRoot,
     );
-  const first = timeSpan(clock, () => pass(hits));
+  const first = timeSpan(clock, () => pass(hits, placeholderSkips));
   const budget = opts.budgetMs;
   if (budget === undefined || first.ms <= budget) return { matches: first.value, ms: first.ms, retimed: false };
   const c1 = Math.round(first.ms);
@@ -513,7 +516,7 @@ function scanText(
       },
     };
   }
-  const second = timeSpan(clock, () => pass(hits ? freshHits() : undefined));
+  const second = timeSpan(clock, () => pass(hits ? freshHits() : undefined, placeholderSkips ? freshSkips() : undefined));
   const c2 = Math.round(second.ms);
   if (second.ms > budget) {
     return {
@@ -587,6 +590,15 @@ function tag(matches: SecretMatch[], source: MatchSource, stage?: 2 | 3): Secret
 
 function freshHits(): IgnoreDirectiveHits {
   return { count: 0, lines: [], criticalVendorAnchored: 0 };
+}
+
+function freshSkips(): PlaceholderSkipHits {
+  return { count: 0, lines: [] };
+}
+
+function foldSkips(into: PlaceholderSkipHits, blob: PlaceholderSkipHits, disk: PlaceholderSkipHits): void {
+  into.count += blob.count + Math.max(0, disk.count - blob.count);
+  into.lines.push(...new Set([...blob.lines, ...disk.lines]));
 }
 
 /**
@@ -743,8 +755,10 @@ export async function scanFileContent(
     const mm = typeMismatch ? { typeMismatch } : {};
     if (bytes.length > max) return outcome({ failure: { kind: 'too_large', bytes: bytes.length }, ...mm });
     const hits = opts.ignoreHits ? freshHits() : undefined;
-    const scanned = scanText(scanner, decodeTextBuffer(bytes), file, opts, hits);
+    const skips = opts.placeholderSkips ? freshSkips() : undefined;
+    const scanned = scanText(scanner, decodeTextBuffer(bytes), file, opts, hits, skips);
     if (hits && opts.ignoreHits) foldHits(opts.ignoreHits, hits, freshHits());
+    if (skips && opts.placeholderSkips) foldSkips(opts.placeholderSkips, skips, freshSkips());
     if (scanned.matches.some(m => m.valueDigest === undefined)) kept.set(copyKey(file, 'file'), bytes);
     const budget = { elapsedMs: 0, retimed: false } as { untrusted?: BudgetUntrusted; retimed: boolean; elapsedMs: number };
     foldBudget(budget, scanned);
@@ -860,12 +874,13 @@ async function scanTrackedCopies(
 
   const blobSides: SecretMatch[][] = [];
   const blobHits = opts.ignoreHits ? freshHits() : undefined;
+  const blobSkips = opts.placeholderSkips ? freshSkips() : undefined;
   let bytesRead = 0;
   const budget = { elapsedMs: 0, retimed: false } as { untrusted?: BudgetUntrusted; retimed: boolean; elapsedMs: number };
   for (const b of scanBlobs) {
     const bytes = await source.read(entry.repoTop, b.oid);
     bytesRead += bytes.length;
-    const scanned = scanText(scanner, decodeTextBuffer(bytes), file, opts, blobHits);
+    const scanned = scanText(scanner, decodeTextBuffer(bytes), file, opts, blobHits, blobSkips);
     foldBudget(budget, scanned);
     const src = source.blobSource;
     if (scanned.matches.some(m => m.valueDigest === undefined)) kept.set(copyKey(file, src, b.stage), bytes);
@@ -875,6 +890,7 @@ async function scanTrackedCopies(
   let disk: SecretMatch[] = [];
   let undecodable: string | undefined;
   const diskHits = opts.ignoreHits ? freshHits() : undefined;
+  const diskSkips = opts.placeholderSkips ? freshSkips() : undefined;
   const scanDisk = readDisk && !diskSkipped;
   if (scanDisk) {
     if (diskBytes === undefined) {
@@ -890,7 +906,7 @@ async function scanTrackedCopies(
     const seen = new Set<string>();
     const texts = decoded.texts.filter((t, i) => i === 0 || t !== decoded.texts[0]);
     for (const text of texts) {
-      const scanned = scanText(scanner, text, file, opts, diskHits);
+      const scanned = scanText(scanner, text, file, opts, diskHits, diskSkips);
       foldBudget(budget, scanned);
       const matches = scanned.matches;
       for (const m of matches) {
@@ -904,6 +920,7 @@ async function scanTrackedCopies(
     disk = tag(disk, 'worktree');
   }
   if (opts.ignoreHits && blobHits && diskHits) foldHits(opts.ignoreHits, blobHits, diskHits);
+  if (opts.placeholderSkips && blobSkips && diskSkips) foldSkips(opts.placeholderSkips, blobSkips, diskSkips);
 
   return outcome({
     matches: mergeCopies(blobSides, disk),

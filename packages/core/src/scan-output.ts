@@ -51,6 +51,8 @@ export interface JsonRunMetadata {
    * total lets the second hide inside the first.
    */
   inline_suppressed_critical_vendor?: number;
+  /** Values declined as placeholders. Not a user suppression. Present even at zero. */
+  placeholder_skips?: number;
   /**
    * Directories skipped by name at the scan root on a pull-request run. Only
    * a direct child of the scan root can be skipped in that mode, so this
@@ -791,6 +793,9 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
                   inline_suppressed_critical_vendor:
                     opts.run.inline_suppressed_critical_vendor,
                 }
+              : {}),
+            ...(opts.run.placeholder_skips !== undefined
+              ? { placeholder_skips: opts.run.placeholder_skips }
               : {}),
             ...(opts.run.vendored_dirs_skipped !== undefined
               ? { vendored_dirs_skipped: opts.run.vendored_dirs_skipped }

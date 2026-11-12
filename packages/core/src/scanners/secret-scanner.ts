@@ -349,6 +349,12 @@ const HUMAN_CHOSEN_VALUE_IDS = new Set([
  * scanning many files can reuse one, or pass a fresh one per file to attribute
  * line numbers to that file.
  */
+/** A placeholder the scanner declined. Count and 1-based lines. No value. */
+export interface PlaceholderSkipHits {
+  count: number;
+  lines: number[];
+}
+
 export interface IgnoreDirectiveHits {
   /** Findings suppressed by an inline ignore directive (post-dedupe). */
   count: number;
@@ -546,7 +552,7 @@ export class SecretScanner {
    */
   scan(
     filePath: string,
-    opts?: { ignoreHits?: IgnoreDirectiveHits; pathRoot?: string },
+    opts?: { ignoreHits?: IgnoreDirectiveHits; placeholderSkips?: PlaceholderSkipHits; pathRoot?: string },
   ): SecretMatch[] {
     if (!fs.existsSync(filePath)) return [];
     const content = decodeTextBuffer(fs.readFileSync(filePath));
@@ -557,6 +563,7 @@ export class SecretScanner {
       this.scanContent(content, {
         filePath,
         ignoreHits: opts?.ignoreHits,
+        placeholderSkips: opts?.placeholderSkips,
         pathRoot: opts?.pathRoot,
       }),
       filePath,
@@ -577,7 +584,7 @@ export class SecretScanner {
    */
   scanContent(
     content: string,
-    opts?: { filePath?: string; ignoreHits?: IgnoreDirectiveHits; pathRoot?: string },
+    opts?: { filePath?: string; ignoreHits?: IgnoreDirectiveHits; placeholderSkips?: PlaceholderSkipHits; pathRoot?: string },
   ): SecretMatch[] {
     const lineIndex = this.buildLineIndex(content);
     const ignoredLines = this.parseIgnoreDirectives(content, lineIndex);
@@ -588,6 +595,9 @@ export class SecretScanner {
     // path allocates nothing extra. Deduped alongside `raw` below so the count
     // is "findings hidden", matching how reported findings are counted.
     const suppressedByDirective: SecretMatch[] | null = opts?.ignoreHits ? [] : null;
+    // Placeholder declines, deduped by match offset at the end so two rules
+    // on one value count once. Recorded only when the caller asked.
+    const placeholderRaw: Array<{ line: number; offset: number }> | null = opts?.placeholderSkips ? [] : null;
 
     // Fresh `RegExp` per invocation so concurrent or interleaved `scanContent`
     // calls (e.g. across `await` in a worker pool) never share `lastIndex`.
@@ -632,6 +642,7 @@ export class SecretScanner {
         // `AKIAIOSFODNN7EXAMPLE`, `password: 'testPass1234'`). The aggressive
         // tier only applies to the low-precision generic patterns.
         if (isPlaceholderSecret(rawValue, { aggressive: aggressivePlaceholder === true })) {
+          this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index);
           continue;
         }
 
@@ -661,6 +672,7 @@ export class SecretScanner {
         // dominant FP source on real repos (docker-compose, `.env.example`,
         // test fixtures all carry `postgres://user:pass@localhost/db`).
         if (connectionString === true && isNonSecretConnectionString(fullMatch)) {
+          this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index);
           continue;
         }
 
@@ -760,6 +772,16 @@ export class SecretScanner {
             ? { valueDigest: createHash('sha256').update(fullMatch, 'utf8').digest('hex') }
             : {}),
         });
+      }
+    }
+
+    if (opts?.placeholderSkips && placeholderRaw) {
+      const seen = new Set<number>();
+      for (const hit of placeholderRaw) {
+        if (seen.has(hit.offset)) continue;
+        seen.add(hit.offset);
+        opts.placeholderSkips.count += 1;
+        opts.placeholderSkips.lines.push(hit.line);
       }
     }
 
@@ -915,6 +937,15 @@ export class SecretScanner {
    * Build an index of line-start byte offsets for O(log n) line lookup.
    * Index position 0 = start of line 1.
    */
+  private notePlaceholderSkip(
+    into: Array<{ line: number; offset: number }> | null,
+    lineIndex: number[],
+    index: number,
+  ): void {
+    if (into === null) return;
+    into.push({ line: this.lineFromIndex(lineIndex, index), offset: index });
+  }
+
   private buildLineIndex(content: string): number[] {
     const idx = [0];
     for (let i = 0; i < content.length; i++) {

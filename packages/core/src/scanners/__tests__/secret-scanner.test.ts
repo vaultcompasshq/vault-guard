@@ -926,4 +926,39 @@ describe('SecretScanner', () => {
       expect(fromContent.map(m => m.type)).toEqual(fromFile.map(m => m.type));
     });
   });
+
+  describe('placeholder skip count', () => {
+    const password = synthetic('Xj8kP2mQ', '9zRv');
+    const url = (host: string): string =>
+      synthetic('postgres://svc_app:', password, '@', host, ':5432/main');
+
+    it('counts a marker inside the host and keeps the value out of the tally', () => {
+      const skips = { count: 0, lines: [] as number[] };
+      const matches = scanner.scanContent(`const url = "${url('db.internal.example.com')}";\n`, {
+        placeholderSkips: skips,
+      });
+      expect(matches).toHaveLength(0);
+      expect(skips.count).toBe(1);
+      expect(skips.lines).toEqual([1]);
+      expect(JSON.stringify(skips).includes(password)).toBe(false);
+    });
+
+    it('counts a reserved host that carries no marker', () => {
+      const skips = { count: 0, lines: [] as number[] };
+      const matches = scanner.scanContent(`const url = "${url('localhost')}";\n`, {
+        placeholderSkips: skips,
+      });
+      expect(matches).toHaveLength(0);
+      expect(skips.count).toBe(1);
+    });
+
+    it('does not count a remote host with no marker, and still reports it', () => {
+      const skips = { count: 0, lines: [] as number[] };
+      const matches = scanner.scanContent(`const url = "${url('db.prod.acme-corp.com')}";\n`, {
+        placeholderSkips: skips,
+      });
+      expect(matches.some(m => m.type === 'postgresql-url')).toBe(true);
+      expect(skips.count).toBe(0);
+    });
+  });
 });

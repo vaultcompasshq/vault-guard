@@ -199,6 +199,8 @@ export async function scanCommand(
    * trust boundary, where the working tree is the developer's own.
    */
   trustBaseRef?: string,
+  /** List file and line for each placeholder skip. The value is never printed. */
+  showPlaceholderLocations = false,
 ): Promise<number> {
   const cwd = process.cwd();
   const targetPaths = Array.isArray(targetPath) ? targetPath : [targetPath];
@@ -430,6 +432,10 @@ export async function scanCommand(
   // `ignore-next-line` directives across every file. Reported even at zero so
   // the run always states whether the scanner was silenced inline.
   const inlineSuppressed = { count: 0, criticalVendorAnchored: 0 };
+  const placeholderSkips: { count: number; locations: Array<{ file: string; line: number }> } = {
+    count: 0,
+    locations: [],
+  };
   // What the file set declined to look at. Only filled on a pull-request
   // DIRECTORY scan, which is the only path that builds a file set this way:
   // `--staged` takes its list from the index and consults neither the vendored
@@ -527,6 +533,7 @@ export async function scanCommand(
         // Explicit: staged paths are judged relative to the repository root.
         pathRoot: outputBase,
         inlineSuppressed,
+        placeholderSkips,
         content: contentReport,
         ...(stagedContent ? { contentSource: stagedContent } : {}),
       });
@@ -547,6 +554,7 @@ export async function scanCommand(
         skips,
         configIgnorePatterns,
         inlineSuppressed,
+        placeholderSkips,
         scannedFiles,
         content: contentReport,
         ...(controls
@@ -725,6 +733,7 @@ export async function scanCommand(
       // Always present (even at zero): a muted scanner must say so.
       inline_suppressed: inlineSuppressed.count,
       inline_suppressed_critical_vendor: inlineSuppressed.criticalVendorAnchored,
+      placeholder_skips: placeholderSkips.count,
       ...(controls && !staged
         ? {
             vendored_dirs_skipped: prSkips.dirCount,
@@ -918,6 +927,20 @@ export async function scanCommand(
           `${inlineSuppressed.count} by inline ignore ${inlineWord}${criticalClause}`,
       ),
     );
+    // Text mode prints this only when non-zero, same as the lines below: a
+    // clean summary is pinned byte for byte and reads at a glance. JSON and
+    // SARIF carry placeholder_skips on every run, including zero.
+    if (placeholderSkips.count > 0) {
+      console.log(chalk.gray(`Skipped as placeholder: ${placeholderSkips.count}`));
+      if (showPlaceholderLocations) {
+        const locations = [...placeholderSkips.locations].sort((a, b) =>
+          a.file === b.file ? a.line - b.line : a.file < b.file ? -1 : 1,
+        );
+        for (const loc of locations) {
+          console.log(chalk.gray(`placeholder skip: ${loc.file}:${loc.line}`));
+        }
+      }
+    }
 
     // What the run declined to open. In text mode a line appears only when it
     // is non-zero, because the plain-mode summary is pinned byte for byte (see

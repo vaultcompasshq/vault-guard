@@ -94,10 +94,50 @@ describe('suppression visibility', () => {
     expect(text.code).toBe(0);
   });
 
+  it('counts a placeholder skip apart from Suppressed and does not print the value', async () => {
+    const password = ['Xj8kP2mQ', '9zRv'].join('');
+    const url = ['postgres://svc_app:', password, '@db.internal.example.com:5432/main'].join('');
+    fs.writeFileSync(path.join(dir, 'dsn.ts'), `const url = "${url}";\n`);
+
+    const text = await capture(() => scanCommand('.', 'text', false, undefined, undefined, true));
+    expect(text.code).toBe(0);
+    expect(text.log).toMatch(/Suppressed: 0 by baseline, 0 by inline ignore directives/);
+    expect(text.log).toMatch(/Skipped as placeholder: 1/);
+    expect(text.log).toContain('placeholder skip: dsn.ts:1');
+    expect(text.log.includes(password)).toBe(false);
+    expect(text.err.includes(password)).toBe(false);
+    expect(text.stdout.includes(password)).toBe(false);
+
+    const json = await capture(() => scanCommand('.', 'json'));
+    const doc = JSON.parse(json.stdout) as { run: { placeholder_skips: number }; results: unknown[] };
+    expect(doc.run.placeholder_skips).toBe(1);
+    expect(doc.results).toEqual([]);
+    expect(json.stdout.includes(password)).toBe(false);
+
+    const sarif = await capture(() => scanCommand('.', 'sarif'));
+    const sarifDoc = JSON.parse(sarif.stdout) as {
+      runs: Array<{ properties: { vault_guard_run: { placeholder_skips: number } } }>;
+    };
+    expect(sarifDoc.runs[0].properties.vault_guard_run.placeholder_skips).toBe(1);
+    expect(sarif.stdout.includes(password)).toBe(false);
+  });
+
+  it('does not count a remote host with no marker', async () => {
+    const password = ['Xj8kP2mQ', '9zRv'].join('');
+    const url = ['postgres://svc_app:', password, '@db.prod.acme-corp.com:5432/main'].join('');
+    fs.writeFileSync(path.join(dir, 'dsn.ts'), `const url = "${url}";\n`);
+    const text = await capture(() => scanCommand('.', 'text'));
+    expect(text.code).toBe(1);
+    expect(text.log).not.toMatch(/Skipped as placeholder/);
+  });
+
   it('always states the baseline count in text, even at zero', async () => {
     fs.writeFileSync(path.join(dir, 'clean.ts'), "export const x = 'hello';\n");
-    const text = await capture(() => scanCommand('.', 'text'));
+    const text = await capture(() => scanCommand('.', 'text', false, undefined, undefined, true));
+    expect(text.code).toBe(0);
     expect(text.log).toMatch(/Suppressed: 0 by baseline/);
+    expect(text.log).not.toMatch(/Skipped as placeholder/);
+    expect(text.log).not.toMatch(/placeholder skip:/);
   });
 
   it('reports an inline ignore-directive suppression in text with the count', async () => {
@@ -131,8 +171,18 @@ describe('suppression visibility', () => {
   it('emits inline_suppressed in JSON even at zero', async () => {
     fs.writeFileSync(path.join(dir, 'clean.ts'), "export const x = 'hello';\n");
     const json = await capture(() => scanCommand('.', 'json'));
-    const doc = JSON.parse(json.stdout) as { run: { inline_suppressed: number } };
+    const doc = JSON.parse(json.stdout) as { run: { inline_suppressed: number; placeholder_skips: number } };
     expect(doc.run.inline_suppressed).toBe(0);
+    expect(doc.run.placeholder_skips).toBe(0);
+  });
+
+  it('states placeholder_skips in SARIF even at zero', async () => {
+    fs.writeFileSync(path.join(dir, 'clean.ts'), "export const x = 'hello';\n");
+    const sarif = await capture(() => scanCommand('.', 'sarif'));
+    const doc = JSON.parse(sarif.stdout) as {
+      runs: Array<{ properties: { vault_guard_run: { placeholder_skips: number } } }>;
+    };
+    expect(doc.runs[0].properties.vault_guard_run.placeholder_skips).toBe(0);
   });
 
   it('reports an inline ignore-directive suppression in SARIF with the line number', async () => {
