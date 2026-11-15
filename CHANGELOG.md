@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.4] - 2026-11-15
+
+A patch release with two fixes: a value the scanner declines as a placeholder
+is now counted, in the text summary when the count is above zero and in JSON
+and SARIF as `run.placeholder_skips` on every run, without changing which
+values are skipped; and the release smoke test waits for the core and
+telemetry packages at the published version to be visible on npm before
+installing the CLI, which failed with ETARGET on 1.13.3. The CI gate pin and
+the guardrail gate devDependencies move as well.
+
 ### Changed
 
 - The CI gate pin and the vault-guard devDependency move to vault-guard 1.13.3. The conductor, dep-guard and intent-guard pins are unchanged.
