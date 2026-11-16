@@ -40,6 +40,7 @@ import {
   type ScanClock,
   type TrackedEntry,
   type RepoControlsReport,
+  type HeadOnlyReport,
   type JsonOutput,
   type JsonRunMetadata,
   type TrustBaseReport,
@@ -82,6 +83,8 @@ export interface ScanFormatOptions {
   trustBase?: TrustBaseReport;
   /** The `--no-repo-controls` statement: no control file honoured, and which are present. */
   repoControls?: RepoControlsReport;
+  /** The `--no-repo-controls` commit and not-scanned paths. */
+  headOnly?: HeadOnlyReport;
 }
 
 export function formatJson(results: ScanResult[], opts: ScanFormatOptions = {}): string {
@@ -93,6 +96,7 @@ export function formatJson(results: ScanResult[], opts: ScanFormatOptions = {}):
     run: opts.run,
     trustBase: opts.trustBase,
     ...(opts.repoControls ? { repoControls: opts.repoControls } : {}),
+    ...(opts.headOnly ? { headOnly: opts.headOnly } : {}),
   });
 }
 export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {}): string {
@@ -104,6 +108,7 @@ export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {})
     run: opts.run,
     trustBase: opts.trustBase,
     ...(opts.repoControls ? { repoControls: opts.repoControls } : {}),
+    ...(opts.headOnly ? { headOnly: opts.headOnly } : {}),
   });
 }
 
@@ -542,6 +547,8 @@ export interface ScanOptions {
   content?: ContentReport;
   /** `mark` keeps a finding an inline ignore directive covers (`--no-repo-controls`). */
   inlineDirectives?: 'honour' | 'mark';
+  /** Never read a disk copy: a file with no blob is a GitError (`--no-repo-controls`). */
+  blobOnly?: boolean;
 }
 
 /**
@@ -638,6 +645,7 @@ async function scanOneFile(
     budgetMs: scanBudgetMs,
     ...(options.scanClock ? { clock: options.scanClock } : {}),
     ...(options.inlineDirectives !== undefined ? { inlineDirectives: options.inlineDirectives } : {}),
+    ...(options.blobOnly ? { blobOnly: true } : {}),
   });
   if (outcome.skippedByType) {
     recordBinarySkip(outcome.skippedByType.family, options);
@@ -1195,12 +1203,21 @@ export async function scanHeadBlobsAsync(
   const entries = new Map<string, TrackedEntry>();
   for (const f of files) {
     const oid = blobs.get(f);
-    if (oid === undefined) continue;
+    if (oid === undefined) {
+      // Never a fall back to the disk copy: a file the HEAD listing did not
+      // name has no place in this run.
+      throw new GitError(
+        `vault-guard: ${path.relative(process.cwd(), f)} has no HEAD blob in this run, and this mode reads ` +
+          'blobs only, never the working tree. Nothing was scanned.',
+        'git ls-tree -r -z HEAD',
+      );
+    }
     entries.set(f, { repoTop: repoRoot, mode: '100644', oid, worktreeAlso: false, filtered: false });
   }
   const content = new GitContentSource('head', fileSetGitEnv(), entries);
   const results: ScanResult[] = [];
   const cwd = process.cwd();
+  const blobOnly: ScanOptions = { ...options, blobOnly: true };
   try {
     content.prepare(files);
     const scanFile = async (file: string): Promise<void> => {
@@ -1208,7 +1225,7 @@ export async function scanHeadBlobsAsync(
       // No exclude entry is offered: this mode reads no config to put one in.
       const exclude = undefined;
       try {
-        const r = await scanOneFile(scanner, file, display, exclude, repoRoot, content, options, maxSize, scanBudgetMs);
+        const r = await scanOneFile(scanner, file, display, exclude, repoRoot, content, blobOnly, maxSize, scanBudgetMs);
         if (r) results.push(r);
       } catch (error) {
         if (error instanceof GitError) throw error;

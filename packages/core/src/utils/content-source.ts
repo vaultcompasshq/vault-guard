@@ -448,6 +448,11 @@ export interface ScanFileContentOptions {
   clock?: ScanClock;
   /** Passed to {@link SecretScanner.scanContent}: `mark` keeps a directive-covered finding. */
   inlineDirectives?: 'honour' | 'mark';
+  /**
+   * Blobs only (`scan --no-repo-controls`): a file with no tracked entry is a
+   * GitError, never a read of the disk copy.
+   */
+  blobOnly?: boolean;
 }
 
 const MISSING_BLOB_REASON =
@@ -736,6 +741,13 @@ export async function scanFileContent(
   });
 
   if (!entry || !source) {
+    if (opts.blobOnly) {
+      throw new GitError(
+        `vault-guard: ${file} has no HEAD blob in this run, and this mode reads blobs only, never the ` +
+          'working tree. Nothing was scanned.',
+        'git cat-file --batch',
+      );
+    }
     const cand = opts.classify ? binaryCandidate(file) : undefined;
     let bytes: Buffer;
     let typeMismatch: { family: BinaryFamily } | undefined;

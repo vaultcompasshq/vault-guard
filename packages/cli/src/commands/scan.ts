@@ -34,6 +34,7 @@ import {
   getHeadTreeFilesToScan,
   type HeadOnlyTree,
   type RepoControlsReport,
+  type HeadOnlyReport,
   type FailOnThreshold,
   type PullRequestSkips,
   type TrustBaseReport,
@@ -260,6 +261,9 @@ export async function scanCommand(
   }
   const repoControls: RepoControlsReport | undefined = headOnly
     ? { honoured: false, present: headOnly.present }
+    : undefined;
+  const headOnlyReport: HeadOnlyReport | undefined = headOnly
+    ? { scannedCommit: headOnly.head, notScanned: { submodules: headOnly.submodules } }
     : undefined;
 
   // Base for every path this run renders, serializes, ignore-matches and
@@ -946,6 +950,7 @@ export async function scanCommand(
           contentRoot,
           trustBase,
           ...(repoControls ? { repoControls } : {}),
+          ...(headOnlyReport ? { headOnly: headOnlyReport } : {}),
         }) +
           '\n',
       );
@@ -972,6 +977,7 @@ export async function scanCommand(
           contentRoot,
           trustBase,
           ...(repoControls ? { repoControls } : {}),
+          ...(headOnlyReport ? { headOnly: headOnlyReport } : {}),
         }) +
           '\n',
       );
@@ -1035,6 +1041,16 @@ export async function scanCommand(
     // the run where the answer is "none": one line per control file present.
     if (repoControls) {
       console.log(chalk.gray('Control inputs: none (--no-repo-controls): built-in defaults, HEAD tree blobs only'));
+      if (headOnlyReport) {
+        console.log(
+          chalk.gray(
+            `Scanned commit: ${headOnlyReport.scannedCommit} (untracked and uncommitted files are not judged)`,
+          ),
+        );
+        for (const p of headOnlyReport.notScanned.submodules) {
+          console.log(chalk.yellow(`Not scanned, submodule: ${printablePath(p)}`));
+        }
+      }
       if (repoControls.present.length === 0) {
         console.log(chalk.gray('Present, not honoured: none'));
       } else {

@@ -1,7 +1,10 @@
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
 import { scanCommand } from '../../commands/scan';
+import { scanHeadBlobsAsync } from '../../utils/scan-utils';
+import { GitError, SecretScanner } from '@vaultcompass/vault-guard-core';
 import { AWS_KEY, capture, git, gitStub, parse, runCli, stubCalls, subcommand, tmpDir, write } from './git-fixture';
 
 /**
@@ -183,7 +186,11 @@ describe('--no-repo-controls: no control file is honoured, every one present is 
     expect(text.log).toContain('Inline ignore directives not honoured: 1');
   });
 
-  it('a .gitignore listing the file: the finding is reported and the .gitignore is listed', async () => {
+  // No "hidden by a normal run" control here, unlike the levers above: no
+  // mode honours .gitignore for a TRACKED file (a plain scan inside git and
+  // --trust-base both scan it), so this checks only that the file is listed
+  // as present and the finding is still reported.
+  it('a .gitignore naming a tracked file: listed as present, and the finding is still reported', async () => {
     const dir = repoWithSecret({ '.gitignore': 'secret.txt\n', 'sub/.gitignore': '*\n' });
     const r = await scanIn(dir);
     expect(r.code).toBe(1);
@@ -192,7 +199,9 @@ describe('--no-repo-controls: no control file is honoured, every one present is 
     expect(doc.repoControls?.present).toEqual(['.gitignore', 'sub/.gitignore']);
   });
 
-  it('a .gitattributes vendored mark: the finding is reported and the .gitattributes is listed', async () => {
+  // The same: vault-guard has never honoured a linguist-vendored mark in any
+  // mode, so there is no normal run that hides the finding to compare with.
+  it('a .gitattributes vendored mark: listed as present, and the finding is still reported', async () => {
     const dir = repoWithSecret({ '.gitattributes': 'secret.txt linguist-vendored linguist-generated -diff\n' });
     const r = await scanIn(dir);
     expect(r.code).toBe(1);
@@ -411,5 +420,134 @@ describe('--no-repo-controls: refused combinations', () => {
     } finally {
       process.chdir(originalCwd);
     }
+  });
+});
+
+function sha(dir: string, rev = 'HEAD'): string {
+  return git(dir, ['rev-parse', rev]).trim();
+}
+
+/** A commit whose tree is exactly `entries` (mode, blob text, raw name), built with plumbing. */
+function craftedTree(entries: Array<{ name: string; text: string }>): string {
+  const dir = tmpDir('vg-norc-crafted-');
+  initClean(dir);
+  const lines: Buffer[] = [];
+  for (const e of entries) {
+    const oid = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: dir, input: e.text }).toString().trim();
+    lines.push(Buffer.concat([Buffer.from(`100644 blob ${oid}\t`), Buffer.from(e.name, 'latin1'), Buffer.from('\n')]));
+  }
+  const tree = execFileSync('git', ['mktree'], { cwd: dir, input: Buffer.concat(lines) }).toString().trim();
+  const commit = execFileSync('git', ['commit-tree', tree, '-m', 'crafted'], {
+    cwd: dir,
+    env: { ...process.env, ...IDENTITY },
+  })
+    .toString()
+    .trim();
+  git(dir, ['update-ref', 'refs/heads/main', commit]);
+  return dir;
+}
+
+describe('--no-repo-controls: what the report says about the tree', () => {
+  it('names the scanned commit in text, JSON and SARIF', async () => {
+    const dir = repoWithSecret();
+    const head = sha(dir);
+    const json = await scanIn(dir);
+    expect((JSON.parse(json.stdout) as { scannedCommit?: string }).scannedCommit).toBe(head);
+    const sarif = JSON.parse((await scanIn(dir, { format: 'sarif' })).stdout) as {
+      runs: Array<{ properties: Record<string, unknown> }>;
+    };
+    expect(sarif.runs[0].properties.scannedCommit).toBe(head);
+    const text = await scanIn(dir, { format: 'text' });
+    expect(text.log).toContain(`Scanned commit: ${head} (untracked and uncommitted files are not judged)`);
+  });
+
+  it('lists every submodule as not scanned, in text, JSON and SARIF, without exiting 2', async () => {
+    const dir = repoWithSecret();
+    const pinned = sha(dir);
+    git(dir, ['update-index', '--add', '--cacheinfo', `160000,${pinned},vendor-lib`]);
+    git(dir, ['update-index', '--add', '--cacheinfo', `160000,${pinned},deps/inner`]);
+    git(dir, ['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'submodules'], { ...process.env, ...IDENTITY });
+
+    const json = await scanIn(dir);
+    expect(json.code).toBe(1);
+    expect((JSON.parse(json.stdout) as { notScanned?: unknown }).notScanned).toEqual({
+      submodules: ['deps/inner', 'vendor-lib'],
+    });
+    const sarif = JSON.parse((await scanIn(dir, { format: 'sarif' })).stdout) as {
+      runs: Array<{ properties: Record<string, unknown> }>;
+    };
+    expect(sarif.runs[0].properties.notScanned).toEqual({ submodules: ['deps/inner', 'vendor-lib'] });
+    const text = await scanIn(dir, { format: 'text' });
+    expect(text.log.split('\n').filter(l => l.startsWith('Not scanned, submodule: '))).toEqual([
+      'Not scanned, submodule: deps/inner',
+      'Not scanned, submodule: vendor-lib',
+    ]);
+  });
+});
+
+describe('--no-repo-controls: a tree whose entries cannot be told apart is refused', () => {
+  it('two names that are not valid UTF-8 and decode alike: exit 2, nothing scanned', async () => {
+    const dir = craftedTree([
+      { name: 'k\xfe.txt', text: `aws = "${AWS_KEY}"\n` },
+      { name: 'k\xff.txt', text: 'clean\n' },
+    ]);
+    const r = await scanIn(dir);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('cannot be told apart');
+    expect(r.stdout).toBe('');
+  });
+
+  it('one name listed twice in a crafted tree: exit 2, nothing scanned', async () => {
+    const dir = craftedTree([
+      { name: 'a.txt', text: `aws = "${AWS_KEY}"\n` },
+      { name: 'a.txt', text: 'clean\n' },
+    ]);
+    const r = await scanIn(dir);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('cannot be told apart');
+  });
+});
+
+describe('--no-repo-controls: a file with no HEAD blob is never read from disk', () => {
+  it('scanHeadBlobsAsync rejects a file the HEAD listing did not name, with a key on disk', async () => {
+    const dir = repoWithSecret({}, 'clean\n');
+    const stray = path.join(dir, 'stray.txt');
+    fs.writeFileSync(stray, `aws = "${AWS_KEY}"\n`);
+    const blobs = new Map<string, string>();
+    const p = scanHeadBlobsAsync([stray], blobs, dir, new SecretScanner({}), {});
+    await expect(p).rejects.toBeInstanceOf(GitError);
+    await expect(p).rejects.toMatchObject({ command: 'git ls-tree -r -z HEAD' });
+  });
+});
+
+describe('--no-repo-controls: the repository must use its own git directory and objects', () => {
+  it('.git is a gitdir pointer file: exit 2, clone fresh', async () => {
+    const dir = repoWithSecret();
+    const elsewhere = path.join(tmpDir('vg-norc-gitdir-'), 'real.git');
+    fs.renameSync(path.join(dir, '.git'), elsewhere);
+    fs.writeFileSync(path.join(dir, '.git'), `gitdir: ${elsewhere}\n`);
+    const r = await scanIn(dir);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('.git at the repository root is a file or a link');
+    expect(r.err).toContain('Clone the repository fresh and assess the clone.');
+    expect(r.stdout).toBe('');
+  });
+
+  it('objects/info/alternates (a --shared clone): exit 2, clone fresh', async () => {
+    const origin = repoWithSecret();
+    const parent = tmpDir('vg-norc-shared-');
+    git(parent, ['clone', '-q', '--shared', origin, 'c']);
+    const r = await scanIn(path.join(parent, 'c'));
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('.git/objects/info/alternates exists');
+    expect(r.err).toContain('Clone the repository fresh and assess the clone.');
+  });
+
+  it('objects/info/http-alternates: exit 2, clone fresh', async () => {
+    const dir = repoWithSecret();
+    fs.writeFileSync(path.join(dir, '.git', 'objects', 'info', 'http-alternates'), 'https://example.invalid/objects\n');
+    const r = await scanIn(dir);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('.git/objects/info/http-alternates exists');
   });
 });

@@ -1301,9 +1301,9 @@ still blocks and the config is listed`, `a local overlay, at the root and
 nested: the finding is reported and both overlays are listed`, `a baseline
 listing the finding: the finding is reported and the baseline is listed`,
 `an inline ignore directive: the finding is reported and marked as not
-honoured`, `a .gitignore listing the file: the finding is reported and the
-.gitignore is listed`, `a .gitattributes vendored mark: the finding is
-reported and the .gitattributes is listed`, `the text report prints one
+honoured`, `a .gitignore naming a tracked file: listed as present, and the
+finding is still reported`, `a .gitattributes vendored mark: listed as
+present, and the finding is still reported`, `the text report prints one
 line per present control file`, `SARIF carries repoControls in the run
 properties and the mark on the result`, `a run without the flag carries no
 repoControls block, in JSON or SARIF`); core `local-git-config.test.ts`
@@ -1322,7 +1322,19 @@ blob, in both directions, and a file deleted on disk is still scanned. A
 target is a path in the HEAD tree, resolved lexically, never through the
 disk. HEAD must resolve to a commit (exit 2 otherwise), and the flag is a
 usage error, exit 2 before any git call, with `--trust-base` or `--staged`.
-Not covered: the gitlink of a submodule is not descended into.
+A file the HEAD listing did not name is never read from disk: both
+`scanHeadBlobsAsync` and `scanFileContent` (`blobOnly`) throw a GitError
+instead, exit 2. The report names the full object id of the commit scanned
+(`Scanned commit:` in text, `scannedCommit` in JSON and SARIF run
+properties) and says untracked and uncommitted files are not judged. A
+gitlink is not descended into, and every one is listed as not scanned
+(`Not scanned, submodule:` in text, `notScanned.submodules` in JSON and SARIF)
+without changing the exit code. The run refuses, exit 2, when two HEAD
+entries resolve to the same path (raw names that are not valid UTF-8 and
+decode alike, or a name listed twice in a crafted tree) or a path has an
+empty, `.` or `..` segment, rather than let one replace the other; it does
+not key by raw bytes. Not covered: symlink entries are not scanned and not
+listed, as in pull-request mode.
 
 **Enforced by:** `no-repo-controls.ts` (`loadHeadOnlyTree`);
 `utils/scan-utils.ts` (`scanHeadBlobsAsync`, every entry `worktreeAlso:
@@ -1333,7 +1345,13 @@ config, rev-parse, ls-tree and cat-file, with the config read first`,
 `filter driver, config check stubbed out: the clean filter never runs and
 the blob is judged`, `with --trust-base or --staged: a usage error, exit 2,
 before any git call`, `a repository with no commit: exit 2`, `a target
-outside the repository: exit 2`).
+outside the repository: exit 2`, `names the scanned commit in text, JSON and
+SARIF`, `lists every submodule as not scanned, in text, JSON and SARIF,
+without exiting 2`, `two names that are not valid UTF-8 and decode alike:
+exit 2, nothing scanned`, `one name listed twice in a crafted tree: exit 2,
+nothing scanned`, `scanHeadBlobsAsync rejects a file the HEAD listing did
+not name, with a key on disk`); core `local-git-config.test.ts` (`throws
+rather than read the disk copy of a file with no tracked entry`).
 
 ## `--no-repo-controls` refuses a local git config a fresh clone would not write
 
@@ -1353,6 +1371,12 @@ sibling gate can carry a copy; nothing checks the copies against each other
 yet. Not covered: global and system config and `GIT_CONFIG_*` variables,
 which are the operator's own.
 
+The run also refuses, exit 2 with the same remedy, a repository whose `.git`
+at the root is not a directory (a `gitdir:` pointer file or a link) or whose
+`.git/objects/info/alternates` or `http-alternates` exists (or cannot be
+examined): git would read that repository's objects from somewhere a fresh
+plain clone does not.
+
 **Enforced by:** `utils/local-git-config.ts` (`isAllowedLocalGitConfigKey`,
 `checkLocalGitConfig`); `no-repo-controls.ts` (`loadHeadOnlyTree`, the check
 first); core `local-git-config.test.ts` (`is exactly the keys a fresh clone
@@ -1365,7 +1389,10 @@ runs`, `%s in local config: exit 2 naming the key` over `include.path`,
 `core.worktree`, `remote.origin.promisor`,
 `remote.origin.partialclonefilter`, `extensions.worktreeConfig` and
 `user.name`, `a fresh clone of a repository with a remote passes the
-check`).
+check`, `.git is a gitdir pointer file: exit 2, clone fresh`,
+`objects/info/alternates (a --shared clone): exit 2, clone fresh`,
+`objects/info/http-alternates: exit 2, clone fresh`); `no-repo-controls.ts`
+(`assertOwnObjectStore`).
 
 ## File-set git calls run with a clean git environment; `--staged` does not
 

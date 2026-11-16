@@ -83,7 +83,25 @@ export interface HeadOnlyTree {
   blobs: Map<string, string>;
   /** See {@link RepoControlsReport.present}. */
   present: string[];
+  /** Every gitlink (submodule) path in the HEAD tree, root-relative, sorted: not descended into. */
+  submodules: string[];
 }
+
+/**
+ * What a `--no-repo-controls` run says about the tree it judged: the commit,
+ * and the paths it lists but did not scan. JSON `scannedCommit` and
+ * `notScanned`, and SARIF run properties of the same names.
+ */
+export interface HeadOnlyReport {
+  /** The full object id of the HEAD commit whose tree was scanned. */
+  scannedCommit: string;
+  notScanned: {
+    /** Gitlink paths: the submodule's content is another repository and was not scanned. */
+    submodules: string[];
+  };
+}
+
+const CLONE_FRESH = 'Clone the repository fresh and assess the clone.';
 
 /**
  * Every control file in a HEAD listing: any entry that is not a directory
@@ -140,6 +158,7 @@ export function loadHeadOnlyTree(startDir: string): HeadOnlyTree {
   } catch {
     // Keep git's spelling.
   }
+  assertOwnObjectStore(repoRoot);
 
   const head = git(repoRoot, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
   if (!head.ok || head.out.trim() === '') {
@@ -156,9 +175,73 @@ export function loadHeadOnlyTree(startDir: string): HeadOnlyTree {
     throw new NoRepoControlsError(e instanceof Error ? e.message : String(e));
   }
   const blobs = new Map<string, string>();
+  const seen = new Set<string>();
+  const submodules: string[] = [];
   for (const e of entries) {
+    // Paths are decoded as UTF-8, so two raw names that are not valid UTF-8
+    // can read as one, and a crafted tree can hold one name twice. Either
+    // way one entry would silently replace the other in the scan's map, and
+    // a key in the replaced one would never be read: refuse instead.
+    const segments = e.path.split('/');
+    const key = path.resolve(repoRoot, e.path);
+    if (segments.some(s => s === '' || s === '.' || s === '..') || seen.has(key)) {
+      throw new NoRepoControlsError(
+        `vault-guard: the HEAD tree has entries that cannot be told apart, at ${JSON.stringify(e.path)}: ` +
+          'two entries read as the same path (names that are not valid UTF-8, or a name listed twice), or a ' +
+          'path with an empty, "." or ".." segment. Scanning it would judge one entry in place of another. ' +
+          'Nothing was scanned.',
+      );
+    }
+    seen.add(key);
+    if (e.type === 'commit') submodules.push(e.path);
     if (e.type !== 'blob' || (e.mode !== '100644' && e.mode !== '100755')) continue;
-    blobs.set(path.resolve(repoRoot, e.path), e.oid);
+    blobs.set(key, e.oid);
   }
-  return { repoRoot, head: head.out.trim(), blobs, present: presentRepoControls(entries) };
+  submodules.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return { repoRoot, head: head.out.trim(), blobs, present: presentRepoControls(entries), submodules };
+}
+
+/**
+ * Refuse a repository whose objects may come from somewhere else: a `.git`
+ * that is not a directory (a `gitdir:` pointer file, or a link) names another
+ * git directory, and `objects/info/alternates` or `http-alternates` makes git
+ * read objects from another store. A fresh plain clone has neither, and the
+ * remedy is the same as for an unknown config key.
+ */
+function assertOwnObjectStore(repoRoot: string): void {
+  const dotGit = path.join(repoRoot, '.git');
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(dotGit);
+  } catch (e) {
+    throw new NoRepoControlsError(
+      `vault-guard: refusing to run: .git at the repository root cannot be examined ` +
+        `(${(e as NodeJS.ErrnoException | undefined)?.code ?? 'error'}), so the git directory git uses may not be the ` +
+        `repository's own. ${CLONE_FRESH} Nothing was scanned.`,
+    );
+  }
+  if (!st.isDirectory()) {
+    throw new NoRepoControlsError(
+      'vault-guard: refusing to run: .git at the repository root is a file or a link, not a directory, so ' +
+        `git reads this repository from another git directory (a worktree, a submodule, or a pointer). ${CLONE_FRESH} ` +
+        'Nothing was scanned.',
+    );
+  }
+  for (const name of ['alternates', 'http-alternates']) {
+    const rel = `.git/objects/info/${name}`;
+    let exists: boolean;
+    try {
+      fs.lstatSync(path.join(repoRoot, rel));
+      exists = true;
+    } catch (e) {
+      // Only "not there" is a pass; a file that cannot be examined is not.
+      exists = (e as NodeJS.ErrnoException | undefined)?.code !== 'ENOENT';
+    }
+    if (exists) {
+      throw new NoRepoControlsError(
+        `vault-guard: refusing to run: ${rel} exists, so git would read objects for this repository from ` +
+          `another object store. ${CLONE_FRESH} Nothing was scanned.`,
+      );
+    }
+  }
 }

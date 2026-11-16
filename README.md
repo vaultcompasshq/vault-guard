@@ -187,9 +187,10 @@ over. Nothing in the repository decides what is reported:
   finding one covers is reported and marked `inline_directive_not_honoured`.
   `--fail-on` on the command line still applies.
 - The tree is judged as at HEAD, from git blobs only (`git ls-tree -r HEAD` and
-  `git cat-file`). No working-tree file is read, so an edit that is not committed
-  is not judged, and `status`, `ls-files`, `check-attr` and `hash-object` are
-  never run.
+  `git cat-file`). No working-tree file is read, and `status`, `ls-files`,
+  `check-attr` and `hash-object` are never run. Untracked and uncommitted files
+  are not judged; the report names the commit that was (`Scanned commit:` in
+  text, `scannedCommit` in JSON and in the SARIF run properties).
 - Every control file present in the HEAD tree is named: one `Present, not
   honoured:` line per file in text, and `repoControls: { honoured: false,
   present: [...] }` at the top level of JSON and in `runs[0].properties` in SARIF.
@@ -200,6 +201,13 @@ over. Nothing in the repository decides what is reported:
   the short list). A key like that can make git run a program the repository's
   owner chose. The message names the key: clone the repository fresh and assess
   the clone.
+- It also refuses, exit 2 with the same remedy, when `.git` at the repository
+  root is a file or a link (a worktree, a submodule checkout or a `gitdir:`
+  pointer) or when `.git/objects/info/alternates` or `http-alternates` exists
+  (a `--shared` or `--reference` clone): git would then read the repository from
+  somewhere else. It refuses a HEAD tree with entries it cannot tell apart (two
+  names that are not valid UTF-8 and read alike, a name listed twice, or a `.`
+  or `..` segment), rather than judge one in place of another.
 - Exit 2 as a usage error with `--trust-base` or `--staged`, and exit 2 when
   HEAD is not a commit.
 
@@ -209,7 +217,10 @@ tool safe to run on that repository, it does not stop git hooks you run yourself
 outside the repository (your global and system config, and `GIT_CONFIG_*`
 variables, are yours). Built-in skips still apply and are counted: vendored
 directory names as a direct child of the scan root, and lockfiles, logs, source
-maps and minified bundles by name.
+maps and minified bundles by name. Submodule contents are not scanned: each
+gitlink is listed as `Not scanned, submodule:` in text and in
+`notScanned.submodules` in JSON and SARIF, and the run does not exit 2 over
+it; clone and assess the submodule's repository on its own.
 
 ### What fails the build
 

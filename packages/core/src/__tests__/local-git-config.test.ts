@@ -10,6 +10,8 @@ import {
   localGitConfigRefusal,
 } from '../utils/local-git-config';
 import { presentRepoControls } from '../no-repo-controls';
+import { SecretScanner } from '../scanners/secret-scanner';
+import { scanFileContent } from '../utils/content-source';
 
 /**
  * The allowlist of design 2026-10-28, section 3.2 (DECISION 3, with the keys
@@ -116,5 +118,18 @@ describe('presentRepoControls', () => {
         e('not.gitignore'),
       ]),
     ).toEqual(['.vault-guard.baseline.json', '.vault-guard.json', 'a/.vault-guard.local.json', 'x/.GITIGNORE', 'y/.gitattributes']);
+  });
+});
+
+describe('scanFileContent with blobOnly', () => {
+  it('throws rather than read the disk copy of a file with no tracked entry', async () => {
+    const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vg-blobonly-')));
+    const file = path.join(dir, 'k.txt');
+    fs.writeFileSync(file, `aws = "${['AKIA', 'Q7MZR2XVB9', 'NTD4WH'].join('')}"\n`);
+    await expect(scanFileContent(new SecretScanner({}), file, undefined, undefined, { blobOnly: true })).rejects.toThrow(
+      'reads blobs only',
+    );
+    const plain = await scanFileContent(new SecretScanner({}), file, undefined, undefined, {});
+    expect(plain.matches.length).toBe(1);
   });
 });

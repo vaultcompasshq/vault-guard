@@ -11,7 +11,7 @@ import {
 } from './match-fingerprint';
 import { GROUP_LISTED, GROUP_MIN } from './utils/data-shape';
 import { climbsOut } from './utils/dot-dot';
-import type { RepoControlsReport } from './no-repo-controls';
+import type { HeadOnlyReport, RepoControlsReport } from './no-repo-controls';
 
 /** One file's scan outcome -- shared by CLI, MCP, and SARIF/JSON formatters. */
 export interface FileScanResult {
@@ -374,6 +374,10 @@ export interface JsonOutput {
   trustBase?: TrustBaseReport;
   /** Present only on a `--no-repo-controls` run. See {@link RepoControlsReport}. */
   repoControls?: RepoControlsReport;
+  /** Present only on a `--no-repo-controls` run: the HEAD commit judged. */
+  scannedCommit?: string;
+  /** Present only on a `--no-repo-controls` run: paths listed but not scanned. */
+  notScanned?: HeadOnlyReport['notScanned'];
   results: Array<{
     file: string;
     matches: Array<{
@@ -460,6 +464,12 @@ export interface FormatOptions {
    * the run-level `vault_guard_run` properties.
    */
   repoControls?: RepoControlsReport;
+  /**
+   * A `--no-repo-controls` run's commit and the paths it did not scan
+   * (submodules). JSON `scannedCommit` and `notScanned` at the top level,
+   * SARIF `runs[0].properties` of the same names.
+   */
+  headOnly?: HeadOnlyReport;
 }
 
 /**
@@ -660,6 +670,7 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
     ...(run ? { run } : {}),
     ...(opts.trustBase ? { trustBase: opts.trustBase } : {}),
     ...(opts.repoControls ? { repoControls: opts.repoControls } : {}),
+    ...(opts.headOnly ? { scannedCommit: opts.headOnly.scannedCommit, notScanned: opts.headOnly.notScanned } : {}),
     results: results.map(({ file, matches }, fi) => ({
       file: normalizeFilePath(file, opts.cwd, opts.scanRoot),
       matches: matches.map((m, mi) => {
@@ -872,8 +883,14 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
         }
       : undefined;
   const runProps =
-    vaultGuardRunProps !== undefined || opts.repoControls !== undefined
-      ? { ...(vaultGuardRunProps ?? {}), ...(opts.repoControls ? { repoControls: opts.repoControls } : {}) }
+    vaultGuardRunProps !== undefined || opts.repoControls !== undefined || opts.headOnly !== undefined
+      ? {
+          ...(vaultGuardRunProps ?? {}),
+          ...(opts.repoControls ? { repoControls: opts.repoControls } : {}),
+          ...(opts.headOnly
+            ? { scannedCommit: opts.headOnly.scannedCommit, notScanned: opts.headOnly.notScanned }
+            : {}),
+        }
       : undefined;
 
   // A proposal is a statement about the run's CONFIGURATION -- "this pull
