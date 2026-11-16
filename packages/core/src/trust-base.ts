@@ -925,6 +925,33 @@ export function listHeadTreeBlobs(
   repoRoot: string,
   options: { maxBytes?: number } = {},
 ): Map<string, string> {
+  const files = new Map<string, string>();
+  for (const e of listHeadTreeEntries(repoRoot, options)) {
+    if (e.type !== 'blob' || !isRegularFileMode(e.mode)) continue;
+    files.set(path.resolve(repoRoot, e.path), e.oid);
+  }
+  return files;
+}
+
+/** One record of `git ls-tree -r -z HEAD`. */
+export interface HeadTreeEntry {
+  mode: string;
+  type: string;
+  oid: string;
+  /** Root-relative, exactly as git wrote it (posix separators). */
+  path: string;
+}
+
+/**
+ * Every record of `git ls-tree -r -z HEAD`, of every mode and type, in git's
+ * order. {@link listHeadTreeBlobs} keeps the regular files of this; a caller
+ * that must also see a symlink or a gitlink at a path reads it here. Throws
+ * {@link TrustBaseError} as that function documents.
+ */
+export function listHeadTreeEntries(
+  repoRoot: string,
+  options: { maxBytes?: number } = {},
+): HeadTreeEntry[] {
   const maxBytes = options.maxBytes ?? HEAD_TREE_LISTING_MAX_BYTES;
   // Read as bytes and parsed record by record: a listing near the buffer
   // limit is longer than the longest string the engine can build, so the
@@ -951,7 +978,7 @@ export function listHeadTreeBlobs(
     );
   }
   const out = r.stdout;
-  const files = new Map<string, string>();
+  const entries: HeadTreeEntry[] = [];
   for (let start = 0; start < out.length; ) {
     let end = out.indexOf(0, start);
     if (end === -1) end = out.length;
@@ -961,10 +988,9 @@ export function listHeadTreeBlobs(
     const tab = record.indexOf('\t');
     if (tab === -1) continue;
     const [mode, type, oid] = record.slice(0, tab).split(' ');
-    if (type !== 'blob' || !isRegularFileMode(mode)) continue;
-    files.set(path.resolve(repoRoot, record.slice(tab + 1)), oid);
+    entries.push({ mode, type, oid, path: record.slice(tab + 1) });
   }
-  return files;
+  return entries;
 }
 
 /**

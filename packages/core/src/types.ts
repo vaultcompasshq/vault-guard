@@ -41,6 +41,13 @@ export interface SecretMatch {
    * nothing that decides a severity or the exit does.
    */
   groupSlot?: GroupSlot;
+  /**
+   * Set on a match an inline `vault-guard: ignore-line` / `ignore-next-line`
+   * directive covers, kept because the run honours no control input the
+   * repository supplies (`scan --no-repo-controls`). Never set otherwise: on
+   * every other run such a match is dropped and counted as suppressed.
+   */
+  inlineDirectiveNotHonoured?: true;
 }
 
 /** Why a match was demoted. See {@link SecretMatch.demotion}. */

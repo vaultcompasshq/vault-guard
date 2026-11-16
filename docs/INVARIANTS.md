@@ -1274,6 +1274,99 @@ link is refused`); `init.test.ts` (a dangling and an outside link per
 manager, for example `a dangling link at .husky/pre-commit is a linked_hook
 conflict and nothing is written through it`).
 
+## `--no-repo-controls` honours no control input the repository supplies
+
+`scan --no-repo-controls` runs on the built-in defaults. No
+`.vault-guard.json`, `.vault-guard.local.json` (at any level) or
+`.vault-guard.baseline.json` is read, `.gitignore` and `.gitattributes` decide
+nothing, and an inline ignore directive does not hide a finding: the finding
+is reported with `inline_directive_not_honoured`, and `inline_suppressed`
+stays 0. Every control file of those five names in the HEAD tree, at any
+depth, matched case-insensitively and of any entry kind but a directory, is
+listed in JSON `repoControls.present`, in SARIF
+`runs[0].properties.repoControls`, and as one `Present, not honoured:` text
+line each. A run without the flag carries no `repoControls` block.
+`--fail-on` on the command line still applies. Not covered: the built-in
+skips (root-level vendored names, lockfiles and generated artifacts by name)
+still apply, counted; control files in the git directory
+(`.git/info/exclude`, `.git/info/attributes`) are not listed, though nothing
+in this mode reads them.
+
+**Enforced by:** `commands/scan.ts` (the `headOnly` branches);
+`no-repo-controls.ts` (`REPO_CONTROL_BASENAMES`, `presentRepoControls`);
+`secret-scanner.ts` (`inlineDirectives: 'mark'`); CLI
+`no-repo-controls.test.ts` (`a config that ignores everything: the finding
+is reported and the config is listed`, `fail_on lowered to none: the finding
+still blocks and the config is listed`, `a local overlay, at the root and
+nested: the finding is reported and both overlays are listed`, `a baseline
+listing the finding: the finding is reported and the baseline is listed`,
+`an inline ignore directive: the finding is reported and marked as not
+honoured`, `a .gitignore listing the file: the finding is reported and the
+.gitignore is listed`, `a .gitattributes vendored mark: the finding is
+reported and the .gitattributes is listed`, `the text report prints one
+line per present control file`, `SARIF carries repoControls in the run
+properties and the mark on the result`, `a run without the flag carries no
+repoControls block, in JSON or SARIF`); core `local-git-config.test.ts`
+(`names every control file at any depth, case-insensitively, any entry kind
+but a directory`).
+
+## `--no-repo-controls` judges the HEAD tree from blobs only
+
+The file set is `git ls-tree -r -z HEAD` and every byte scanned comes from
+`git cat-file`. The run's git calls are, in order, `config --local --list`,
+`rev-parse`, `ls-tree` and `cat-file`, and nothing else: never `status`,
+`ls-files`, `check-attr` or `hash-object`, so a repository-configured clean
+filter or fsmonitor hook has no command to ride on, and no working-tree copy
+is opened. A file edited on disk and not committed is judged by its HEAD
+blob, in both directions, and a file deleted on disk is still scanned. A
+target is a path in the HEAD tree, resolved lexically, never through the
+disk. HEAD must resolve to a commit (exit 2 otherwise), and the flag is a
+usage error, exit 2 before any git call, with `--trust-base` or `--staged`.
+Not covered: the gitlink of a submodule is not descended into.
+
+**Enforced by:** `no-repo-controls.ts` (`loadHeadOnlyTree`);
+`utils/scan-utils.ts` (`scanHeadBlobsAsync`, every entry `worktreeAlso:
+false`, `filtered: false`); `file-utils.ts` (`getHeadTreeFilesToScan`, no
+`lstat`); CLI `no-repo-controls.test.ts` (`a file edited on disk and not
+committed: the HEAD content is judged, in both directions`, `runs only
+config, rev-parse, ls-tree and cat-file, with the config read first`,
+`filter driver, config check stubbed out: the clean filter never runs and
+the blob is judged`, `with --trust-base or --staged: a usage error, exit 2,
+before any git call`, `a repository with no commit: exit 2`, `a target
+outside the repository: exit 2`).
+
+## `--no-repo-controls` refuses a local git config a fresh clone would not write
+
+Before its first other git call the run reads `git config --local --list
+--name-only -z` and refuses, exit 2, naming the first key off the allowlist
+and saying to clone the repository fresh and assess the clone. The
+allowlist is the keys a fresh clone writes: `core.repositoryformatversion`,
+`core.filemode`, `core.bare`, `core.logallrefupdates`, `core.ignorecase`,
+`core.precomposeunicode`, `core.symlinks`, `extensions.objectformat`, and
+`remote.<name>.url|fetch|tagopt` and `branch.<name>.remote|merge|rebase`.
+`remote.<name>.promisor`, `remote.<name>.partialclonefilter` and
+`extensions.worktreeConfig` are off it on purpose. `--local` does not follow
+includes, so `include.path` and `includeIf.*` are themselves refused. A git
+failure reading the config is exit 2 too, never a pass. The check lives in
+one module with no vault-guard imports (`utils/local-git-config.ts`) so the
+sibling gate can carry a copy; nothing checks the copies against each other
+yet. Not covered: global and system config and `GIT_CONFIG_*` variables,
+which are the operator's own.
+
+**Enforced by:** `utils/local-git-config.ts` (`isAllowedLocalGitConfigKey`,
+`checkLocalGitConfig`); `no-repo-controls.ts` (`loadHeadOnlyTree`, the check
+first); core `local-git-config.test.ts` (`is exactly the keys a fresh clone
+writes`, `refuses every other key, including the ones left off on purpose`,
+`checks a real repository: git init passes, an added key is named`, `fails
+closed outside a repository`); CLI `no-repo-controls.test.ts` (`filter
+driver, config check live: exit 2 naming the key, before any marker`,
+`core.fsmonitor in local config: exit 2 naming the key, and the hook never
+runs`, `%s in local config: exit 2 naming the key` over `include.path`,
+`core.worktree`, `remote.origin.promisor`,
+`remote.origin.partialclonefilter`, `extensions.worktreeConfig` and
+`user.name`, `a fresh clone of a repository with a remote passes the
+check`).
+
 ## File-set git calls run with a clean git environment; `--staged` does not
 
 Every git call that builds the plain or pull-request file set or reads its

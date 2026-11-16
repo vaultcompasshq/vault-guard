@@ -761,6 +761,61 @@ export function getPullRequestFilesToScan(
   return out;
 }
 
+/**
+ * The file set of `scan --no-repo-controls`: the HEAD tree's regular files
+ * under `scope` (a directory, or one file), filtered by the built-in rules
+ * only, and never by anything on disk.
+ *
+ * The same built-in filtering as {@link getPullRequestFilesToScan}: a
+ * vendored directory name is skipped only as a direct child of the scan root,
+ * and lockfiles, logs, source maps and generated artifacts are skipped by
+ * name; both are counted. What it leaves out on purpose: no config `ignore`
+ * list (there is no config), no `.gitignore`, and no `lstat` of the working
+ * tree, because a file deleted or replaced on disk is still in HEAD and its
+ * blob is what this mode judges. `scopeIsFile` is decided by the caller from
+ * the HEAD listing, not from the disk.
+ */
+export function getHeadTreeFilesToScan(
+  scope: string,
+  scopeIsFile: boolean,
+  headTreeFiles: Iterable<string>,
+  skipped: PullRequestSkips = { dirCount: 0, dirNames: [], typeFilteredFiles: 0 },
+): string[] {
+  const target = path.resolve(scope);
+  const skippedNames = new Set<string>();
+  const nestedVendored: string[] = [];
+  let typeFiltered = 0;
+  const out: string[] = [];
+  for (const file of headTreeFiles) {
+    const abs = path.resolve(file);
+    let underNestedVendored = false;
+    if (scopeIsFile) {
+      if (abs !== target) continue;
+    } else {
+      const rel = path.relative(target, abs);
+      if (rel === '' || climbsOut(rel) || path.isAbsolute(rel)) continue;
+      const segments = rel.split(path.sep);
+      if (segments.length > 1 && shouldIgnoreDirectory(segments[0])) {
+        skippedNames.add(segments[0]);
+        continue;
+      }
+      underNestedVendored = segments.slice(1, -1).some(shouldIgnoreDirectory);
+    }
+    if (shouldIgnoreFile(abs)) {
+      typeFiltered++;
+      continue;
+    }
+    if (underNestedVendored) nestedVendored.push(abs);
+    out.push(abs);
+  }
+  skipped.dirNames = [...skippedNames].sort();
+  skipped.dirCount = skipped.dirNames.length;
+  skipped.typeFilteredFiles = typeFiltered;
+  skipped.configIgnoredFiles = 0;
+  skipped.nestedVendored = nestedVendored;
+  return out;
+}
+
 /** Resolve symlinks; fall back to the input when that is not possible. */
 function canonicalPath(p: string): string {
   try {

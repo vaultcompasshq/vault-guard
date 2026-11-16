@@ -39,6 +39,7 @@ import {
   type BudgetUntrusted,
   type ScanClock,
   type TrackedEntry,
+  type RepoControlsReport,
   type JsonOutput,
   type JsonRunMetadata,
   type TrustBaseReport,
@@ -79,6 +80,8 @@ export interface ScanFormatOptions {
   contentRoot?: string;
   /** Pull-request mode's report, when the run was given `--trust-base`. */
   trustBase?: TrustBaseReport;
+  /** The `--no-repo-controls` statement: no control file honoured, and which are present. */
+  repoControls?: RepoControlsReport;
 }
 
 export function formatJson(results: ScanResult[], opts: ScanFormatOptions = {}): string {
@@ -89,6 +92,7 @@ export function formatJson(results: ScanResult[], opts: ScanFormatOptions = {}):
     diagnostics: opts.diagnostics,
     run: opts.run,
     trustBase: opts.trustBase,
+    ...(opts.repoControls ? { repoControls: opts.repoControls } : {}),
   });
 }
 export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {}): string {
@@ -99,6 +103,7 @@ export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {})
     diagnostics: opts.diagnostics,
     run: opts.run,
     trustBase: opts.trustBase,
+    ...(opts.repoControls ? { repoControls: opts.repoControls } : {}),
   });
 }
 
@@ -535,6 +540,8 @@ export interface ScanOptions {
   contentSource?: GitContentSource;
   /** Filled with where content came from and what the run must say about it. */
   content?: ContentReport;
+  /** `mark` keeps a finding an inline ignore directive covers (`--no-repo-controls`). */
+  inlineDirectives?: 'honour' | 'mark';
 }
 
 /**
@@ -630,6 +637,7 @@ async function scanOneFile(
     classify: options.skipBinary !== false,
     budgetMs: scanBudgetMs,
     ...(options.scanClock ? { clock: options.scanClock } : {}),
+    ...(options.inlineDirectives !== undefined ? { inlineDirectives: options.inlineDirectives } : {}),
   });
   if (outcome.skippedByType) {
     recordBinarySkip(outcome.skippedByType.family, options);
@@ -1169,6 +1177,61 @@ export async function scanFilesAsync(
   return results;
 }
 
+/**
+ * Scan HEAD tree blobs and nothing else (`scan --no-repo-controls`). Every file
+ * is read by the object id `git ls-tree -r -z HEAD` named, through
+ * `cat-file`; no entry asks for its working-tree copy and none is marked
+ * filtered, so no disk copy is opened and no `status` or `check-attr` runs.
+ * `files` are absolute paths that are keys of `blobs`.
+ */
+export async function scanHeadBlobsAsync(
+  files: string[],
+  blobs: Map<string, string>,
+  repoRoot: string,
+  scanner: SecretScanner,
+  options: ScanOptions = {},
+): Promise<ScanResult[]> {
+  const { maxSize = MAX_FILE_SIZE, progress = false, concurrency = 10, scanBudgetMs = DEFAULT_SCAN_BUDGET_MS } = options;
+  const entries = new Map<string, TrackedEntry>();
+  for (const f of files) {
+    const oid = blobs.get(f);
+    if (oid === undefined) continue;
+    entries.set(f, { repoTop: repoRoot, mode: '100644', oid, worktreeAlso: false, filtered: false });
+  }
+  const content = new GitContentSource('head', fileSetGitEnv(), entries);
+  const results: ScanResult[] = [];
+  const cwd = process.cwd();
+  try {
+    content.prepare(files);
+    const scanFile = async (file: string): Promise<void> => {
+      const display = path.relative(cwd, file);
+      // No exclude entry is offered: this mode reads no config to put one in.
+      const exclude = undefined;
+      try {
+        const r = await scanOneFile(scanner, file, display, exclude, repoRoot, content, options, maxSize, scanBudgetMs);
+        if (r) results.push(r);
+      } catch (error) {
+        if (error instanceof GitError) throw error;
+        options.unreadable?.push({ kind: 'read_error', file: display, reason: String(error) });
+        options.bus?.add({ code: 'file.read_error', severity: 'error', ctx: { file: display, detail: String(error) } });
+      }
+    };
+    for (let i = 0; i < files.length; i += concurrency) {
+      const batch = files.slice(i, i + concurrency);
+      await Promise.all(batch.map(scanFile));
+      if (progress && files.length > 10) {
+        const percent = Math.round(((i + batch.length) / files.length) * 100);
+        process.stderr.write(`\r${chalk.gray(`Scanning... ${percent}%`)}`);
+      }
+    }
+    if (progress && files.length > 10) process.stderr.write('\n');
+  } finally {
+    await content.closeAndWait();
+    if (options.content) options.content.headReadBytes += content.headReadBytes;
+  }
+  return results;
+}
+
 /** The binary rule with a synchronous head read, for the synchronous {@link scanFiles}. */
 function confirmedBinarySync(file: string): boolean {
   const cand = binaryCandidate(file);
@@ -1363,7 +1426,10 @@ export function displayScanResults(
         return;
       }
       const reason = match.demotion ? chalk.gray(`  (${demotionText(match.demotion)})`) : '';
-      console.log(findingLine(relativePath, match, bothCopies) + reason);
+      const directive = match.inlineDirectiveNotHonoured
+        ? chalk.yellow('  (inline ignore directive not honoured)')
+        : '';
+      console.log(findingLine(relativePath, match, bothCopies) + reason + directive);
     });
   });
 

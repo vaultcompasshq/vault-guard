@@ -40,6 +40,8 @@ export {
 } from './utils/scan-clock';
 export * from './utils/git-env';
 export { climbsOut } from './utils/dot-dot';
+export * from './utils/local-git-config';
+export * from './no-repo-controls';
 export * from './utils/read-no-follow';
 export { BlobBatchReader, batchCheckBlobs, type BlobCheck } from './utils/blob-reader';
 export { decodeTextBuffer, decodeDiskCopy, mappedWorktreeEncodings, type DecodedDiskCopy } from './utils/text-decode';
@@ -52,6 +54,7 @@ export {
   assertTrustBaseResolvable,
   listHeadTreeFiles,
   listHeadTreeBlobs,
+  listHeadTreeEntries,
   HEAD_TREE_LISTING_MAX_BYTES,
   readFileAtRef,
   isRegularFileMode,
@@ -63,6 +66,7 @@ export {
   ATTRIBUTES_PROPOSAL_LINE,
   ATTRIBUTES_NOTE_LINE,
   type ControlFile,
+  type HeadTreeEntry,
   type ControlShapeChange,
   type TrustedControls,
 } from './trust-base';

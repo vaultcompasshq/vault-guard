@@ -584,7 +584,20 @@ export class SecretScanner {
    */
   scanContent(
     content: string,
-    opts?: { filePath?: string; ignoreHits?: IgnoreDirectiveHits; placeholderSkips?: PlaceholderSkipHits; pathRoot?: string },
+    opts?: {
+      filePath?: string;
+      ignoreHits?: IgnoreDirectiveHits;
+      placeholderSkips?: PlaceholderSkipHits;
+      pathRoot?: string;
+      /**
+       * `honour` (the default) drops a finding an inline ignore directive
+       * covers. `mark` keeps it, with `inlineDirectiveNotHonoured` set, for a
+       * run that honours no control input the repository supplies
+       * (`scan --no-repo-controls`). Nothing is counted into `ignoreHits` then,
+       * because nothing was hidden.
+       */
+      inlineDirectives?: 'honour' | 'mark';
+    },
   ): SecretMatch[] {
     const lineIndex = this.buildLineIndex(content);
     const ignoredLines = this.parseIgnoreDirectives(content, lineIndex);
@@ -741,7 +754,8 @@ export class SecretScanner {
           continue;
         }
 
-        if (ignoredLines.has(line)) {
+        const directiveCovers = ignoredLines.has(line);
+        if (directiveCovers && opts?.inlineDirectives !== 'mark') {
           // A genuine finding (it passed every filter above) hidden only by an
           // ignore directive. Record it for the caller's tally before dropping.
           if (suppressedByDirective) {
@@ -771,6 +785,7 @@ export class SecretScanner {
           ...(valueBearing
             ? { valueDigest: createHash('sha256').update(fullMatch, 'utf8').digest('hex') }
             : {}),
+          ...(directiveCovers ? { inlineDirectiveNotHonoured: true as const } : {}),
         });
       }
     }

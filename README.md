@@ -172,6 +172,45 @@ vault-guard scan . --format sarif
 vault-guard scan . --format json
 ```
 
+**Assessing a repository you do not trust: `--no-repo-controls`.**
+
+```bash
+vault-guard scan . --no-repo-controls
+```
+
+For a repository someone else controls, such as a directory a client handed
+over. Nothing in the repository decides what is reported:
+
+- Built-in defaults only. `.vault-guard.json`, `.vault-guard.local.json` (at any
+  level), `.vault-guard.baseline.json`, `.gitignore` and `.gitattributes` are not
+  read, and inline `vault-guard: ignore-line` directives are not honoured: a
+  finding one covers is reported and marked `inline_directive_not_honoured`.
+  `--fail-on` on the command line still applies.
+- The tree is judged as at HEAD, from git blobs only (`git ls-tree -r HEAD` and
+  `git cat-file`). No working-tree file is read, so an edit that is not committed
+  is not judged, and `status`, `ls-files`, `check-attr` and `hash-object` are
+  never run.
+- Every control file present in the HEAD tree is named: one `Present, not
+  honoured:` line per file in text, and `repoControls: { honoured: false,
+  present: [...] }` at the top level of JSON and in `runs[0].properties` in SARIF.
+- Before any other git call it reads the repository's local git config
+  (`git config --local --list`) and refuses, exit 2, on any key a fresh clone
+  would not write (`core.fsmonitor`, a `filter.*` or `diff.*` driver,
+  `include.path`, `core.worktree`, partial-clone keys, and anything else not on
+  the short list). A key like that can make git run a program the repository's
+  owner chose. The message names the key: clone the repository fresh and assess
+  the clone.
+- Exit 2 as a usage error with `--trust-base` or `--staged`, and exit 2 when
+  HEAD is not a commit.
+
+What it does not cover: only vault-guard's own reads. It does not make any other
+tool safe to run on that repository, it does not stop git hooks you run yourself
+(no command vault-guard runs fires a hook), and it does not check the git config
+outside the repository (your global and system config, and `GIT_CONFIG_*`
+variables, are yours). Built-in skips still apply and are counted: vendored
+directory names as a direct child of the scan root, and lockfiles, logs, source
+maps and minified bundles by name.
+
 ### What fails the build
 
 Findings at or above the **`--fail-on` threshold** produce exit code 1, and

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `vault-guard scan --no-repo-controls`, for assessing a repository you do not trust. It uses the built-in defaults only: no `.vault-guard.json`, `.vault-guard.local.json`, baseline, `.gitignore` or `.gitattributes` is read, and a finding an inline ignore directive covers is reported and marked `inline_directive_not_honoured`. It judges the tree as at HEAD from git blobs only (`ls-tree` and `cat-file`), never a working-tree copy, and never runs `status`, `ls-files`, `check-attr` or `hash-object`. Every control file present in HEAD is listed: a `Present, not honoured:` line per file in text, and `repoControls: { honoured: false, present: [...] }` in JSON and in the SARIF run properties. Before any other git call it checks the repository's local git config against the keys a fresh clone writes and refuses, exit 2, on any other key (`core.fsmonitor`, a filter or diff driver, `include.path` and so on), naming it. With `--trust-base` or `--staged` it is a usage error, exit 2, and a repository with no commit at HEAD is exit 2. No other mode changes.
+
 ## [1.13.5] - 2026-11-16
 
 A patch release with one security fix: a tracked file whose path starts with

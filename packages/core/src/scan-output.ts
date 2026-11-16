@@ -11,6 +11,7 @@ import {
 } from './match-fingerprint';
 import { GROUP_LISTED, GROUP_MIN } from './utils/data-shape';
 import { climbsOut } from './utils/dot-dot';
+import type { RepoControlsReport } from './no-repo-controls';
 
 /** One file's scan outcome -- shared by CLI, MCP, and SARIF/JSON formatters. */
 export interface FileScanResult {
@@ -371,6 +372,8 @@ export interface JsonOutput {
   run?: JsonRunMetadata;
   /** Present only on a pull-request run. See {@link TrustBaseReport}. */
   trustBase?: TrustBaseReport;
+  /** Present only on a `--no-repo-controls` run. See {@link RepoControlsReport}. */
+  repoControls?: RepoControlsReport;
   results: Array<{
     file: string;
     matches: Array<{
@@ -397,6 +400,8 @@ export interface JsonOutput {
       demotion?: ContentDemotion;
       /** Present when the match is a member of a group in `groups`. */
       group_id?: string;
+      /** `--no-repo-controls` only: an inline ignore directive covers this match and was not honoured. */
+      inline_directive_not_honoured?: true;
     }>;
     /** Present only when the file has a group. Presentation: every member is also in `matches`. */
     groups?: MatchGroup[];
@@ -448,6 +453,13 @@ export interface FormatOptions {
    * has no artifact location and does not belong in `results`.
    */
   trustBase?: TrustBaseReport;
+  /**
+   * A `--no-repo-controls` run's statement that it honoured no control file,
+   * and which ones the HEAD tree holds. Emitted as a top-level `repoControls`
+   * block in JSON and as `runs[0].properties.repoControls` in SARIF, beside
+   * the run-level `vault_guard_run` properties.
+   */
+  repoControls?: RepoControlsReport;
 }
 
 /**
@@ -647,6 +659,7 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
     },
     ...(run ? { run } : {}),
     ...(opts.trustBase ? { trustBase: opts.trustBase } : {}),
+    ...(opts.repoControls ? { repoControls: opts.repoControls } : {}),
     results: results.map(({ file, matches }, fi) => ({
       file: normalizeFilePath(file, opts.cwd, opts.scanRoot),
       matches: matches.map((m, mi) => {
@@ -664,6 +677,7 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
           ...(m.source !== undefined ? { source: m.source } : {}),
           ...(m.demotion !== undefined ? { demotion: m.demotion } : {}),
           ...(group !== undefined ? { group_id: group.group_id } : {}),
+          ...(m.inlineDirectiveNotHonoured ? { inline_directive_not_honoured: true as const } : {}),
         };
       }),
       ...(groups.byFile[fi].length > 0 ? { groups: groups.byFile[fi] } : {}),
@@ -712,6 +726,7 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
         ? { 'vault-guard/demoted_from': m.demotion.from, 'vault-guard/demotion_reason': m.demotion.reason }
         : {}),
       ...(group !== undefined ? { 'vault-guard/group': group.group_id, 'vault-guard/group_size': group.members } : {}),
+      ...(m.inlineDirectiveNotHonoured ? { 'vault-guard/inline_directive_not_honoured': true } : {}),
     };
     return Object.keys(p).length > 0 ? p : undefined;
   };
@@ -772,7 +787,7 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
         }))
       : undefined;
 
-  const runProps =
+  const vaultGuardRunProps =
     opts.run !== undefined
       ? {
           vault_guard_run: {
@@ -855,6 +870,10 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
             grouped_matches: run?.grouped_matches,
           },
         }
+      : undefined;
+  const runProps =
+    vaultGuardRunProps !== undefined || opts.repoControls !== undefined
+      ? { ...(vaultGuardRunProps ?? {}), ...(opts.repoControls ? { repoControls: opts.repoControls } : {}) }
       : undefined;
 
   // A proposal is a statement about the run's CONFIGURATION -- "this pull

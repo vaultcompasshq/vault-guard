@@ -29,6 +29,11 @@ import {
   listTrackedIgnoredFiles,
   BINARY_FAMILIES,
   climbsOut,
+  loadHeadOnlyTree,
+  NoRepoControlsError,
+  getHeadTreeFilesToScan,
+  type HeadOnlyTree,
+  type RepoControlsReport,
   type FailOnThreshold,
   type PullRequestSkips,
   type TrustBaseReport,
@@ -37,10 +42,11 @@ import {
 } from '@vaultcompass/vault-guard-core';
 import chalk from 'chalk';
 import fs from 'fs';
-import { basename, dirname, isAbsolute, join as pathJoin, relative, resolve as pathResolve } from 'path';
+import { basename, dirname, isAbsolute, join as pathJoin, relative, resolve as pathResolve, sep } from 'path';
 import {
   scanFilesAsync,
   scanFileListAsync,
+  scanHeadBlobsAsync,
   displayScanResults,
   formatJson,
   formatSarif,
@@ -202,10 +208,59 @@ export async function scanCommand(
   trustBaseRef?: string,
   /** List file and line for each placeholder skip. The value is never printed. */
   showPlaceholderLocations = false,
+  /**
+   * `--no-repo-controls`: built-in defaults only, the HEAD tree judged from
+   * blobs only, every control file present reported and not honoured, and the
+   * local git config checked against an allowlist before any other git call
+   * (core no-repo-controls.ts). For assessing a repository you do not trust.
+   */
+  noRepoControls = false,
 ): Promise<number> {
   const cwd = process.cwd();
   const targetPaths = Array.isArray(targetPath) ? targetPath : [targetPath];
   const targetLabel = targetPaths.length === 1 ? targetPaths[0] : `${targetPaths.length} paths`;
+
+  // `--no-repo-controls` is settled FIRST, before any git call of any other
+  // mode: its config check has to be the run's first git call.
+  let headOnly: HeadOnlyTree | undefined;
+  if (noRepoControls) {
+    if (trustBaseRef !== undefined || staged) {
+      const other = trustBaseRef !== undefined ? '--trust-base' : '--staged';
+      console.error(
+        `error: --no-repo-controls cannot be combined with ${other}: it judges the HEAD tree with ` +
+          'built-in defaults only, which is neither the index nor a base ref. Nothing was scanned.',
+      );
+      return COULD_NOT_RUN_EXIT;
+    }
+    try {
+      headOnly = loadHeadOnlyTree(cwd);
+    } catch (e) {
+      if (e instanceof NoRepoControlsError) {
+        console.error(chalk.red('❌ Cannot run with --no-repo-controls:'), chalk.white(e.message));
+        return COULD_NOT_RUN_EXIT;
+      }
+      throw e;
+    }
+    // Lexical, on purpose: the target names a path in the HEAD tree, and a
+    // link or a missing directory on disk says nothing about that tree.
+    const base = canonicalPath(cwd);
+    for (const target of targetPaths) {
+      const rel = relative(headOnly.repoRoot, pathResolve(base, target));
+      if (climbsOut(rel) || isAbsolute(rel)) {
+        console.error(
+          chalk.red('❌ Cannot run with --no-repo-controls:'),
+          chalk.white(
+            `the scan target ${target} is outside ${repositoryLabel(headOnly.repoRoot)}, whose HEAD tree ` +
+              'this run judges. Run vault-guard from inside the repository you are assessing. Nothing was scanned.',
+          ),
+        );
+        return COULD_NOT_RUN_EXIT;
+      }
+    }
+  }
+  const repoControls: RepoControlsReport | undefined = headOnly
+    ? { honoured: false, present: headOnly.present }
+    : undefined;
 
   // Base for every path this run renders, serializes, ignore-matches and
   // fingerprints, and the directory its config is loaded from.
@@ -323,7 +378,8 @@ export async function scanCommand(
 
   let config: VaultGuardConfig;
   try {
-    config = controls ? controls.config : loadConfig(outputBase);
+    // `--no-repo-controls`: the built-in defaults, and no config file is read.
+    config = controls ? controls.config : headOnly ? {} : loadConfig(outputBase);
   } catch (e) {
     if (e instanceof ConfigError) {
       console.error(chalk.red('❌ Config error:'), chalk.white(e.message));
@@ -343,7 +399,8 @@ export async function scanCommand(
   // baseline fails the run before anything is scanned or announced (design
   // 2026-10-12, 4.2). Pull-request mode already read the base ref's.
   let plainBaseline: ReturnType<typeof loadBaseline> | undefined;
-  if (!controls) {
+  // `--no-repo-controls` reads no baseline: the empty one below applies.
+  if (!controls && !headOnly) {
     try {
       plainBaseline = loadBaseline(outputBase);
     } catch (e) {
@@ -543,6 +600,47 @@ export async function scanCommand(
         // scan. Never rejects, so an earlier error and the exit code stand.
         await stagedContent?.closeAndWait();
       }
+    } else if (headOnly) {
+      // HEAD blobs only. A target is a path in the HEAD tree: one regular
+      // file, or a directory with tracked files under it. Nothing on disk is
+      // consulted, so a target deleted from the working tree is still judged.
+      const root = headOnly.repoRoot;
+      const base = canonicalPath(cwd);
+      const selected = new Set<string>();
+      for (const target of targetPaths) {
+        const scope = pathResolve(base, target);
+        const isFile = headOnly.blobs.has(scope);
+        const prefix = scope.endsWith(sep) ? scope : scope + sep;
+        const under = isFile || [...headOnly.blobs.keys()].some(f => f.startsWith(prefix));
+        if (!under) {
+          const reason = 'not a regular file in the HEAD tree and no tracked file is under it, so nothing was scanned';
+          unreadable.push({ kind: 'read_error', file: target, reason });
+          bus.add({ code: 'file.read_error', severity: 'error', ctx: { file: target, detail: reason } });
+          continue;
+        }
+        const skipped: PullRequestSkips = { dirCount: 0, dirNames: [], typeFilteredFiles: 0 };
+        for (const f of getHeadTreeFilesToScan(scope, isFile, headOnly.blobs.keys(), skipped)) selected.add(f);
+        for (const n of skipped.dirNames) if (!prSkips.dirNames.includes(n)) prSkips.dirNames.push(n);
+        prSkips.dirNames.sort();
+        prSkips.dirCount = prSkips.dirNames.length;
+        prSkips.typeFilteredFiles += skipped.typeFilteredFiles;
+        prSkips.nestedVendored = [...(prSkips.nestedVendored ?? []), ...(skipped.nestedVendored ?? [])];
+      }
+      results = await scanHeadBlobsAsync([...selected], headOnly.blobs, root, scanner, {
+        verbose: format === 'text',
+        skipBinary: true,
+        progress: showProgress,
+        warn: defer,
+        bus,
+        stats,
+        unreadable,
+        skips,
+        inlineSuppressed,
+        placeholderSkips,
+        scannedFiles,
+        content: contentReport,
+        inlineDirectives: 'mark',
+      });
     } else {
       results = await scanFilesAsync(targetPaths, scanner, {
         verbose: format === 'text',
@@ -656,7 +754,9 @@ export async function scanCommand(
     // run from anywhere in the tree.
     const contentRoot = controls
       ? controls.repoRoot
-      : resolveContentRoot(outputBase, staged);
+      : headOnly
+        ? headOnly.repoRoot
+        : resolveContentRoot(outputBase, staged);
     const { results: afterBaseline, suppressed: baselineSuppressed } = applyBaseline(
       results,
       baselineLoad,
@@ -694,7 +794,7 @@ export async function scanCommand(
     // walk used to skip, each counted only if it was actually scanned.
     const fileSetKind: 'git' | 'walk' | 'head-tree' | 'index' = staged
       ? 'index'
-      : controls
+      : controls || headOnly
         ? 'head-tree'
         : (plainFileSet.fileSet ?? 'walk');
     const countScanned = (files: Iterable<string>): number => {
@@ -713,8 +813,12 @@ export async function scanCommand(
     }
     const plainVendoredNames = [...plainFileSet.vendoredDirNames].sort();
     const mismatches = [...skips.typeMismatch].sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
-    const trackedCounts =
-      fileSetKind === 'git' || fileSetKind === 'head-tree'
+    if (headOnly) trackedNestedVendoredScanned = countScanned(prSkips.nestedVendored ?? []);
+    // `--no-repo-controls` never evaluates `.gitignore`, so it cannot say how
+    // many tracked files one would hide; every one of them was scanned.
+    const trackedCounts = headOnly
+      ? { tracked_nested_vendored_scanned: trackedNestedVendoredScanned }
+      : fileSetKind === 'git' || fileSetKind === 'head-tree'
         ? {
             tracked_ignored_files_scanned: trackedIgnoredScanned,
             tracked_nested_vendored_scanned: trackedNestedVendoredScanned,
@@ -735,14 +839,14 @@ export async function scanCommand(
       inline_suppressed: inlineSuppressed.count,
       inline_suppressed_critical_vendor: inlineSuppressed.criticalVendorAnchored,
       placeholder_skips: placeholderSkips.count,
-      ...(controls && !staged
+      ...((controls || headOnly) && !staged
         ? {
             vendored_dirs_skipped: prSkips.dirCount,
             type_filtered_files: prSkips.typeFilteredFiles,
           }
         : {}),
       // A plain directory walk has the same type filter; it was silent there.
-      ...(!controls && !staged ? { type_filtered_files: skips.typeFiltered } : {}),
+      ...(!controls && !headOnly && !staged ? { type_filtered_files: skips.typeFiltered } : {}),
       // Inside git a root-level vendored name still mutes by design, as in
       // pull-request mode, so the count is stated the same way.
       ...(fileSetKind === 'git' ? { vendored_dirs_skipped: plainVendoredNames.length } : {}),
@@ -804,7 +908,9 @@ export async function scanCommand(
     // Never on a run that exits 2 (design 2026-10-17, section 8): the note
     // describes a verdict, and such a run has none. Wrappers quote the first
     // stderr line as the reason, and this note became that reason.
-    if (!scanIncomplete && gateIsImplicitDefault && totalMatches > 0 && blocking === 0) {
+    // Not under `--no-repo-controls`: the remedy it names is a config file
+    // that run does not read.
+    if (!scanIncomplete && !headOnly && gateIsImplicitDefault && totalMatches > 0 && blocking === 0) {
       console.error(
         chalk.yellow(
           `note: earlier vault-guard versions failed on any finding; since 1.4.0 the default gate is "medium".`,
@@ -832,7 +938,15 @@ export async function scanCommand(
       // the scan target when that sits outside the cwd); fingerprints are
       // computed from `cwd` and the original path, as before.
       process.stdout.write(
-        formatJson(results, { diagnostics, run, scanRoot: displayRoot, cwd: outputBase, contentRoot, trustBase }) +
+        formatJson(results, {
+          diagnostics,
+          run,
+          scanRoot: displayRoot,
+          cwd: outputBase,
+          contentRoot,
+          trustBase,
+          ...(repoControls ? { repoControls } : {}),
+        }) +
           '\n',
       );
       if (scanIncomplete) {
@@ -850,7 +964,15 @@ export async function scanCommand(
       // the right base there -- not the cwd, which a hook invoked from a
       // subdirectory would otherwise make the base for files above it.
       process.stdout.write(
-        formatSarif(results, { diagnostics, run, scanRoot: displayRoot, cwd: outputBase, contentRoot, trustBase }) +
+        formatSarif(results, {
+          diagnostics,
+          run,
+          scanRoot: displayRoot,
+          cwd: outputBase,
+          contentRoot,
+          trustBase,
+          ...(repoControls ? { repoControls } : {}),
+        }) +
           '\n',
       );
       if (scanIncomplete) {
@@ -907,6 +1029,27 @@ export async function scanCommand(
           chalk.gray(`Files skipped by type or name: ${prSkips.typeFilteredFiles}`),
         );
       }
+    }
+
+    // `--no-repo-controls` states what it did not read, every run, including
+    // the run where the answer is "none": one line per control file present.
+    if (repoControls) {
+      console.log(chalk.gray('Control inputs: none (--no-repo-controls): built-in defaults, HEAD tree blobs only'));
+      if (repoControls.present.length === 0) {
+        console.log(chalk.gray('Present, not honoured: none'));
+      } else {
+        for (const p of repoControls.present) {
+          console.log(chalk.yellow(`Present, not honoured: ${printablePath(p)}`));
+        }
+      }
+      const marked = results.reduce((n, r) => n + r.matches.filter(m => m.inlineDirectiveNotHonoured).length, 0);
+      if (marked > 0) {
+        console.log(chalk.yellow(`Inline ignore directives not honoured: ${marked} finding(s) they cover are reported`));
+      }
+      const names = prSkips.dirNames.length > 0 ? ` (${prSkips.dirNames.join(', ')})` : '';
+      const vendoredLine = `Vendored directories skipped: ${prSkips.dirCount}${names}`;
+      console.log(prSkips.dirCount > 0 ? chalk.yellow(vendoredLine) : chalk.gray(vendoredLine));
+      console.log(chalk.gray(`Files skipped by type or name: ${prSkips.typeFilteredFiles}`));
     }
 
     // Suppression visibility: state both suppression counts every run, even at

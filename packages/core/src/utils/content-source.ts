@@ -446,6 +446,8 @@ export interface ScanFileContentOptions {
   budgetMs?: number;
   /** The clock seam; defaults to {@link defaultScanClock}. */
   clock?: ScanClock;
+  /** Passed to {@link SecretScanner.scanContent}: `mark` keeps a directive-covered finding. */
+  inlineDirectives?: 'honour' | 'mark';
 }
 
 const MISSING_BLOB_REASON =
@@ -494,7 +496,13 @@ function scanText(
   const clock = opts.clock ?? defaultScanClock();
   const pass = (h: IgnoreDirectiveHits | undefined, p: PlaceholderSkipHits | undefined): SecretMatch[] =>
     applyPathAwareSeverity(
-      scanner.scanContent(text, { filePath: file, ignoreHits: h, placeholderSkips: p, pathRoot: opts.pathRoot }),
+      scanner.scanContent(text, {
+        filePath: file,
+        ignoreHits: h,
+        placeholderSkips: p,
+        pathRoot: opts.pathRoot,
+        ...(opts.inlineDirectives !== undefined ? { inlineDirectives: opts.inlineDirectives } : {}),
+      }),
       file,
       opts.pathRoot,
     );
