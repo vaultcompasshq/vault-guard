@@ -201,13 +201,18 @@ over. Nothing in the repository decides what is reported:
   the short list). A key like that can make git run a program the repository's
   owner chose. The message names the key: clone the repository fresh and assess
   the clone.
-- It also refuses, exit 2 with the same remedy, when `.git` at the repository
-  root is a file or a link (a worktree, a submodule checkout or a `gitdir:`
-  pointer) or when `.git/objects/info/alternates` or `http-alternates` exists
-  (a `--shared` or `--reference` clone): git would then read the repository from
-  somewhere else. It refuses a HEAD tree with entries it cannot tell apart (two
-  names that are not valid UTF-8 and read alike, a name listed twice, or a `.`
-  or `..` segment), rather than judge one in place of another.
+- It also refuses, exit 2 with the same remedy, when git could read the
+  repository from somewhere else: `.git` at the repository root is a file or a
+  link (a worktree, a submodule checkout or a `gitdir:` pointer);
+  `.git/commondir` exists; `.git/objects/info/alternates` or `http-alternates`
+  exists (a `--shared` or `--reference` clone); `.git/objects`, or anything
+  under it such as `objects/pack` or `objects/info`, is a link rather than a
+  real directory or file; or git's own answer for its common directory and
+  object directory is not `<root>/.git` and `<root>/.git/objects`. It refuses a
+  HEAD tree with entries it cannot tell apart (two names that are not valid
+  UTF-8 and read alike, a name listed twice, a `.` or `..` segment, or on
+  Windows a name such as `..\x` or `D:x` that resolves outside the repository),
+  rather than judge one in place of another or drop it.
 - Exit 2 as a usage error with `--trust-base` or `--staged`, and exit 2 when
   HEAD is not a commit.
 

@@ -9,7 +9,7 @@ import {
   isAllowedLocalGitConfigKey,
   localGitConfigRefusal,
 } from '../utils/local-git-config';
-import { presentRepoControls } from '../no-repo-controls';
+import { headEntryKey, presentRepoControls } from '../no-repo-controls';
 import { SecretScanner } from '../scanners/secret-scanner';
 import { scanFileContent } from '../utils/content-source';
 
@@ -131,5 +131,24 @@ describe('scanFileContent with blobOnly', () => {
     );
     const plain = await scanFileContent(new SecretScanner({}), file, undefined, undefined, {});
     expect(plain.matches.length).toBe(1);
+  });
+});
+
+describe('headEntryKey', () => {
+  it('posix: inside the root, or null for an empty, . or .. segment', () => {
+    expect(headEntryKey('/r', 'a/b.txt', path.posix)).toBe('/r/a/b.txt');
+    expect(headEntryKey('/r', '..env', path.posix)).toBe('/r/..env');
+    expect(headEntryKey('/r', 'a\\..\\x', path.posix)).toBe('/r/a\\..\\x');
+    for (const bad of ['../x', 'a/../../x', './x', 'a//b', '/x', '..', '']) {
+      expect([bad, headEntryKey('/r', bad, path.posix)]).toEqual([bad, null]);
+    }
+  });
+
+  it('win32: a backslash .. segment, another drive or a rooted name is null, never dropped later', () => {
+    expect(headEntryKey('C:\\r', 'ok/y.txt', path.win32)).toBe('C:\\r\\ok\\y.txt');
+    expect(headEntryKey('C:\\r', '..env', path.win32)).toBe('C:\\r\\..env');
+    for (const bad of ['..\\x', 'a\\..\\..\\x', 'D:x', '\\x', 'D:\\x', '\\\\server\\share\\x']) {
+      expect([bad, headEntryKey('C:\\r', bad, path.win32)]).toEqual([bad, null]);
+    }
   });
 });

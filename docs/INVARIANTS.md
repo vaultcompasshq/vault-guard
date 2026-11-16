@@ -1331,12 +1331,17 @@ gitlink is not descended into, and every one is listed as not scanned
 (`Not scanned, submodule:` in text, `notScanned.submodules` in JSON and SARIF)
 without changing the exit code. The run refuses, exit 2, when two HEAD
 entries resolve to the same path (raw names that are not valid UTF-8 and
-decode alike, or a name listed twice in a crafted tree) or a path has an
-empty, `.` or `..` segment, rather than let one replace the other; it does
-not key by raw bytes. Not covered: symlink entries are not scanned and not
+decode alike, or a name listed twice in a crafted tree), a path has an
+empty, `.` or `..` segment (on Windows a backslash also separates segments),
+or a path resolves outside the repository root (on Windows `D:x` or `\x`),
+rather than let one replace the other or drop it unreported; it does not key
+by raw bytes. Not covered: symlink entries are not scanned and not
 listed, as in pull-request mode.
 
-**Enforced by:** `no-repo-controls.ts` (`loadHeadOnlyTree`);
+**Enforced by:** `no-repo-controls.ts` (`loadHeadOnlyTree`, `headEntryKey`;
+core `local-git-config.test.ts`, `posix: inside the root, or null for an
+empty, . or .. segment` and `win32: a backslash .. segment, another drive or
+a rooted name is null, never dropped later`);
 `utils/scan-utils.ts` (`scanHeadBlobsAsync`, every entry `worktreeAlso:
 false`, `filtered: false`); `file-utils.ts` (`getHeadTreeFilesToScan`, no
 `lstat`); CLI `no-repo-controls.test.ts` (`a file edited on disk and not
@@ -1371,11 +1376,22 @@ sibling gate can carry a copy; nothing checks the copies against each other
 yet. Not covered: global and system config and `GIT_CONFIG_*` variables,
 which are the operator's own.
 
-The run also refuses, exit 2 with the same remedy, a repository whose `.git`
-at the root is not a directory (a `gitdir:` pointer file or a link) or whose
-`.git/objects/info/alternates` or `http-alternates` exists (or cannot be
-examined): git would read that repository's objects from somewhere a fresh
-plain clone does not.
+The run also refuses, exit 2 with the same remedy, a repository whose git
+directory or object store may be somewhere a fresh plain clone's is not: `.git`
+at the root is not a directory (a `gitdir:` pointer file or a link);
+`.git/commondir` exists; `.git/objects/info/alternates` or `http-alternates`
+exists; `.git/objects` or anything under it is not a real directory or a
+regular file (a link to another store's `objects`, `objects/pack`,
+`objects/info` or a loose-object directory); or, asked with the stripped
+environment after the config check, `git rev-parse --git-common-dir` and
+`--git-path objects` do not resolve to `<root>/.git` and `<root>/.git/objects`.
+Any of these that cannot be examined also refuses. Refs (`refs/`,
+`packed-refs`, `HEAD`) are not checked: whatever a ref names must be a commit
+in this object store, and the report names the commit judged. A symlinked `HEAD`, `refs/` or `packed-refs` pointing at another
+repository therefore ends in a HEAD that does not resolve here, exit 2, which
+the test of that name checks. `git rev-parse --git-common-dir` and `--git-path
+objects` are a second check behind the link walk and the `commondir` test: no
+fixture reaches them alone.
 
 **Enforced by:** `utils/local-git-config.ts` (`isAllowedLocalGitConfigKey`,
 `checkLocalGitConfig`); `no-repo-controls.ts` (`loadHeadOnlyTree`, the check
@@ -1391,8 +1407,14 @@ runs`, `%s in local config: exit 2 naming the key` over `include.path`,
 `user.name`, `a fresh clone of a repository with a remote passes the
 check`, `.git is a gitdir pointer file: exit 2, clone fresh`,
 `objects/info/alternates (a --shared clone): exit 2, clone fresh`,
-`objects/info/http-alternates: exit 2, clone fresh`); `no-repo-controls.ts`
-(`assertOwnObjectStore`).
+`objects/info/http-alternates: exit 2, clone fresh`, `a .git/commondir
+pointing at another repository: exit 2, the other tree is not judged`,
+`.git/objects a link to another repository's objects: exit 2, the other tree
+is not judged`, `.git/objects/pack a link to another store: exit 2`, `a loose
+object directory linked to another store: exit 2`, `a symlinked HEAD, refs/ or
+packed-refs naming another repository's commit: exit 2, the other tree is not
+judged`, `a plain git clone of a repository passes the object-store check`); `no-repo-controls.ts`
+(`assertOwnObjectStore`, `assertNoLinkIn`).
 
 ## File-set git calls run with a clean git environment; `--staged` does not
 

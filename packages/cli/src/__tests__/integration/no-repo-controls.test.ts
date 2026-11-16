@@ -551,3 +551,104 @@ describe('--no-repo-controls: the repository must use its own git directory and 
     expect(r.err).toContain('.git/objects/info/http-alternates exists');
   });
 });
+
+/**
+ * A victim repository whose git directory reaches another repository's
+ * objects, HEAD naming that repository's commit, which holds a key. Without
+ * the refusal the run judged the other tree and reported other-secret.txt.
+ */
+function borrowedStore(how: 'commondir' | 'objects-link' | 'pack-link' | 'loose-link'): string {
+  const other = repoWithSecret({}, 'clean\n');
+  write(other, 'other-secret.txt', `aws = "${AWS_KEY}"\n`);
+  commitClean(other, 'other');
+  const otherHead = sha(other);
+  const victim = repoWithSecret({}, 'clean\n');
+  const objects = path.join(victim, '.git', 'objects');
+  if (how === 'commondir') {
+    fs.rmSync(objects, { recursive: true });
+    fs.mkdirSync(objects);
+    fs.writeFileSync(path.join(victim, '.git', 'commondir'), `${path.join(other, '.git')}\n`);
+    fs.writeFileSync(path.join(victim, '.git', 'HEAD'), `${otherHead}\n`);
+  } else if (how === 'objects-link') {
+    fs.rmSync(objects, { recursive: true });
+    fs.symlinkSync(path.join(other, '.git', 'objects'), objects);
+    fs.writeFileSync(path.join(victim, '.git', 'HEAD'), `${otherHead}\n`);
+  } else if (how === 'pack-link') {
+    git(other, ['repack', '-a', '-d', '-q']);
+    fs.rmSync(path.join(objects, 'pack'), { recursive: true, force: true });
+    fs.symlinkSync(path.join(other, '.git', 'objects', 'pack'), path.join(objects, 'pack'));
+  } else {
+    // One loose object directory replaced by a link to the other store's.
+    const loose = fs.readdirSync(path.join(other, '.git', 'objects')).find(n => /^[0-9a-f]{2}$/.test(n));
+    if (loose === undefined) throw new Error('fixture: no loose object directory');
+    fs.rmSync(path.join(objects, loose), { recursive: true, force: true });
+    fs.symlinkSync(path.join(other, '.git', 'objects', loose), path.join(objects, loose));
+  }
+  return victim;
+}
+
+describe('--no-repo-controls: a git directory that borrows another store is refused', () => {
+  itPosix('a .git/commondir pointing at another repository: exit 2, the other tree is not judged', async () => {
+    const r = await scanIn(borrowedStore('commondir'));
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('.git/commondir exists');
+    expect(r.err).toContain('Clone the repository fresh and assess the clone.');
+    expect(r.stdout).toBe('');
+  });
+
+  itPosix('.git/objects a link to another repository\'s objects: exit 2, the other tree is not judged', async () => {
+    const r = await scanIn(borrowedStore('objects-link'));
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('.git/objects is not a real directory');
+    expect(r.stdout).toBe('');
+  });
+
+  itPosix('.git/objects/pack a link to another store: exit 2', async () => {
+    const r = await scanIn(borrowedStore('pack-link'));
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('.git/objects/pack is a link');
+  });
+
+  itPosix('a loose object directory linked to another store: exit 2', async () => {
+    const r = await scanIn(borrowedStore('loose-link'));
+    expect(r.code).toBe(2);
+    expect(r.err).toMatch(/\.git\/objects\/[0-9a-f]{2} is a link/);
+  });
+
+  itPosix('a symlinked HEAD, refs/ or packed-refs naming another repository\'s commit: exit 2, the other tree is not judged', async () => {
+    // Refs are not checked for links: a ref can only name a commit this
+    // repository's own object store holds, and the other repository's commit
+    // is not in it, so HEAD fails to resolve.
+    for (const how of ['head', 'refs', 'packed'] as const) {
+      const other = repoWithSecret({}, 'clean\n');
+      write(other, 'other-secret.txt', `aws = "${AWS_KEY}"\n`);
+      commitClean(other, 'other');
+      git(other, ['pack-refs', '--all']);
+      const victim = repoWithSecret({}, 'clean\n');
+      const gd = path.join(victim, '.git');
+      if (how === 'head') {
+        fs.rmSync(path.join(gd, 'HEAD'));
+        fs.writeFileSync(path.join(other, 'detached'), `${sha(other)}\n`);
+        fs.symlinkSync(path.join(other, 'detached'), path.join(gd, 'HEAD'));
+      } else if (how === 'refs') {
+        fs.rmSync(path.join(gd, 'refs'), { recursive: true });
+        fs.symlinkSync(path.join(other, '.git', 'refs'), path.join(gd, 'refs'));
+      } else {
+        fs.rmSync(path.join(gd, 'refs', 'heads', 'main'));
+        fs.copyFileSync(path.join(other, '.git', 'packed-refs'), path.join(gd, 'packed-refs'));
+      }
+      const r = await scanIn(victim);
+      expect([how, r.code]).toEqual([how, 2]);
+      expect(r.stdout).toBe('');
+      expect(r.stdout).not.toContain('other-secret.txt');
+    }
+  });
+
+  itPosix('a plain git clone of a repository passes the object-store check', async () => {
+    const src = repoWithSecret();
+    const clone = tmpDir('vg-norc-clone-');
+    git(clone, ['clone', '-q', src, 'c']);
+    const r = await scanIn(path.join(clone, 'c'));
+    expect(r.code).toBe(1);
+  });
+});

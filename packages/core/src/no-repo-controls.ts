@@ -38,6 +38,7 @@ import path from 'path';
 
 import { BASELINE_FILENAME } from './baseline';
 import { listHeadTreeEntries, type HeadTreeEntry } from './trust-base';
+import { climbsOut } from './utils/dot-dot';
 import { fileSetGitEnv } from './utils/git-env';
 import { checkLocalGitConfig, localGitConfigRefusal } from './utils/local-git-config';
 
@@ -182,13 +183,13 @@ export function loadHeadOnlyTree(startDir: string): HeadOnlyTree {
     // can read as one, and a crafted tree can hold one name twice. Either
     // way one entry would silently replace the other in the scan's map, and
     // a key in the replaced one would never be read: refuse instead.
-    const segments = e.path.split('/');
-    const key = path.resolve(repoRoot, e.path);
-    if (segments.some(s => s === '' || s === '.' || s === '..') || seen.has(key)) {
+    const key = headEntryKey(repoRoot, e.path);
+    if (key === null || seen.has(key)) {
       throw new NoRepoControlsError(
         `vault-guard: the HEAD tree has entries that cannot be told apart, at ${JSON.stringify(e.path)}: ` +
           'two entries read as the same path (names that are not valid UTF-8, or a name listed twice), or a ' +
-          'path with an empty, "." or ".." segment. Scanning it would judge one entry in place of another. ' +
+          'path with an empty, "." or ".." segment or that resolves outside the repository. Scanning it would ' +
+          'judge one entry in place of another, or drop it. ' +
           'Nothing was scanned.',
       );
     }
@@ -202,46 +203,137 @@ export function loadHeadOnlyTree(startDir: string): HeadOnlyTree {
 }
 
 /**
- * Refuse a repository whose objects may come from somewhere else: a `.git`
- * that is not a directory (a `gitdir:` pointer file, or a link) names another
- * git directory, and `objects/info/alternates` or `http-alternates` makes git
- * read objects from another store. A fresh plain clone has neither, and the
- * remedy is the same as for an unknown config key.
+ * The absolute path a HEAD entry is scanned under, or null when the entry
+ * name cannot be one: an empty, `.` or `..` segment (split on every separator
+ * the platform accepts, so `..\x` counts on Windows), or a name that
+ * resolves outside `repoRoot` at all (a name on another drive such as `D:x`, or a rooted
+ * `\x` on Windows). Such an entry is refused, never dropped: a later
+ * "is it inside the scan root?" check would otherwise skip it without a word.
+ * `impl` is injectable so the Windows rules are tested on any host.
+ */
+export function headEntryKey(repoRoot: string, entryPath: string, impl: typeof path = path): string | null {
+  const segments = impl.sep === '\\' ? entryPath.split(/[\\/]/) : entryPath.split('/');
+  if (segments.some(s => s === '' || s === '.' || s === '..')) return null;
+  const key = impl.resolve(repoRoot, entryPath);
+  const rel = impl.relative(repoRoot, key);
+  if (rel === '' || climbsOut(rel, impl) || impl.isAbsolute(rel)) return null;
+  return key;
+}
+
+/** The refusal for a git directory that is not the repository's own. */
+function notOwnStore(what: string): NoRepoControlsError {
+  return new NoRepoControlsError(
+    `vault-guard: refusing to run: ${what}, so git may read this repository's objects or config from ` +
+      `somewhere a fresh plain clone does not. ${CLONE_FRESH} Nothing was scanned.`,
+  );
+}
+
+/** lstat, or the error code; never throws. */
+function lstatOrCode(p: string): fs.Stats | string {
+  try {
+    return fs.lstatSync(p);
+  } catch (e) {
+    return (e as NodeJS.ErrnoException | undefined)?.code ?? 'error';
+  }
+}
+
+function realOrSelf(p: string): string {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return p;
+  }
+}
+
+/**
+ * Refuse a repository whose git directory or object store may be somewhere
+ * else (review of 02a563d, B4 and its re-check). The rule is structural, not
+ * a list of known redirect files alone: the git directory must be the real
+ * directory `<root>/.git`, the object store the real directory
+ * `<root>/.git/objects` with no link anywhere inside it, and git itself must
+ * agree on both paths.
+ *
+ *  - `.git` must be a directory, not a `gitdir:` pointer file or a link.
+ *  - `.git/commondir` must not exist: it moves config, refs and objects to
+ *    another git directory (a linked worktree has one; a fresh clone does not).
+ *  - `.git/objects/info/alternates` and `http-alternates` must not exist.
+ *  - `.git/objects` and every directory and file under it must be real: a link
+ *    to a directory (`objects`, `objects/pack`, `objects/info`, a loose
+ *    `objects/ab`) or to a pack or loose object would read objects from
+ *    another store.
+ *  - `git rev-parse --git-common-dir` and `--git-path objects`, run with the
+ *    stripped environment, must resolve to `<root>/.git` and
+ *    `<root>/.git/objects`.
+ *
+ * Refs (`refs/`, `packed-refs`, `HEAD`) are not checked: wherever a ref is
+ * read from, the commit it names must be in this store, so it can only pick
+ * a commit the repository already holds, and the report names that commit.
  */
 function assertOwnObjectStore(repoRoot: string): void {
   const dotGit = path.join(repoRoot, '.git');
-  let st: fs.Stats;
-  try {
-    st = fs.lstatSync(dotGit);
-  } catch (e) {
-    throw new NoRepoControlsError(
-      `vault-guard: refusing to run: .git at the repository root cannot be examined ` +
-        `(${(e as NodeJS.ErrnoException | undefined)?.code ?? 'error'}), so the git directory git uses may not be the ` +
-        `repository's own. ${CLONE_FRESH} Nothing was scanned.`,
-    );
+  const st = lstatOrCode(dotGit);
+  if (typeof st === 'string') {
+    throw notOwnStore(`.git at the repository root cannot be examined (${st})`);
   }
   if (!st.isDirectory()) {
-    throw new NoRepoControlsError(
-      'vault-guard: refusing to run: .git at the repository root is a file or a link, not a directory, so ' +
-        `git reads this repository from another git directory (a worktree, a submodule, or a pointer). ${CLONE_FRESH} ` +
-        'Nothing was scanned.',
+    throw notOwnStore(
+      '.git at the repository root is a file or a link, not a directory (a worktree, a submodule, or a pointer)',
     );
+  }
+  const commondir = lstatOrCode(path.join(dotGit, 'commondir'));
+  if (commondir !== 'ENOENT') {
+    throw notOwnStore('.git/commondir exists (or cannot be examined): it points git at another git directory');
   }
   for (const name of ['alternates', 'http-alternates']) {
     const rel = `.git/objects/info/${name}`;
-    let exists: boolean;
-    try {
-      fs.lstatSync(path.join(repoRoot, rel));
-      exists = true;
-    } catch (e) {
-      // Only "not there" is a pass; a file that cannot be examined is not.
-      exists = (e as NodeJS.ErrnoException | undefined)?.code !== 'ENOENT';
+    const a = lstatOrCode(path.join(repoRoot, rel));
+    if (a !== 'ENOENT') {
+      throw notOwnStore(`${rel} exists (or cannot be examined): git would read objects from another object store`);
     }
-    if (exists) {
-      throw new NoRepoControlsError(
-        `vault-guard: refusing to run: ${rel} exists, so git would read objects for this repository from ` +
-          `another object store. ${CLONE_FRESH} Nothing was scanned.`,
-      );
+  }
+  const objects = path.join(dotGit, 'objects');
+  assertNoLinkIn(objects, '.git/objects');
+
+  const common = git(repoRoot, ['rev-parse', '--git-common-dir']);
+  const objPath = git(repoRoot, ['rev-parse', '--git-path', 'objects']);
+  if (!common.ok || !objPath.ok) {
+    throw notOwnStore(`git could not name its git directory (${!common.ok ? common.detail : !objPath.ok ? objPath.detail : ''})`);
+  }
+  const resolvedCommon = realOrSelf(path.resolve(repoRoot, common.out.trim()));
+  const resolvedObjects = realOrSelf(path.resolve(repoRoot, objPath.out.trim()));
+  if (resolvedCommon !== realOrSelf(dotGit)) {
+    throw notOwnStore("git's common git directory is not .git at the repository root");
+  }
+  if (resolvedObjects !== realOrSelf(objects)) {
+    throw notOwnStore("git's object directory is not .git/objects at the repository root");
+  }
+}
+
+/**
+ * Walk `dir` with lstat and refuse on anything that is not a real directory
+ * or a regular file, the directory itself included. A fresh clone's object
+ * store holds only directories and regular files.
+ */
+function assertNoLinkIn(dir: string, label: string): void {
+  const top = lstatOrCode(dir);
+  if (typeof top === 'string') throw notOwnStore(`${label} cannot be examined (${top})`);
+  if (!top.isDirectory()) throw notOwnStore(`${label} is not a real directory (a link or a file)`);
+  const stack: Array<{ abs: string; rel: string }> = [{ abs: dir, rel: label }];
+  while (stack.length > 0) {
+    const { abs, rel } = stack.pop() as { abs: string; rel: string };
+    let names: string[];
+    try {
+      names = fs.readdirSync(abs);
+    } catch (e) {
+      throw notOwnStore(`${rel} cannot be read (${(e as NodeJS.ErrnoException | undefined)?.code ?? 'error'})`);
+    }
+    for (const name of names) {
+      const childAbs = path.join(abs, name);
+      const childRel = `${rel}/${name}`;
+      const c = lstatOrCode(childAbs);
+      if (typeof c === 'string') throw notOwnStore(`${childRel} cannot be examined (${c})`);
+      if (c.isDirectory()) stack.push({ abs: childAbs, rel: childRel });
+      else if (!c.isFile()) throw notOwnStore(`${childRel} is a link or a special file, not a regular file`);
     }
   }
 }
