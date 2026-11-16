@@ -950,6 +950,27 @@ mutation and went red (design doc, section 8).
 **Known gap:** the MCP `scan_workspace` tool gets the same file set, but no
 test drives it inside a git repository.
 
+## A path that starts with two dots is inside the root
+
+"Is this relative path outside its root?" is asked as `climbsOut(rel)`: the
+result is `..` or begins with the `..` segment and a separator (either
+separator for a Windows-style path), plus `isAbsolute` where the site already
+checked it. Never `rel.startsWith('..')`, which also matched `..env` and
+`..cfg/creds.txt`, so in a plain scan, under `--trust-base` and under
+`--staged` such a tracked file was dropped without a word and a key in it was
+never reported. Not covered: the MCP server's site uses the same helper, but
+no test drives it with such a path.
+
+**Enforced by:** `utils/dot-dot.ts` (`climbsOut`), used at every such site in
+core, the CLI and the MCP server; core `dot-dot.test.ts` (`is true only for
+the .. segment, never for a name that starts with two dots`); CLI
+`dot-dot-paths.test.ts` (`plain scan: ..env and ..cfg/creds.txt are
+scanned`, `--trust-base: ..env and ..cfg/creds.txt in the head tree are
+scanned`, `--trust-base: a target named ..env is not refused as outside the
+repository`, `--staged: staged ..env and ..cfg/creds.txt are scanned`, `a
+target named ..cfg is scanned as a directory inside the repository`), each
+red with `climbsOut` reverted to the old prefix test.
+
 ## A pull-request run never takes its baseline from the head
 
 Under `--trust-base` the baseline, like the config, comes from the base ref,

@@ -39,6 +39,7 @@ export {
   type ScanClock,
 } from './utils/scan-clock';
 export * from './utils/git-env';
+export { climbsOut } from './utils/dot-dot';
 export * from './utils/read-no-follow';
 export { BlobBatchReader, batchCheckBlobs, type BlobCheck } from './utils/blob-reader';
 export { decodeTextBuffer, decodeDiskCopy, mappedWorktreeEncodings, type DecodedDiskCopy } from './utils/text-decode';

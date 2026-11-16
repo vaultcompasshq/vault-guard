@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Security: a tracked file whose path starts with two dots, such as `..env` or `..cfg/creds.txt`, is scanned again. Every check for "this path is outside the root" tested whether the relative path began with `..`, which also matches a first segment that merely starts with two dots, so in a plain scan, under `--trust-base` and under `--staged` such a file was dropped without a word and a key in it was never reported; `--trust-base` also refused a target named `..env` as outside the repository. The check is now the `..` segment itself (`climbsOut`), at every site in core, the CLI and the MCP server.
+
 ### Changed
 
 - The CI conductor action pin and the @vaultcompass/conductor devDependency move to 0.19.0, and the CI gate pin and the gate devDependencies move to dep-guard 0.20.1, vault-guard 1.13.4 and intent-guard 1.10.6, the versions conductor 0.19.0 expects.

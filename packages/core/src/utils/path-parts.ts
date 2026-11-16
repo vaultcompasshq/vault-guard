@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { climbsOut } from './dot-dot';
 
 /** Absolute, symlinks resolved when the path exists (macOS /var vs /private/var). */
 function canonical(p: string): string {
@@ -43,7 +44,7 @@ export function splitPathParts(filePath: string): string[] {
 export function contextPathFor(filePath: string, root?: string): string {
   if (root === undefined) return filePath;
   const rel = path.relative(canonical(root), canonical(filePath));
-  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+  if (rel === '' || climbsOut(rel) || path.isAbsolute(rel)) {
     return path.basename(filePath);
   }
   return rel;

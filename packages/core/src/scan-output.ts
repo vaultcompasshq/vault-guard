@@ -10,6 +10,7 @@ import {
   rootPositionalFingerprint,
 } from './match-fingerprint';
 import { GROUP_LISTED, GROUP_MIN } from './utils/data-shape';
+import { climbsOut } from './utils/dot-dot';
 
 /** One file's scan outcome -- shared by CLI, MCP, and SARIF/JSON formatters. */
 export interface FileScanResult {
@@ -490,7 +491,7 @@ function relativizeFilePath(file: string, cwd: string | null | undefined): strin
   const impl = isWindowsStylePath(file) || isWindowsStylePath(base) ? path.win32 : path;
   if (!impl.isAbsolute(file)) return file;
   const rel = impl.relative(base, file);
-  if (rel.startsWith('..') || impl.isAbsolute(rel)) return file;
+  if (climbsOut(rel, impl) || impl.isAbsolute(rel)) return file;
   return rel || '.';
 }
 
@@ -538,7 +539,7 @@ function toSarifArtifactUri(
   const abs = impl.isAbsolute(file) ? file : impl.resolve(anchor, file);
   const base = resolveSarifBase(anchor, scanRoot, impl);
   const rel = impl.relative(base, abs);
-  if (rel.startsWith('..') || impl.isAbsolute(rel)) return abs.split('\\').join('/');
+  if (climbsOut(rel, impl) || impl.isAbsolute(rel)) return abs.split('\\').join('/');
   return (rel || '.').split('\\').join('/');
 }
 
@@ -560,7 +561,7 @@ function resolveSarifBase(
 ): string {
   if (scanRoot === undefined) return cwd;
   const rel = impl.relative(cwd, scanRoot);
-  if (rel === '' || (!rel.startsWith('..') && !impl.isAbsolute(rel))) return cwd;
+  if (rel === '' || (!climbsOut(rel, impl) && !impl.isAbsolute(rel))) return cwd;
   return scanRoot;
 }
 

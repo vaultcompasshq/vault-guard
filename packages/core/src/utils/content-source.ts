@@ -17,6 +17,7 @@ import { applyPathAwareSeverity } from './path-severity';
 import { defaultScanClock, timeSpan, type ClockMeasure, type ScanClock } from './scan-clock';
 import { MAX_SCAN_FILE_BYTES } from './scan-file';
 import { decodeDiskCopy, decodeTextBuffer } from './text-decode';
+import { climbsOut } from './dot-dot';
 
 /**
  * Where a tracked file's content comes from (design 2026-10-12, section 2).
@@ -966,7 +967,7 @@ export function resolveNamedLink(link: string, repoTop: string): NamedLinkResolu
     return { reason: code === 'ELOOP' ? 'loop' : 'missing' };
   }
   const rel = path.relative(canonical(repoTop), real);
-  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return { reason: 'outside' };
+  if (rel === '' || climbsOut(rel) || path.isAbsolute(rel)) return { reason: 'outside' };
   let st: fs.Stats;
   try {
     st = fs.statSync(real);
@@ -1021,7 +1022,7 @@ export function listNamedTrackedFiles(
     }
     const physical = path.join(canonical(dir), path.basename(given));
     const rel = path.relative(top, physical).split(path.sep).join('/');
-    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) continue;
+    if (rel === '' || climbsOut(rel) || path.isAbsolute(rel)) continue;
     const g = groups.get(top) ?? [];
     g.push({ given, rel });
     groups.set(top, g);
