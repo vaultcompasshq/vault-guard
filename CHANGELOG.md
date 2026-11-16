@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The CI conductor action pin and the @vaultcompass/conductor devDependency move to 0.19.0, and the CI gate pin and the gate devDependencies move to dep-guard 0.20.1, vault-guard 1.13.4 and intent-guard 1.10.6, the versions conductor 0.19.0 expects.
+
 ### Security
 
 - The repository's pinned `hono` override moves from 4.13.13 to 4.13.17, closing five Dependabot alerts (67 to 71) on the lockfile. hono reaches the MCP package through `@modelcontextprotocol/sdk` and is not bundled into any published package, so an installed vault-guard resolves hono on its own and was not held at the old version by this pin.
