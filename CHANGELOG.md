@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- A pnpm override moves the development-only `minimatch` copies (9.0.9 and 10.2.6, through jest and eslint) to 11.0.5, closing Dependabot alert 66 (GHSA-g3hv-75wg-m249). It is not in any published package.
 - The repository's pinned `hono` override moves from 4.13.13 to 4.13.17, closing five Dependabot alerts (67 to 71) on the lockfile. hono reaches the MCP package through `@modelcontextprotocol/sdk` and is not bundled into any published package, so an installed vault-guard resolves hono on its own and was not held at the old version by this pin.
 
 ## [1.13.4] - 2026-11-15
