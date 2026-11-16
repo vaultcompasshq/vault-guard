@@ -7,6 +7,7 @@ import { DiagnosticBus } from '../diagnostics';
 import { GitError } from '../errors';
 import { inspectWorktree, wantsWorktreeCopy, type TrackedEntry } from './content-source';
 import { fileSetGitEnv } from './git-env';
+import { climbsOut } from './dot-dot';
 
 /**
  * Build a filter from `config.ignore.paths` / `config.ignore.patterns` entries.
@@ -25,7 +26,7 @@ export function buildConfigIgnoreFilter(
   const ig = ignore().add(patterns);
   return (filePath: string): boolean => {
     const rel = path.relative(root, path.resolve(filePath)).split(path.sep).join('/');
-    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return false;
+    if (!rel || climbsOut(rel) || path.isAbsolute(rel)) return false;
     return ig.ignores(rel);
   };
 }
@@ -235,7 +236,7 @@ function buildIgnoreFilter(resolvedScanRoot: string): CachedIgnoreFilter {
 
   const tester = (filePath: string): boolean => {
     const rel = path.relative(stopAt, path.resolve(filePath)).split(path.sep).join('/');
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    if (climbsOut(rel) || path.isAbsolute(rel)) {
       return false;
     }
     const posixPath = rel === '' ? '.' : rel;
@@ -700,7 +701,7 @@ export function getPullRequestFilesToScan(
       if (abs !== target) continue;
     } else {
       const rel = path.relative(target, abs);
-      if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) continue;
+      if (rel === '' || climbsOut(rel) || path.isAbsolute(rel)) continue;
       const segments = rel.split(path.sep);
       // Anchored: only a direct child of the scan root is skipped by name.
       if (segments.length > 1 && shouldIgnoreDirectory(segments[0])) {
@@ -866,7 +867,7 @@ function collectGitPaths(
   if (visitedRepos.has(`${top}\0${dir}`)) return;
   visitedRepos.add(`${top}\0${dir}`);
   const rel = path.relative(top, dir).split(path.sep).join('/');
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+  if (climbsOut(rel) || path.isAbsolute(rel)) {
     throw new GitError(
       `vault-guard: ${dir} is not inside the git work tree git reported for it (${top}). ` +
         'Nothing was scanned.',
@@ -986,7 +987,7 @@ function getGitFilesToScan(
   const canonTarget = canonicalPath(givenTarget);
   const toGiven = (canon: string): string | null => {
     const rel = path.relative(canonTarget, canon);
-    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+    if (rel === '' || climbsOut(rel) || path.isAbsolute(rel)) return null;
     return path.join(givenTarget, rel);
   };
   const isUnderVendoredName = (canon: string, includeLast: boolean): boolean => {

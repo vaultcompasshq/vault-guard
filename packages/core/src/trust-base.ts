@@ -52,6 +52,7 @@ import { BASELINE_FILENAME, parseBaselineText, type BaselineEntry } from './base
 import { DEFAULT_ENTROPY_THRESHOLD } from './utils/entropy';
 import { DEFAULT_FAIL_ON, isFailOnThreshold, type FailOnThreshold } from './utils/fail-on';
 import { fileSetGitEnv } from './utils/git-env';
+import { climbsOut } from './utils/dot-dot';
 
 /**
  * Repository config that must never decide what vault-guard reads, prepended
@@ -403,7 +404,7 @@ function searchDirsRelativeToRoot(startDir: string, repoRoot: string): string[] 
   const out: string[] = [];
   for (const dir of listConfigSearchDirs(canonicalDir(startDir))) {
     const rel = path.relative(repoRoot, canonicalDir(dir)).split(path.sep).join('/');
-    if (rel.startsWith('..') || path.isAbsolute(rel)) continue;
+    if (climbsOut(rel) || path.isAbsolute(rel)) continue;
     out.push(rel === '' ? '.' : rel);
   }
   return out;

@@ -23,6 +23,7 @@ import {
   namedLinkWarning,
   findGitEntryRoot,
   fileSetGitEnv,
+  climbsOut,
   cleanGitEnv,
   binaryCandidate,
   confirmsBinary,
@@ -124,7 +125,7 @@ export function resolveScanRoot(targetPaths: string[], cwd = process.cwd()): str
   // knowledge of the checkout, which is cwd, so a uri relative to a narrower
   // root would end up naming a different file.
   const rel = path.relative(cwd, abs);
-  if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) return cwd;
+  if (rel === '' || (!climbsOut(rel) && !path.isAbsolute(rel))) return cwd;
 
   try {
     return fs.statSync(abs).isDirectory() ? abs : path.dirname(abs);
@@ -385,7 +386,7 @@ function recordBinarySkip(family: BinaryFamily, options: ScanOptions): void {
  */
 export function excludePatternFor(file: string, root: string): string | undefined {
   const rel = path.relative(path.resolve(root), path.resolve(file));
-  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return undefined;
+  if (!rel || climbsOut(rel) || path.isAbsolute(rel)) return undefined;
   // Escaped: backslash, star and brackets, which gitignore reads as syntax, and
   // a trailing space, which it strips. NOT escaped: `?`, which already matches
   // itself (an escaped one matches nothing here), and `#` and `!`, which only
@@ -1426,12 +1427,12 @@ function relativeForDisplay(file: string, base: string): string {
   // judged where it points, so it can come out relative to the scan root.
   const abs = path.isAbsolute(file)
     ? file
-    : file.startsWith('..')
+    : climbsOut(file)
       ? path.resolve(process.cwd(), file)
       : null;
   if (abs === null) return file;
   const rel = path.relative(base, abs);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) return file;
+  if (climbsOut(rel) || path.isAbsolute(rel)) return file;
   return rel || '.';
 }
 

@@ -11,6 +11,7 @@ import {
   formatSarif,
   formGroups,
   contentRunCounts,
+  climbsOut,
   type FileScanResult,
   type JsonRunMetadata,
   type VaultGuardConfig,
@@ -96,7 +97,7 @@ function toolPayload(obj: unknown): { content: Array<{ type: 'text'; text: strin
 
 function isPathInside(root: string, candidate: string): boolean {
   const rel = path.relative(root, candidate);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  return rel === '' || (!climbsOut(rel) && !path.isAbsolute(rel));
 }
 
 function realpathIfExists(p: string): string {

@@ -2,12 +2,13 @@ import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
 import type { SecretMatch } from './types';
+import { climbsOut } from './utils/dot-dot';
 
 function relativeFingerprintKey(file: string, cwd: string | null): string {
   if (cwd === null) return file.split(path.sep).join('/');
   if (!path.isAbsolute(file)) return file.split(path.sep).join('/');
   const rel = path.relative(cwd, file);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) return file.split(path.sep).join('/');
+  if (climbsOut(rel) || path.isAbsolute(rel)) return file.split(path.sep).join('/');
   return (rel || '.').split(path.sep).join('/');
 }
 

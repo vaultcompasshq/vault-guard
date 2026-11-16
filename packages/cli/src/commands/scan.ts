@@ -28,6 +28,7 @@ import {
   newPlainFileSetInfo,
   listTrackedIgnoredFiles,
   BINARY_FAMILIES,
+  climbsOut,
   type FailOnThreshold,
   type PullRequestSkips,
   type TrustBaseReport,
@@ -290,7 +291,7 @@ export async function scanCommand(
       })();
       const abs = namedFileLink ? pathJoin(canonicalPath(dirname(given)), basename(given)) : canonicalPath(given);
       const rel = relative(controls.repoRoot, abs);
-      if (rel.startsWith('..') || isAbsolute(rel)) {
+      if (climbsOut(rel) || isAbsolute(rel)) {
         console.error(
           chalk.red('❌ Cannot establish the trust base:'),
           chalk.white(
