@@ -1567,7 +1567,7 @@ rule choice (the key name) comes from which pattern matched. The connection
 string's placeholder PASSWORD is the credential itself and stays a counted
 decline; its HOST is repository-chosen text and is kept. The PEM rule reads the
 text after the header (a body is a single base64 token of 40 or more characters,
-or a run of single-token base64 lines of one width, at any fold width). A severity lowered by a path rule or an
+or a run of single-token base64 lines of one width, at any fold width; and where an END footer closes it, any base64-only single-token lines between the armor lines, of any widths, 64 or more characters joined with a lowercase letter, an uppercase letter and a digit, `+` or `/`). A severity lowered by a path rule or an
 in-file test block records `severityBeforePathRules`, and the text and the
 below-gate verdict count them.
 

@@ -155,8 +155,11 @@ export function isPemHeaderWithoutBody(content: string, headerEndOffset: number)
   // the next BEGIN, or the cap when neither exists). A fixed 400-character
   // window missed any key whose armor headers ran long.
   let region = content.slice(headerEndOffset, headerEndOffset + PEM_REGION_CAP);
-  const stop = region.search(/-----(?:END|BEGIN) /);
-  if (stop >= 0) region = region.slice(0, stop);
+  const stop = /-----(END|BEGIN) /.exec(region);
+  // A matching END footer makes the whole span between the two armor lines the
+  // body, at whatever widths the author folded it (see the end of this function).
+  const hasFooter = stop !== null && stop[1] === 'END';
+  if (stop !== null) region = region.slice(0, stop.index);
 
   // Newlines can hide as XML character references.
   region = region.replace(/&#(?:x0*[aAdD]|0*1[03]);/g, '\n');
@@ -183,6 +186,10 @@ export function isPemHeaderWithoutBody(content: string, headerEndOffset: number)
     return joined.length >= 40 && /[a-z]/.test(joined) && /[A-Z]/.test(joined) && /[0-9+/]/.test(joined);
   };
 
+  // Between a header and its footer: every non-blank line one base64 token.
+  const between: string[] = [];
+  let betweenOk = true;
+
   for (const line of lines) {
     const tokens: string[] = [];
     for (const raw of line.split(/\s+/)) {
@@ -190,6 +197,9 @@ export function isPemHeaderWithoutBody(content: string, headerEndOffset: number)
       if (token !== '') tokens.push(token);
     }
     if (tokens.length === 0) continue;
+    if (tokens.length === 1 && /^[A-Za-z0-9+/]+={0,2}$/.test(tokens[0])) between.push(tokens[0]);
+    // An RFC 1421 header of a legacy encrypted key (`Proc-Type: 4,ENCRYPTED`, `DEK-Info: ...`).
+    else if (!/^\s*[A-Za-z][A-Za-z0-9-]*:\s/.test(line)) betweenOk = false;
 
     // A body line is base64 and nothing else, after comment markers and string
     // syntax are peeled off. Requiring EVERY token on the line to be base64 is
@@ -227,7 +237,19 @@ export function isPemHeaderWithoutBody(content: string, headerEndOffset: number)
     }
   }
 
-  return !runIsBody();
+  if (runIsBody()) return false;
+
+  // With a footer the body is whatever lies between the armor lines: parsers
+  // (OpenSSL 3 among them) accept lines of any width, so an author who folds a
+  // key unevenly must not make it read as a label. Every non-blank line has to
+  // be one base64 token (a sentence is several), and the joined text has to be
+  // long enough to be key material and mixed the way base64 is, which English
+  // words are not (no digit, no `+` or `/`).
+  if (hasFooter && betweenOk) {
+    const joined = between.join('');
+    if (joined.length >= 64 && /[a-z]/.test(joined) && /[A-Z]/.test(joined) && /[0-9+/]/.test(joined)) return false;
+  }
+  return true;
 }
 
 /** How far past a PEM header the body check looks when no END marker bounds it. */
