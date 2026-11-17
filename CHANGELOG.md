@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.5] - 2026-11-16
+
+A patch release with one security fix: a tracked file whose path starts with
+two dots, such as `..env` or `..cfg/creds.txt`, was treated as outside the
+repository and skipped without a word in every scan mode, so a secret in it
+was missed. Such files are scanned again. The CI gate pins, the gate
+devDependencies and two development-only dependency overrides move as well.
+
 ### Fixed
 
 - Security: a tracked file whose path starts with two dots, such as `..env` or `..cfg/creds.txt`, is scanned again. Every check for "this path is outside the root" tested whether the relative path began with `..`, which also matches a first segment that merely starts with two dots, so in a plain scan, under `--trust-base` and under `--staged` such a file was dropped without a word and a key in it was never reported; `--trust-base` also refused a target named `..env` as outside the repository. The check is now the `..` segment itself (`climbsOut`), at every site in core, the CLI and the MCP server.

@@ -136,7 +136,7 @@ const INSTALL_STEP = 'Install vault-guard outside the workspace';
 const RUN_STEP = 'Run vault-guard';
 
 const DEFAULT_INPUTS: Record<string, string> = {
-  version: '1.13.4',
+  version: '1.13.5',
   path: '.',
   format: 'sarif',
   'sarif-output': 'vault-guard-results.sarif',
@@ -330,8 +330,8 @@ describe('action.yml "Validate inputs", pinning the scanner backward on a pull r
     // that does not say which two values disagree sends the reader away to
     // work it out.
     expect(run.stdout).toContain('1.7.0');
-    // The future scanner keeps the shipped patch (4) and moves only the minor.
-    expect(run.stdout).toContain('1.14.4');
+    // The future scanner keeps the shipped patch (5) and moves only the minor.
+    expect(run.stdout).toContain('1.14.5');
     expect(run.stdout).toContain('pull request');
     // And the remedy, which is to stop pinning at all.
     expect(run.stdout).toContain('REMOVE the `version` input');
@@ -356,9 +356,9 @@ describe('action.yml "Validate inputs", pinning the scanner backward on a pull r
     // below `1.8.0` as text and above it as a version, and refusing it would
     // refuse the very direction this rule exists to leave open.
     const future = scriptWithFutureTagScanner();
-    // The future scanner is 1.14.4 here (the helper moves only the minor), so
-    // 1.14.4 is the equal case and 1.14.5 the higher patch.
-    for (const ok of ['1.14.4', '1.14.5', '1.15.0', '2.0.0', '10.0.0']) {
+    // The future scanner is 1.14.5 here (the helper moves only the minor), so
+    // 1.14.5 is the equal case and 1.14.6 the higher patch.
+    for (const ok of ['1.14.5', '1.14.6', '1.15.0', '2.0.0', '10.0.0']) {
       expect([
         ok,
         runValidateScript(future, { version: ok }, { GITHUB_BASE_REF: 'main' }).status,
@@ -373,11 +373,11 @@ describe('action.yml "Validate inputs", pinning the scanner backward on a pull r
     const shipped = `${tagScannerPart('MAJOR')}.${tagScannerPart('MINOR')}.${tagScannerPart('PATCH')}`;
     expect(runValidateWith({ version: shipped }, { GITHUB_BASE_REF: 'main' }).status).toBe(0);
     expect(runValidateWith({}, { GITHUB_BASE_REF: 'main' }).status).toBe(0);
-    // 1.13.4 is the scanner this tag ships. 1.13.5 exercises the patch arm
+    // 1.13.5 is the scanner this tag ships. 1.13.6 exercises the patch arm
     // going forward (same major and minor, higher patch) and 1.14.0 the minor
-    // arm. "1.13.3" is below it by one patch, so it is not accepted here; the
+    // arm. "1.13.4" is below it by one patch, so it is not accepted here; the
     // refused list below covers it.
-    for (const ok of ['1.13.4', '1.13.5', '1.14.0', '2.0.0']) {
+    for (const ok of ['1.13.5', '1.13.6', '1.14.0', '2.0.0']) {
       expect([ok, runValidateWith({ version: ok }, { GITHUB_BASE_REF: 'main' }).status]).toEqual([
         ok,
         0,
@@ -385,12 +385,12 @@ describe('action.yml "Validate inputs", pinning the scanner backward on a pull r
     }
   });
 
-  it('refuses a 1.8.x, 1.9.x, 1.10.0, 1.11.0, 1.12.x, 1.13.0, 1.13.1, 1.13.2 or 1.13.3 pin on a pull request against the file as shipped', () => {
+  it('refuses a 1.8.x, 1.9.x, 1.10.0, 1.11.0, 1.12.x, 1.13.0, 1.13.1, 1.13.2, 1.13.3 or 1.13.4 pin on a pull request against the file as shipped', () => {
     // The unmodified action.yml, not the synthetic future above. The flag floor
-    // (1.7.0) and the tag scanner (1.13.4) are different numbers now, so 1.7.0,
+    // (1.7.0) and the tag scanner (1.13.5) are different numbers now, so 1.7.0,
     // 1.8.0, 1.9.0, 1.9.1, 1.9.2, 1.10.0, 1.11.0, 1.12.0, 1.12.1, 1.13.0, 1.13.1,
-    // 1.13.2 and 1.13.3 clear the first and must be stopped by the second. 1.13.3
-    // is the highest scanner below the tag scanner (the patch arm: same major and
+    // 1.13.2, 1.13.3 and 1.13.4 clear the first and must be stopped by the
+    // second. 1.13.4 is the highest scanner below the tag scanner (the patch arm: same major and
     // minor, one patch lower). Until this case the real gap between the two floors had no
     // test of its own.
     for (const old of [
@@ -407,6 +407,7 @@ describe('action.yml "Validate inputs", pinning the scanner backward on a pull r
       '1.13.1',
       '1.13.2',
       '1.13.3',
+      '1.13.4',
     ]) {
       const run = runValidateWith({ version: old }, { GITHUB_BASE_REF: 'main' });
       expect([old, run.status === 0]).toEqual([old, false]);
