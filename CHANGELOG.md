@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The CI gate pin and the vault-guard devDependency move to vault-guard 1.13.5. The conductor, dep-guard and intent-guard pins are unchanged.
+
 ## [1.13.5] - 2026-11-16
 
 A patch release with one security fix: a tracked file whose path starts with
