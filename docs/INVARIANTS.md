@@ -1544,10 +1544,12 @@ absolute path is spawned by the config check, `rev-parse`, the `cat-file`
 readers and `readVerifiedHeadTree`; a resolved git inside the repository or the
 current directory is refused, because on Windows a bare `git` is looked up in the
 child's working directory first. The current directory must be the top level git
-reports (`loadHeadOnlyTree`), and a repository inside another work tree that
-tracks files under its path is refused (`assertNotNested`, asked of git from the
-parent): an untracked `.git` planted in a subdirectory otherwise shadows the
-outer repository. `scannedRoot` carries the root judged. Other modes still spawn
+reports (`loadHeadOnlyTree`), and a repository with a `.git` entry (any type) in any ancestor directory is
+refused (`assertNotNested`: an `lstat` per ancestor, an error other than
+ENOENT/ENOTDIR refusing as well). No program is run for this, because git run in
+an outer directory would read that repository's config, which this mode has not
+vetted; an unrelated outer work tree is refused too. An untracked `.git` planted
+in a subdirectory otherwise shadows the outer repository. `scannedRoot` carries the root judged. Other modes still spawn
 a bare `git`; this is not changed here.
 
 A filter keyed on the repository's own path or surrounding text does not drop a
@@ -1598,8 +1600,11 @@ times`, `the same blob under a docs path and a source path is judged per path`,
 `%s and %s: the shared run reports each path as scanning it alone does`, `a
 blob under x.png and under .png: the key under the dotfile name is reported`,
 `a vendored directory, a minified file, a lockfile and a log holding keys: exit
-0, each listed`, `a planted .git in a subdirectory that the outer repository tracks: exit 2,
-nothing judged`, `from the root, a target naming that subdirectory still finds the
+0, each listed`, `a planted .git in a subdirectory of an outer repository: exit 2, nothing
+judged, no git run in the parent`, `an ancestor whose .git is a file (a worktree
+pointer) also refuses`, `a clean clone placed outside any repository is judged`,
+`an outer work tree that does not track the inner repository is refused too, by
+design`, `from the root, a target naming that subdirectory still finds the
 key`, `run from a subdirectory of the repository: exit 2, run it from the root`,
 `a symlinked working directory is the root once resolved, and the report names
 the real root`, `a git found on PATH inside the repository being assessed: exit

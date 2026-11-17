@@ -209,7 +209,7 @@ export function loadHeadOnlyTree(startDir: string): HeadOnlyTree {
     );
   }
   assertOwnObjectStore(repoRoot, gitBin);
-  assertNotNested(repoRoot, gitBin);
+  assertNotNested(repoRoot);
 
   const head = git(gitBin, repoRoot, ['rev-parse', '--verify', '--quiet', 'HEAD']);
   if (!head.ok || head.out.trim() === '') {
@@ -285,34 +285,32 @@ function gitInsideRepo(gitBin: string, dir: string): NoRepoControlsError {
 }
 
 /**
- * Refuse a repository whose directory is tracked by a git work tree around it.
- * An untracked `.git` planted in a subdirectory makes that subdirectory a
- * repository of its own, with a clean history, while the outer repository holds
- * the files an assessor means to judge; git run from the subdirectory reports
- * the planted one. Asked of git itself, from the parent directory, so no file
- * is read here. A repository that merely sits under an unrelated work tree
- * (one that does not track this path) is judged as usual.
+ * Refuse a repository that sits inside another git work tree. An untracked
+ * `.git` planted in a subdirectory makes that subdirectory a repository of its
+ * own, with a clean history, while the outer repository holds the files an
+ * assessor means to judge; git run from the subdirectory reports the planted
+ * one. No program is run to find out (git run in an outer directory would read
+ * that outer repository's config, which this mode has not vetted): each ancestor
+ * of the judged root is `lstat`-ed for a `.git` entry of any type. An unrelated
+ * outer work tree is refused too; assess a fresh clone placed outside any
+ * repository. An error other than "no such entry" is a refusal as well.
  */
-function assertNotNested(repoRoot: string, gitBin: string): void {
-  const parent = path.dirname(repoRoot);
-  if (parent === repoRoot) return;
-  const up = git(gitBin, parent, ['-c', 'core.fsmonitor=false', 'rev-parse', '--show-toplevel']);
-  const refusal = (what: string): NoRepoControlsError =>
-    new NoRepoControlsError(
-      `vault-guard: refusing to run: ${repoRoot} is inside another git work tree${what}, so which repository is ` +
-        `being assessed is ambiguous (a .git planted in a subdirectory shadows the repository around it). ${CLONE_FRESH} ` +
-        'Nothing was scanned.',
-    );
-  if (!up.ok) {
-    if (/dubious ownership/i.test(up.detail)) throw refusal(' that git will not examine (dubious ownership)');
-    return;
+function assertNotNested(repoRoot: string): void {
+  let dir = path.dirname(repoRoot);
+  for (;;) {
+    const st = lstatOrCode(path.join(dir, '.git'));
+    if (typeof st === 'string' ? st !== 'ENOENT' && st !== 'ENOTDIR' : true) {
+      throw new NoRepoControlsError(
+        `vault-guard: refusing to run: ${repoRoot} sits inside another git work tree (${dir} has a .git ` +
+          `${typeof st === 'string' ? `that cannot be examined (${st})` : 'entry'}), so which repository is being assessed ` +
+          `is ambiguous (a .git planted in a subdirectory shadows the repository around it). ${CLONE_FRESH} ` +
+          'Place it outside any repository. Nothing was scanned.',
+      );
+    }
+    const up = path.dirname(dir);
+    if (up === dir) return;
+    dir = up;
   }
-  const outer = realOrSelf(up.out.trim());
-  if (outer === '') return;
-  const rel = path.relative(outer, repoRoot).split(path.sep).join('/');
-  if (rel === '' || rel.startsWith('..')) return;
-  const tracked = git(gitBin, outer, ['-c', 'core.fsmonitor=false', 'ls-tree', '-r', '--name-only', '-z', 'HEAD', '--', rel]);
-  if (tracked.ok && tracked.out.length > 0) throw refusal(` (${outer}), which tracks files under it`);
 }
 
 /** The refusal for a git directory that is not the repository's own. */

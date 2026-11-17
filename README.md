@@ -274,10 +274,13 @@ Which repository, and how it is run:
 - Run it from the root of the repository being assessed, and name a
   subdirectory or file as the target. The current directory must be the top
   level git reports for it (after symlinks are resolved), or the run exits 2
-  naming both paths. It also exits 2 when the repository sits inside another
-  work tree that tracks files under it (an untracked `.git` planted in a
-  subdirectory of an outer repository would otherwise make that subdirectory
-  look like a clean repository of its own). The report names the repository
+  naming both paths. It also exits 2 when the repository sits inside any other
+  work tree: every ancestor directory is checked for a `.git` entry of any kind
+  (directory, file or link), without running a program, so an untracked `.git`
+  planted in a subdirectory of an outer repository cannot make that subdirectory
+  look like a clean repository of its own. An unrelated outer work tree is
+  refused too; that is the price of not running git there. Assess a fresh clone
+  placed outside any repository. The report names the repository
   root it judged: `Scanned repository root:` in text, `scannedRoot` in JSON and
   in the SARIF run properties, so a wrapper can check it.
 - git is found once on PATH (absolute, non-empty entries only; on Windows `.exe`

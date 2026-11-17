@@ -1270,7 +1270,10 @@ describe('--no-repo-controls: the working tree is never consulted', () => {
       const locatesRoot = method.startsWith('fs.realpathSync') && (abs === root || abs === path.resolve(dir));
       // Finding git: a stat or realpath of a file named git on a PATH entry.
       const findsGit = /(^|[\\/])git(\.exe|\.com)?$/.test(abs) && /stat|realpath|lstat/i.test(method);
-      return !inGit && !locatesRoot && !findsGit;
+      // The ancestor walk: an lstat of <ancestor>/.git for each directory above the root.
+      const ancestorGit =
+        method === 'fs.lstatSync' && path.basename(abs) === '.git' && !abs.startsWith(root + path.sep) && abs !== path.join(root, '.git');
+      return !inGit && !locatesRoot && !findsGit && !ancestorGit;
     });
     // The spy is live: the object-store lstat checks under .git were seen.
     expect(touched.some(([m, p]) => m === 'fs.lstatSync' && p.includes(`${path.sep}.git${path.sep}objects`))).toBe(true);
@@ -1428,13 +1431,38 @@ describe('--no-repo-controls: which repository is judged', () => {
     return { outer, sub };
   }
 
-  itPosix('a planted .git in a subdirectory that the outer repository tracks: exit 2, nothing judged', async () => {
-    const { sub } = plantedNested();
+  itPosix('a planted .git in a subdirectory of an outer repository: exit 2, nothing judged, no git run in the parent', async () => {
+    const { outer, sub } = plantedNested();
+    const log = path.join(tmpDir('vg-norc-nlog-'), 'git.log');
+    process.env.PATH = `${gitStub(path.dirname(log), log)}${path.delimiter}${process.env.PATH ?? ''}`;
     const r = await scanIn(sub);
     expect(r.code).toBe(2);
-    expect(r.err).toContain('inside another git work tree');
-    expect(r.err).toContain('which tracks files under it');
+    expect(r.err).toContain('sits inside another git work tree');
+    expect(r.err).toContain(fs.realpathSync.native(outer));
     expect(r.stdout).toBe('');
+    // No program ran against the outer repository: no git was started with it (or any ancestor) as cwd.
+    const outerReal = fs.realpathSync.native(outer);
+    expect(stubCalls(log).map(c => fs.realpathSync.native(c.cwd)).filter(c => c === outerReal)).toEqual([]);
+  });
+
+  itPosix('an ancestor whose .git is a file (a worktree pointer) also refuses', async () => {
+    const outer = tmpDir('vg-norc-fileoutr-');
+    fs.writeFileSync(path.join(outer, '.git'), 'gitdir: /nonexistent\n');
+    const inner = path.join(outer, 'checkout');
+    fs.mkdirSync(inner);
+    initClean(inner);
+    write(inner, 'k.txt', `aws = "${AWS_KEY}"\n`);
+    commitClean(inner, 'inner');
+    const r = await scanIn(inner);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('sits inside another git work tree');
+  });
+
+  itPosix('a clean clone placed outside any repository is judged', async () => {
+    const src = repoWithSecret();
+    const holder = tmpDir('vg-norc-clone-');
+    git(holder, ['clone', '-q', src, 'c']);
+    expect((await scanIn(path.join(holder, 'c'))).code).toBe(1);
   });
 
   itPosix('from the root, a target naming that subdirectory still finds the key', async () => {
@@ -1444,7 +1472,7 @@ describe('--no-repo-controls: which repository is judged', () => {
     expect(files(parse(r.stdout) as Doc)).toEqual(['sub/app.js|aws-access']);
   });
 
-  itPosix('a repository under an unrelated work tree that does not track it is judged as usual', async () => {
+  itPosix('an outer work tree that does not track the inner repository is refused too, by design', async () => {
     const outer = tmpDir('vg-norc-unrel-');
     initClean(outer);
     write(outer, 'other.txt', 'x\n');
@@ -1454,7 +1482,9 @@ describe('--no-repo-controls: which repository is judged', () => {
     initClean(inner);
     write(inner, 'k.txt', `aws = "${AWS_KEY}"\n`);
     commitClean(inner, 'inner');
-    expect((await scanIn(inner)).code).toBe(1);
+    const r = await scanIn(inner);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('sits inside another git work tree');
   });
 
   itPosix('run from a subdirectory of the repository: exit 2, run it from the root', async () => {
