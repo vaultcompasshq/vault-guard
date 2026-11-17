@@ -64,7 +64,9 @@ export function buildCli(): Command {
   program
     .command('scan')
     .description('Scan files for secrets')
-    .argument('[path]', 'Path to scan', '.')
+    // One path. Declared variadic only so that a second one can be refused: commander
+    // otherwise drops it silently, and `scan docs tests` would scan `docs` alone.
+    .argument('[path...]', 'Path to scan (one)', ['.'])
     .option('-f, --format <format>', 'Output format: text | json | sarif', 'text')
     .option('--staged', 'Scan git staged files only (uses index vs HEAD)', false)
     .option(
@@ -82,7 +84,7 @@ export function buildCli(): Command {
     )
     .action(
       async (
-        path: string,
+        paths: string[],
         options: {
           format: string;
           staged?: boolean;
@@ -92,6 +94,14 @@ export function buildCli(): Command {
           repoControls?: boolean;
         },
       ) => {
+        if (paths.length > 1) {
+          console.error(
+            `error: scan takes one path, got ${paths.length} (${paths.join(' ')}). Run it once per path. Nothing was scanned.`,
+          );
+          setExitCode(2);
+          return;
+        }
+        const path = paths[0] ?? '.';
         const format = options.format as OutputFormat;
         if (!(SCAN_FORMATS as readonly string[]).includes(format)) {
           console.error(

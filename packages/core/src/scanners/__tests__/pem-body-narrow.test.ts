@@ -61,3 +61,25 @@ describe('a header without a body still declines', () => {
   });
   it('too short to be a key', () => expect(declines(`${HEADER}\nAbCdEfGh12345678\nAbCd\n`)).toBe(true));
 });
+
+describe('connection strings: the host and the password decline for different reasons', () => {
+  const scanner = new SecretScanner({});
+  const url = 'postgres://app_prod:Qz8vN2kLp4Rt7wXy@db/main';
+
+  it('elsewhere a bare host declines, counted as a placeholder skip', () => {
+    const ph = { count: 0, lines: [] as number[] };
+    expect(scanner.scanContent(`${url}\n`, { placeholderSkips: ph })).toHaveLength(0);
+    expect(ph.count).toBe(1);
+  });
+
+  it('with inlineDirectives mark the host decline is kept and named', () => {
+    const m = scanner.scanContent(`${url}\n`, { inlineDirectives: 'mark' });
+    expect(m.map(x => x.contextFilterNotHonoured)).toEqual(['local-host']);
+  });
+
+  it('a placeholder password still declines under mark, counted', () => {
+    const ph = { count: 0, lines: [] as number[] };
+    expect(scanner.scanContent('postgres://u:changeme@db.example.com/main\n', { inlineDirectives: 'mark', placeholderSkips: ph })).toHaveLength(0);
+    expect(ph.count).toBe(1);
+  });
+});

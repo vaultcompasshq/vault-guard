@@ -1268,8 +1268,8 @@ describe('--no-repo-controls: the working tree is never consulted', () => {
       const abs = path.resolve(p);
       const inGit = abs === path.join(root, '.git') || abs.startsWith(path.join(root, '.git') + path.sep);
       const locatesRoot = method.startsWith('fs.realpathSync') && (abs === root || abs === path.resolve(dir));
-      // Finding git: a stat or realpath of a file named git on a PATH entry.
-      const findsGit = /(^|[\\/])git(\.exe|\.com)?$/.test(abs) && /stat|realpath|lstat/i.test(method);
+      // Finding git: a stat, realpath or execute-bit check of a file named git on a PATH entry.
+      const findsGit = /(^|[\\/])git(\.exe|\.com)?$/.test(abs) && /stat|realpath|lstat|access/i.test(method);
       // The ancestor walk: an lstat of <ancestor>/.git for each directory above the root.
       const ancestorGit =
         method === 'fs.lstatSync' && path.basename(abs) === '.git' && !abs.startsWith(root + path.sep) && abs !== path.join(root, '.git');
@@ -1605,7 +1605,7 @@ describe('--no-repo-controls: path rules that lower a severity are visible', () 
   itPosix('the below-gate verdict counts the lowered findings, qualifies the pass and advises only --fail-on', async () => {
     const dir = websiteRepo();
     const text = await scanIn(dir, { format: 'text' });
-    expect(text.log).toContain('1 finding(s) below the gate "medium", 1 of them lowered by path rules');
+    expect(text.log).toContain('1 finding(s) below the gate "medium", 1 of them lowered by path or content rules');
     expect(text.log).toContain('1 path was not scanned');
     expect(text.log).toContain('--fail-on low makes every finding block');
     expect(text.log).not.toContain('fail_on');
@@ -1626,5 +1626,57 @@ describe('--no-repo-controls: smaller disclosures', () => {
   it('resolveScanRoot decides file or directory from the tree, never by stat', () => {
     expect(resolveScanRoot(['../lib/x.js'], '/r/sub', () => true)).toBe('/r/lib');
     expect(resolveScanRoot(['../lib/x.js'], '/r/sub', () => false)).toBe('/r/lib/x.js');
+  });
+});
+
+describe('--no-repo-controls: filters that read the text after or around a match', () => {
+  const PEMHDR = '-----BEGIN RSA PRIVATE KEY-----';
+  const kinds = (stdout: string, file: string): Array<string | undefined> =>
+    ((parse(stdout) as unknown as { results: Array<{ file: string; matches: Array<{ context_filter_not_honoured?: string }> }> }).results
+      .find(r => r.file === file)?.matches ?? []).map(m => m.context_filter_not_honoured);
+
+  itPosix('a key refolded at 32 columns is reported, unmarked', async () => {
+    const body = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.repeat(8);
+    const lines = body.match(/.{1,32}/g) ?? [];
+    const dir = rawRepo(({ blob, tree }) =>
+      tree([['40000', 'config', tree([['100644', 'deploy.pem', blob(`${PEMHDR}\n${lines.join('\n')}\n-----END RSA PRIVATE KEY-----\n`)]])]]),
+    );
+    const r = await scanIn(dir);
+    expect(r.code).toBe(1);
+    expect(kinds(r.stdout, 'config/deploy.pem')).toEqual([undefined]);
+  });
+
+  itPosix('a header the following text makes a label is kept and marked pem-no-body', async () => {
+    const dir = rawRepo(({ blob, tree }) => tree([['100644', 'a.txt', blob(`${PEMHDR}\nPaste your key above this line.\n`)]]));
+    const r = await scanIn(dir);
+    expect(r.code).toBe(1);
+    expect(kinds(r.stdout, 'a.txt')).toEqual(['pem-no-body']);
+  });
+
+  itPosix('a connection string with a bare host is kept and marked local-host; a placeholder password stays a counted decline', async () => {
+    const dir = rawRepo(({ blob, tree }) =>
+      tree([
+        ['100644', 'real.env', blob('DATABASE_URL=postgres://app_prod:Qz8vN2kLp4Rt7wXy@db/main\n')],
+        ['100644', 'placeholder.env', blob('DATABASE_URL=postgres://app_prod:changeme@db/main\n')],
+      ]),
+    );
+    const r = await scanIn(dir);
+    expect(r.code).toBe(1);
+    expect(kinds(r.stdout, 'real.env')).toEqual(['local-host']);
+    expect(kinds(r.stdout, 'placeholder.env')).toEqual([]);
+    const run = (parse(r.stdout) as unknown as { run: { placeholder_skips?: number } }).run;
+    expect(JSON.stringify(run)).toContain('"placeholder_skips"');
+  });
+});
+
+describe('scan takes one path', () => {
+  itPosix.each([true, false])('a second path is refused with exit 2 (--no-repo-controls: %s)', noRepoControls => {
+    const dir = rawRepo(({ blob, tree }) => tree([['100644', 'a.txt', blob('x\n')]]));
+    const r = runCli(['scan', 'docs', 'tests', ...(noRepoControls ? ['--no-repo-controls'] : [])], dir, {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: '/dev/null',
+    });
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('scan takes one path, got 2');
   });
 });

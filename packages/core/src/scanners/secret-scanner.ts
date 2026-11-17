@@ -12,7 +12,7 @@ import {
 } from '../utils/data-shape';
 import { VaultGuardConfig } from '../config';
 import { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from '../utils/entropy';
-import { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, isShortDockerPatExample } from '../utils/placeholder';
+import { isPlaceholderSecret, connectionStringDeclines, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, isShortDockerPatExample } from '../utils/placeholder';
 import { applyPathAwareSeverity } from '../utils/path-severity';
 import { contextPathFor, isPythonPath } from '../utils/path-parts';
 import { decodeTextBuffer } from '../utils/text-decode';
@@ -694,9 +694,14 @@ export class SecretScanner {
         // Suppress local/dev/example/placeholder connection strings -- the
         // dominant FP source on real repos (docker-compose, `.env.example`,
         // test fixtures all carry `postgres://user:pass@localhost/db`).
-        if (connectionString === true && isNonSecretConnectionString(fullMatch)) {
-          this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index);
-          continue;
+        if (connectionString === true) {
+          const declined = connectionStringDeclines(fullMatch);
+          if (declined.password || (declined.host && !keepFiltered)) {
+            this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index);
+            continue;
+          }
+          // The host is text the repository chose: kept, and named on the match.
+          if (declined.host) ctxFilter = 'local-host';
         }
 
         // Suppress the ubiquitous jwt.io sample token (John Doe / sub 1234567890)
@@ -717,7 +722,9 @@ export class SecretScanner {
           type === 'ssh-private-key' &&
           isPemHeaderWithoutBody(content, match.index + fullMatch.length)
         ) {
-          continue;
+          // Decided by the text that follows the header, which the repository chose.
+          if (!keepFiltered) continue;
+          ctxFilter ??= 'pem-no-body';
         }
 
         // Suppress unquoted assignments whose "value" is actually a function

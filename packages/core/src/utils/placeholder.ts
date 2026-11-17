@@ -476,29 +476,43 @@ export function isSampleJwt(token: string): boolean {
 }
 
 export function isNonSecretConnectionString(url: string): boolean {
+  const d = connectionStringDeclines(url);
+  return d.host || d.password;
+}
+
+/**
+ * Why {@link isNonSecretConnectionString} declines a connection string, kept
+ * apart: the HOST is text the repository chose (`db`, `localhost`, `x.local`),
+ * while a placeholder PASSWORD is the credential itself.
+ */
+export function connectionStringDeclines(url: string): { host: boolean; password: boolean } {
   const m = /^[a-z][a-z0-9+.-]*:\/\/([^:@/\s]+):([^@/\s]+)@([^:/?\s]+)/i.exec(url);
-  if (!m) return false;
+  if (!m) return { host: false, password: false };
 
   const user = m[1];
   const pass = m[2];
   const host = m[3].toLowerCase();
 
   // 1. Non-routable / local / docker-service / reserved-TLD host.
-  if (LOCAL_HOSTS.has(host)) return true;
-  if (LOCAL_TLD_SUFFIXES.some(suffix => host.endsWith(suffix))) return true;
-  // Bare single-token host with no dot (and not a raw IPv4) is a docker-compose
-  // service name (`mysql`, `db`, `postgres`) -- local to a compose network.
-  if (!host.includes('.') && !host.includes(':') && !/^\d+$/.test(host)) return true;
+  const hostDeclines =
+    LOCAL_HOSTS.has(host) ||
+    LOCAL_TLD_SUFFIXES.some(suffix => host.endsWith(suffix)) ||
+    // Bare single-token host with no dot (and not a raw IPv4) is a docker-compose
+    // service name (`mysql`, `db`, `postgres`) -- local to a compose network.
+    (!host.includes('.') && !host.includes(':') && !/^\d+$/.test(host));
 
   // 2. Placeholder / default password.
   const p = pass.toLowerCase();
-  if (PLACEHOLDER_PASSWORDS.has(p)) return true;
-  if (user.toLowerCase() === p) return true;            // root:root, prisma:prisma
-  if (/^[A-Z][A-Z0-9_]*$/.test(pass)) return true;      // USER:PASSWORD, DBPASS
-  if (pass.startsWith('$') || pass.startsWith('<') || pass.startsWith('{')) return true; // ${DB_PASS}, <pw>
-  if (isPlaceholderSecret(pass, { aggressive: true })) return true;
+  const passwordDeclines =
+    PLACEHOLDER_PASSWORDS.has(p) ||
+    user.toLowerCase() === p || // root:root, prisma:prisma
+    /^[A-Z][A-Z0-9_]*$/.test(pass) || // USER:PASSWORD, DBPASS
+    pass.startsWith('$') ||
+    pass.startsWith('<') ||
+    pass.startsWith('{') || // ${DB_PASS}, <pw>
+    isPlaceholderSecret(pass, { aggressive: true });
 
-  return false;
+  return { host: hostDeclines, password: passwordDeclines };
 }
 
 /**

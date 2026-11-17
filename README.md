@@ -288,12 +288,16 @@ Which repository, and how it is run:
   the repository or the current directory is refused. Do not invoke vault-guard
   through `npx` or `pnpm exec` from inside the untrusted checkout: that runs the
   checkout's own package and puts its `node_modules/.bin` on PATH. Install it
-  elsewhere and run it by absolute path or from PATH.
+  elsewhere and run it by absolute path or from PATH. The `git` on PATH must be
+  a real binary, not a version-manager shim that reads files from the current
+  directory. `scan` takes one path; a second one is refused with exit 2 in every
+  mode, not silently dropped.
 - Filters keyed on what the repository chooses do not drop a finding here. A
   documentation path (`docs`, `website`, any `.md`) with an `appid` or `algolia`
-  comment, a Python triple-quoted string, a following `(` and a bare identifier
-  value would each drop a generic-rule match elsewhere; here the finding is
-  kept and marked (`context_filter_not_honoured` in JSON and SARIF, a marker and
+  comment, a Python triple-quoted string, a following `(`, a bare identifier
+  value, a private-key header whose following text reads as a label, and a
+  connection string whose host is `db`, `localhost` or `*.local` would each drop
+  a match elsewhere; here the finding is kept and marked (`context_filter_not_honoured` in JSON and SARIF, a marker and
   a count line in text).
 - Path rules (test, docs, locale and website directories, and a Rust test
   block) still lower a severity, as a noise control, but never silently: the

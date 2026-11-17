@@ -66,7 +66,13 @@ export interface SecretMatch {
 }
 
 /** Which repository-chosen filter a kept match would have been dropped by. See {@link SecretMatch.contextFilterNotHonoured}. */
-export type ContextFilterKind = 'doc-context' | 'python-triple-quoted' | 'call-follows' | 'identifier-reference';
+export type ContextFilterKind =
+  | 'doc-context'
+  | 'python-triple-quoted'
+  | 'call-follows'
+  | 'identifier-reference'
+  | 'pem-no-body'
+  | 'local-host';
 
 /** Why a match was demoted. See {@link SecretMatch.demotion}. */
 export type DemotionReason = 'data-uri-binary-payload' | 'base64-binary-run';

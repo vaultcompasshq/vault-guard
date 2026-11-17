@@ -22,6 +22,8 @@ export interface GitResolveEnv {
   env: NodeJS.ProcessEnv;
   platform: NodeJS.Platform;
   isFile: (p: string) => boolean;
+  /** POSIX only: whether the file may be executed. A shell skips a `git` that may not. Absent means yes. */
+  isExecutable?: (p: string) => boolean;
 }
 
 export class GitBinaryError extends Error {
@@ -41,7 +43,20 @@ const realWorld = (): GitResolveEnv => ({
       return false;
     }
   },
+  isExecutable: p => {
+    try {
+      fs.accessSync(p, fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  },
 });
+
+/** A Windows PATH entry that names one place: a drive letter or a UNC prefix. `\\Tools\\Git` is rooted but drive-relative. */
+function isFullyQualifiedWin(dir: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(dir) || /^[\\/]{2}[^\\/]/.test(dir);
+}
 
 /** The absolute path of the first `git` on PATH, or throws {@link GitBinaryError}. */
 export function resolveGitBinary(world: GitResolveEnv = realWorld()): string {
@@ -60,9 +75,12 @@ export function resolveGitBinary(world: GitResolveEnv = realWorld()): string {
   for (const entry of raw.split(win ? ';' : ':')) {
     const dir = entry.trim().replace(/^"(.*)"$/, '$1');
     if (dir === '' || !impl.isAbsolute(dir)) continue;
+    if (win && !isFullyQualifiedWin(dir)) continue;
     for (const ext of names) {
       const candidate = impl.join(dir, `git${ext}`);
-      if (world.isFile(candidate)) return candidate;
+      if (!world.isFile(candidate)) continue;
+      if (!win && world.isExecutable && !world.isExecutable(candidate)) continue;
+      return candidate;
     }
   }
   throw new GitBinaryError(

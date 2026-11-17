@@ -1362,7 +1362,10 @@ export async function scanCommand(
       if (headOnlyReport) {
         // This mode reads no config, so the only way to tighten is the flag; and
         // it says how many findings the path rules lowered and what was not scanned.
-        const lowered = results.reduce((n, r) => n + r.matches.filter(m => m.severityBeforePathRules !== undefined).length, 0);
+        const lowered = results.reduce(
+          (n, r) => n + r.matches.filter(m => m.severityBeforePathRules !== undefined || m.demotion !== undefined).length,
+          0,
+        );
         const notScannedNow =
           headOnlyReport.notScanned.submodules.length +
           headOnlyReport.notScanned.builtInSkips.length +
@@ -1370,7 +1373,7 @@ export async function scanCommand(
         console.log(
           chalk.white(
             `${totalMatches} finding(s) below the gate "${failOn}"` +
-              (lowered > 0 ? `, ${lowered} of them lowered by path rules (severity_before_path_rules in the report)` : '') +
+              (lowered > 0 ? `, ${lowered} of them lowered by path or content rules (severity_before_path_rules or demotion in the report)` : '') +
               ' -- not failing the gate.' +
               (notScannedNow > 0 ? ` ${notScannedPhrase(headOnlyReport, notScannedNow)}.` : ''),
           ),

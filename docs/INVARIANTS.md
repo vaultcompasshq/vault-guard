@@ -1555,13 +1555,19 @@ a bare `git`; this is not changed here.
 A filter keyed on the repository's own path or surrounding text does not drop a
 finding in this mode. The scanner (`inlineDirectives: 'mark'`) keeps a match the
 documentation-context rule (`doc-context`), the Python triple-quote rule
-(`python-triple-quoted`), the following-`(` rule (`call-follows`) or the
-bare-identifier rule (`identifier-reference`) would drop, and sets
-`contextFilterNotHonoured`. Filters that key on the value alone (an alphabet
-run, a redacted template, a password hash, the public sample JWT, an
-environment-variable name token, a short Docker token example, entropy) and the
-PEM-header-without-body rule are unchanged; placeholder declines and
-connection-string declines are counted. A severity lowered by a path rule or an
+(`python-triple-quoted`), the following-`(` rule (`call-follows`), the
+bare-identifier rule (`identifier-reference`), the PEM-header-without-body rule
+(`pem-no-body`) or a connection-string host decline (`local-host`: `db`,
+`localhost`, `*.local`, `*.test`) would drop, and sets `contextFilterNotHonoured`.
+The inputs each filter reads, checked one by one: the alphabet-run, entropy,
+placeholder (`isPlaceholderSecret`, counted), redacted-template, env-var-name,
+short-Docker-token, password-hash, sample-JWT and identifier-shape filters take
+the captured value (or the whole match for the JWT) and nothing else; their
+rule choice (the key name) comes from which pattern matched. The connection
+string's placeholder PASSWORD is the credential itself and stays a counted
+decline; its HOST is repository-chosen text and is kept. The PEM rule reads the
+text after the header (a body is a single base64 token of 40 or more characters,
+or a run of single-token base64 lines of one width, at any fold width). A severity lowered by a path rule or an
 in-file test block records `severityBeforePathRules`, and the text and the
 below-gate verdict count them.
 
