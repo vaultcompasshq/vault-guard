@@ -552,17 +552,41 @@ export function connectionStringDeclines(url: string): { host: boolean; password
     (!host.includes('.') && !host.includes(':') && !/^\d+$/.test(host));
 
   // 2. Placeholder / default password.
+  return { host: hostDeclines, password: passwordLooksPlaceholder(user, pass) };
+}
+
+/** Whether a connection string's password is a placeholder or a default (`root:root`, `USER:PASSWORD`, `${DB_PASS}`). */
+export function passwordLooksPlaceholder(user: string, pass: string): boolean {
   const p = pass.toLowerCase();
-  const passwordDeclines =
+  return (
     PLACEHOLDER_PASSWORDS.has(p) ||
     user.toLowerCase() === p || // root:root, prisma:prisma
     /^[A-Z][A-Z0-9_]*$/.test(pass) || // USER:PASSWORD, DBPASS
     pass.startsWith('$') ||
     pass.startsWith('<') ||
     pass.startsWith('{') || // ${DB_PASS}, <pw>
-    isPlaceholderSecret(pass, { aggressive: true });
+    isPlaceholderSecret(pass, { aggressive: true })
+  );
+}
 
-  return { host: hostDeclines, password: passwordDeclines };
+/**
+ * Every plausible password of a URL with credentials. The rules' own classes
+ * let a password hold `/`, `:` (not `://`), `'`, and a literal `@` shifts the
+ * host (the host class admits `@`), so which `@` ends the password is
+ * ambiguous: each of the first few `@` after `scheme://user:` gives a
+ * candidate. The user may be empty. Undefined when there is no `@` to split on.
+ * A caller that wants to drop a value as a placeholder must see every candidate
+ * drop; one that survives keeps the finding.
+ */
+export function urlPasswordCandidates(url: string): { user: string; passwords: string[] } | undefined {
+  const m = /^[a-z][a-z0-9+.-]*:\/\/([^:@\s/"'`]*):([^\s]*)$/i.exec(url);
+  if (!m) return undefined;
+  const rest = m[2];
+  const passwords: string[] = [];
+  for (let i = rest.indexOf('@'); i >= 0 && passwords.length < 8; i = rest.indexOf('@', i + 1)) {
+    if (i > 0) passwords.push(rest.slice(0, i));
+  }
+  return passwords.length > 0 ? { user: m[1], passwords } : undefined;
 }
 
 /**

@@ -12,7 +12,7 @@ import {
 } from '../utils/data-shape';
 import { VaultGuardConfig } from '../config';
 import { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from '../utils/entropy';
-import { isPlaceholderSecret, connectionStringDeclines, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, isShortDockerPatExample } from '../utils/placeholder';
+import { isPlaceholderSecret, connectionStringDeclines, passwordLooksPlaceholder, urlPasswordCandidates, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, isShortDockerPatExample } from '../utils/placeholder';
 import { applyPathAwareSeverity } from '../utils/path-severity';
 import { contextPathFor, isPythonPath } from '../utils/path-parts';
 import { decodeTextBuffer } from '../utils/text-decode';
@@ -358,14 +358,13 @@ export interface PlaceholderSkipHits {
 }
 
 /**
- * The part of a whole-match value that is the secret, for the rules whose
- * match carries free text beside it (connection strings, Azure storage). Any
- * other rule: undefined, its value is the capture group or the whole match.
+ * The Azure storage key of a connection string, as the one element of the
+ * result; undefined when it is not there exactly once (the account name is
+ * free text and may itself spell `AccountKey=`), so the caller keeps the match.
  */
-function secretPartOf(type: string, fullMatch: string): string | undefined {
-  if (type === 'azure-storage') return /AccountKey=([A-Za-z0-9+/=]+)/.exec(fullMatch)?.[1];
-  if (/-url$/.test(type)) return /^[a-z][a-z0-9+.-]*:\/\/[^:@/\s]+:([^@/\s]+)@/i.exec(fullMatch)?.[1];
-  return undefined;
+function azureAccountKey(fullMatch: string): string[] | undefined {
+  const keys = [...fullMatch.matchAll(/AccountKey=([A-Za-z0-9+/=]+)/g)].map(m => m[1]);
+  return keys.length === 1 ? keys : undefined;
 }
 
 export interface IgnoreDirectiveHits {
@@ -658,7 +657,20 @@ export class SecretScanner {
         // Where the repository's text is not trusted, the value filters judge the
         // secret part alone, so a marker in the host or database name cannot
         // clear a real password.
-        const judged = keepFiltered ? (secretPartOf(type, fullMatch) ?? rawValue) : rawValue;
+        const wholeMatchRule = keepFiltered && (connectionString === true || type === 'azure-storage');
+        const urlParts = wholeMatchRule && connectionString === true ? urlPasswordCandidates(fullMatch) : undefined;
+        // The secret parts to judge, every plausible one. When none can be isolated
+        // the match is kept whole: no value filter may drop what it could not read.
+        const secretParts: string[] | undefined = !wholeMatchRule
+          ? [rawValue]
+          : connectionString === true
+            ? urlParts?.passwords
+            : azureAccountKey(fullMatch);
+        const failClosed = wholeMatchRule && secretParts === undefined;
+        const judgedAll = secretParts ?? [rawValue];
+        // A filter drops the match only if it would drop every plausible secret part.
+        const allDrop = (pred: (v: string) => boolean): boolean => !failClosed && judgedAll.every(pred);
+        if (failClosed) ctxFilter = 'url-context';
 
         // Ahead of the entropy gate on purpose. Shannon entropy ignores
         // character order, so a hand-typed alphabet run scores near the maximum
@@ -670,30 +682,30 @@ export class SecretScanner {
         // That safety argument does not hold for rules whose value a person
         // types, where a run is a weak password rather than a fake one, so
         // those rules are exempt. See HUMAN_CHOSEN_VALUE_IDS.
-        if (!HUMAN_CHOSEN_VALUE_IDS.has(type) && isSequentialRunPlaceholder(judged)) {
+        if (!HUMAN_CHOSEN_VALUE_IDS.has(type) && allDrop(isSequentialRunPlaceholder)) {
           continue;
         }
 
         const threshold = minEntropy ?? (minEntropy === 0 ? 0 : undefined);
-        if (threshold !== undefined && shannonEntropy(judged) < threshold) {
+        if (threshold !== undefined && allDrop(v => shannonEntropy(v) < threshold)) {
           continue;
         }
 
         // Suppress documentation samples / test fixtures (e.g. AWS's
         // `AKIAIOSFODNN7EXAMPLE`, `password: 'testPass1234'`). The aggressive
         // tier only applies to the low-precision generic patterns.
-        if (isPlaceholderSecret(judged, { aggressive: aggressivePlaceholder === true })) {
+        if (allDrop(v => isPlaceholderSecret(v, { aggressive: aggressivePlaceholder === true }))) {
           this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index, type);
           continue;
         }
 
-        if (isRedactedTemplateValue(judged)) {
+        if (allDrop(isRedactedTemplateValue)) {
           continue;
         }
 
-        // The secret part is clean; the marker sits elsewhere in the text.
+        // The secret parts are clean; the marker sits elsewhere in the text.
         if (
-          judged !== rawValue &&
+          wholeMatchRule &&
           (isPlaceholderSecret(rawValue, { aggressive: aggressivePlaceholder === true }) || isRedactedTemplateValue(rawValue))
         ) {
           ctxFilter = 'url-context';
@@ -727,7 +739,11 @@ export class SecretScanner {
         // test fixtures all carry `postgres://user:pass@localhost/db`).
         if (connectionString === true) {
           const declined = connectionStringDeclines(fullMatch);
-          if (declined.password || (declined.host && !keepFiltered)) {
+          // In the mode the password declines only if every plausible password does.
+          const passwordDeclined = keepFiltered
+            ? urlParts !== undefined && urlParts.passwords.every(p => passwordLooksPlaceholder(urlParts.user, p))
+            : declined.password;
+          if (passwordDeclined || (declined.host && !keepFiltered)) {
             this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index, type);
             continue;
           }

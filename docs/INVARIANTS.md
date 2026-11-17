@@ -1569,7 +1569,12 @@ decline; its HOST is repository-chosen text and is kept. The rules with no captu
 take the whole match as their value, so in this mode the value filters
 (placeholder, redacted template, sequential run, entropy) judge the secret part
 alone: the password of `postgresql-url`, `mysql-url`, `mongodb-url` and
-`redis-url`, and the `AccountKey` of `azure-storage`. A marker in the user, host,
+`redis-url`, and the `AccountKey` of `azure-storage`. Which `@` ends a password is ambiguous (the rules let a password hold `/`, `'`
+and, because the host class admits `@`, a literal `@`), so every plausible split
+is judged and a value filter drops the match only if it would drop every one of
+them; a match whose secret part cannot be isolated (a URL with no `@` to split
+on, an Azure string whose `AccountKey=` is not there exactly once) is kept whole,
+marked `url-context`, and no value filter may drop it. A marker in the user, host,
 database, query or fragment (or the account name) cannot clear it: the finding is
 kept and marked `url-context`. The six rules with no capture group and free text
 in the match are those five and `gcp-service-account` (a fixed string, no value

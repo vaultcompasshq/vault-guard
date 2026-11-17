@@ -107,3 +107,48 @@ describe('the value filters judge the secret part of a whole-match rule in mark 
     expect(ph).toMatchObject({ count: 1, lines: [1], rules: ['postgresql-url'] });
   });
 });
+
+describe('mark mode: every plausible split of a URL is judged, and what cannot be read is kept', () => {
+  const scanner = new SecretScanner({});
+  const kinds = (text: string): Array<string | undefined> =>
+    scanner.scanContent(`${text}\n`, { inlineDirectives: 'mark' }).map(m => m.contextFilterNotHonoured);
+
+  it.each([
+    ['a password with a slash, marker in the query', 'postgres://app:Vq7h/R2mX9kLp4TzB@prod-db.acme.io:5432/main?application_name=example-worker'],
+    ['a password with a slash, marker in the host', 'redis://u:Vq7h/R2mX9kLp4TzB@example-cache.acme.io:6379'],
+    ['a password with a literal @, marker in the database', 'postgres://app:Vq7h@R2mX9kLp4TzB@prod-db.acme.io:5432/dummy_data'],
+    ['a password with a quote', "postgres://app:Vq7h'R2mX9kLp4TzB@prod-db.acme.io:5432/dummy_data"],
+    ['a percent-encoded @', 'postgres://app:Vq7h%40R2mX9kLp4TzB@prod-db.acme.io:5432/dummy_data'],
+    ['a plain password, marker in the user', 'mongodb://dummy_svc:Vq7hR2mX9kLp4TzB@cluster0.ab1cd.mongodb.net/db'],
+  ])('%s: kept, named url-context', (_name, url) => {
+    expect(kinds(url)).toContain('url-context');
+  });
+
+  it('a first segment that alone looks like a placeholder does not drop the URL: the other split is a real password', () => {
+    const url = 'postgres://app:ABCDEFGH@Xk29PqLmN4vRt7zW@prod-db.acme.io:5432/main';
+    expect(scanner.scanContent(`${url}\n`, { inlineDirectives: 'mark' })).toHaveLength(1);
+  });
+
+  it('a placeholder password with a slash is still declined', () => {
+    expect(kinds('postgres://app:change/me@prod-db.acme.io:5432/main')).toEqual([]);
+  });
+
+  it('azure: AccountKey spelled twice cannot be isolated, so the match is kept', () => {
+    const key = 'Vq7hR2mX9kLp4TzB'.repeat(5);
+    expect(kinds(`DefaultEndpointsProtocol=https;AccountName=AccountKey=example;AccountKey=${key}==`)).toEqual(['url-context']);
+  });
+
+  it('fail closed: a match whose secret part cannot be read is kept whole, even with a marker in it', () => {
+    const patterns = (scanner as unknown as { patterns: Map<string, { regex: RegExp }> }).patterns;
+    const entry = patterns.get('redis-url') as { regex: RegExp };
+    const original = entry.regex;
+    entry.regex = /redis:\/\/[^\s]+/g; // a contrived rule: matches a URL with no userinfo, nothing to extract
+    try {
+      const text = 'redis://example-cache.acme.io:6379\n';
+      expect(scanner.scanContent(text, { inlineDirectives: 'mark' }).map(m => m.contextFilterNotHonoured)).toEqual(['url-context']);
+      expect(scanner.scanContent(text, {})).toHaveLength(0); // elsewhere the marker still declines it
+    } finally {
+      entry.regex = original;
+    }
+  });
+});
