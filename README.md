@@ -269,6 +269,35 @@ hashed without being scanned: if it verifies, it is reported as over the limit
 (`too_large`, exit 2, not scanned); only a hash mismatch says the object store
 does not hold what its ids claim.
 
+Which repository, and how it is run:
+
+- Run it from the root of the repository being assessed, and name a
+  subdirectory or file as the target. The current directory must be the top
+  level git reports for it (after symlinks are resolved), or the run exits 2
+  naming both paths. It also exits 2 when the repository sits inside another
+  work tree that tracks files under it (an untracked `.git` planted in a
+  subdirectory of an outer repository would otherwise make that subdirectory
+  look like a clean repository of its own). The report names the repository
+  root it judged: `Scanned repository root:` in text, `scannedRoot` in JSON and
+  in the SARIF run properties, so a wrapper can check it.
+- git is found once on PATH (absolute, non-empty entries only; on Windows `.exe`
+  and `.com`) and run by that absolute path everywhere in the run. A git inside
+  the repository or the current directory is refused. Do not invoke vault-guard
+  through `npx` or `pnpm exec` from inside the untrusted checkout: that runs the
+  checkout's own package and puts its `node_modules/.bin` on PATH. Install it
+  elsewhere and run it by absolute path or from PATH.
+- Filters keyed on what the repository chooses do not drop a finding here. A
+  documentation path (`docs`, `website`, any `.md`) with an `appid` or `algolia`
+  comment, a Python triple-quoted string, a following `(` and a bare identifier
+  value would each drop a generic-rule match elsewhere; here the finding is
+  kept and marked (`context_filter_not_honoured` in JSON and SARIF, a marker and
+  a count line in text).
+- Path rules (test, docs, locale and website directories, and a Rust test
+  block) still lower a severity, as a noise control, but never silently: the
+  finding carries `severity_before_path_rules`, the text marks it, and the
+  below-gate verdict says how many findings were lowered. `--fail-on low` makes
+  every finding block.
+
 ### What fails the build
 
 Findings at or above the **`--fail-on` threshold** produce exit code 1, and

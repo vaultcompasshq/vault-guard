@@ -71,10 +71,11 @@ function readVerified(
   cwd: string,
   oids: string[],
   alg: 'sha1' | 'sha256',
+  git: string,
 ): Map<string, { type: string; bytes: Buffer }> {
   const out = new Map<string, { type: string; bytes: Buffer }>();
   if (oids.length === 0) return out;
-  const r = spawnSync('git', ['-c', 'core.quotePath=false', 'cat-file', '--batch'], {
+  const r = spawnSync(git, ['-c', 'core.quotePath=false', 'cat-file', '--batch'], {
     cwd,
     env: fileSetGitEnv(),
     input: oids.map(o => `${o}\n`).join(''),
@@ -173,10 +174,10 @@ export function parseTree(bytes: Buffer, rawLen: number, treeId: string, budget:
 }
 
 /** `cat-file --batch-check` types for `oids`; an id git does not have is absent from the map. */
-function objectTypes(cwd: string, oids: string[]): Map<string, string> {
+function objectTypes(cwd: string, oids: string[], git: string): Map<string, string> {
   const out = new Map<string, string>();
   if (oids.length === 0) return out;
-  const r = spawnSync('git', ['-c', 'core.quotePath=false', 'cat-file', '--batch-check'], {
+  const r = spawnSync(git, ['-c', 'core.quotePath=false', 'cat-file', '--batch-check'], {
     cwd,
     env: fileSetGitEnv(),
     input: oids.map(o => `${o}\n`).join(''),
@@ -201,13 +202,13 @@ function objectTypes(cwd: string, oids: string[]): Map<string, string> {
  * Every non-directory entry of the HEAD commit's tree, recursive, from
  * verified raw objects. Throws {@link ObjectStoreMismatch}.
  */
-export function readVerifiedHeadTree(repoRoot: string, headOid: string): VerifiedEntry[] {
+export function readVerifiedHeadTree(repoRoot: string, headOid: string, git = 'git'): VerifiedEntry[] {
   const alg = hashAlgorithmForOid(headOid);
   if (alg === null) throw lie(`HEAD ${headOid} is neither a sha1 nor a sha256 id`);
   const rawLen = alg === 'sha1' ? 20 : 32;
   const hexLen = rawLen * 2;
 
-  const commit = readVerified(repoRoot, [headOid], alg).get(headOid);
+  const commit = readVerified(repoRoot, [headOid], alg, git).get(headOid);
   if (commit === undefined || commit.type !== 'commit') throw lie(`HEAD ${headOid} is not a commit`);
   const header = commit.bytes.toString('utf-8').split('\n')[0] ?? '';
   const m = /^tree ([0-9a-f]+)$/.exec(header);
@@ -229,7 +230,7 @@ export function readVerifiedHeadTree(repoRoot: string, headOid: string): Verifie
   while (next.length > 0) {
     if (++rounds > MAX_TREE_DEPTH) throw tooLarge(`deeper than ${MAX_TREE_DEPTH} directories`);
     const named: string[] = [];
-    for (const [oid, o] of readVerified(repoRoot, next, alg)) {
+    for (const [oid, o] of readVerified(repoRoot, next, alg, git)) {
       if (o.type !== 'tree') throw lie(`${o.type} ${oid} is where a tree is named`);
       bytesRead += o.bytes.length;
       if (bytesRead > MAX_BUFFER) throw tooLarge(`the trees are over ${MAX_BUFFER} bytes`);
@@ -279,7 +280,7 @@ export function readVerifiedHeadTree(repoRoot: string, headOid: string): Verifie
 
   // A file or symlink mode must name a blob. A tree where a file is claimed (or
   // the reverse, caught above where trees are read) is refused, not skipped.
-  const types = objectTypes(repoRoot, [...new Set(out.filter(e => e.type !== 'commit').map(e => e.oid))]);
+  const types = objectTypes(repoRoot, [...new Set(out.filter(e => e.type !== 'commit').map(e => e.oid))], git);
   for (const e of out) {
     if (e.type === 'commit') continue;
     const t = types.get(e.oid);

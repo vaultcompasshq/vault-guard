@@ -256,7 +256,7 @@ export function formGroups(
           // value digest, its root-relative positional fingerprint otherwise.
           m.valueDigest !== undefined
             ? contentFingerprint(rel as string, m.type, m.valueDigest)
-            : rootPositionalFingerprint(root, r.file, m),
+            : rootPositionalFingerprint(root, r.file, m, opts.lexicalPaths === true),
         )
         .sort();
       const digests = new Set<string>();
@@ -379,6 +379,7 @@ export interface JsonOutput {
   repoControls?: RepoControlsReport;
   /** Present only on a `--no-repo-controls` run: the HEAD commit judged. */
   scannedCommit?: string;
+  scannedRoot?: string;
   /** Present only on a `--no-repo-controls` run: paths listed but not scanned. */
   notScanned?: HeadOnlyReport['notScanned'];
   results: Array<{
@@ -409,6 +410,10 @@ export interface JsonOutput {
       group_id?: string;
       /** `--no-repo-controls` only: an inline ignore directive covers this match and was not honoured. */
       inline_directive_not_honoured?: true;
+      /** Which repository-chosen filter would have dropped this match (`--no-repo-controls` keeps it). */
+      context_filter_not_honoured?: string;
+      /** The severity before a path or in-file test rule lowered it (`--no-repo-controls`). */
+      severity_before_path_rules?: string;
     }>;
     /** Present only when the file has a group. Presentation: every member is also in `matches`. */
     groups?: MatchGroup[];
@@ -678,7 +683,7 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
     ...(run ? { run } : {}),
     ...(opts.trustBase ? { trustBase: opts.trustBase } : {}),
     ...(opts.repoControls ? { repoControls: opts.repoControls } : {}),
-    ...(opts.headOnly ? { scannedCommit: opts.headOnly.scannedCommit, notScanned: opts.headOnly.notScanned } : {}),
+    ...(opts.headOnly ? { scannedCommit: opts.headOnly.scannedCommit, scannedRoot: opts.headOnly.scannedRoot, notScanned: opts.headOnly.notScanned } : {}),
     results: results.map(({ file, matches }, fi) => ({
       file: normalizeFilePath(file, opts.cwd, opts.scanRoot),
       matches: matches.map((m, mi) => {
@@ -697,6 +702,8 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
           ...(m.demotion !== undefined ? { demotion: m.demotion } : {}),
           ...(group !== undefined ? { group_id: group.group_id } : {}),
           ...(m.inlineDirectiveNotHonoured ? { inline_directive_not_honoured: true as const } : {}),
+          ...(m.contextFilterNotHonoured !== undefined ? { context_filter_not_honoured: m.contextFilterNotHonoured } : {}),
+          ...(m.severityBeforePathRules !== undefined ? { severity_before_path_rules: m.severityBeforePathRules } : {}),
         };
       }),
       ...(groups.byFile[fi].length > 0 ? { groups: groups.byFile[fi] } : {}),
@@ -746,6 +753,8 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
         : {}),
       ...(group !== undefined ? { 'vault-guard/group': group.group_id, 'vault-guard/group_size': group.members } : {}),
       ...(m.inlineDirectiveNotHonoured ? { 'vault-guard/inline_directive_not_honoured': true } : {}),
+      ...(m.contextFilterNotHonoured !== undefined ? { 'vault-guard/context_filter_not_honoured': m.contextFilterNotHonoured } : {}),
+      ...(m.severityBeforePathRules !== undefined ? { 'vault-guard/severity_before_path_rules': m.severityBeforePathRules } : {}),
     };
     return Object.keys(p).length > 0 ? p : undefined;
   };
@@ -896,7 +905,7 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
           ...(vaultGuardRunProps ?? {}),
           ...(opts.repoControls ? { repoControls: opts.repoControls } : {}),
           ...(opts.headOnly
-            ? { scannedCommit: opts.headOnly.scannedCommit, notScanned: opts.headOnly.notScanned }
+            ? { scannedCommit: opts.headOnly.scannedCommit, scannedRoot: opts.headOnly.scannedRoot, notScanned: opts.headOnly.notScanned }
             : {}),
         }
       : undefined;

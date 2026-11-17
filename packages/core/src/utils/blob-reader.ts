@@ -78,12 +78,14 @@ export function batchCheckBlobs(
   repoTop: string,
   oids: Iterable<string>,
   env: NodeJS.ProcessEnv,
+  /** The git to run; a bare `git` unless the caller resolved an absolute path. */
+  git = 'git',
 ): Map<string, BlobCheck> {
   const unique = [...new Set(oids)];
   const out = new Map<string, BlobCheck>();
   if (unique.length === 0) return out;
   const argv = [...BATCH_ARGS, '--batch-check'];
-  const r = spawnSync('git', argv, {
+  const r = spawnSync(git, argv, {
     cwd: repoTop,
     env,
     input: unique.map(o => `${o}\n`).join(''),
@@ -193,6 +195,8 @@ export class BlobBatchReader {
     private readonly window = 10,
     /** Hash every blob read against the id it was asked for; a mismatch is an {@link ObjectMismatchError}. */
     private readonly verify = false,
+    /** The git to run; a bare `git` unless the caller resolved an absolute path. */
+    private readonly git = 'git',
   ) {}
 
   /** The bytes of one blob. Rejects with {@link GitError} on any failure. */
@@ -314,7 +318,7 @@ export class BlobBatchReader {
   private start(): ChildProcessWithoutNullStreams {
     if (this.proc) return this.proc;
     this.spawned++;
-    const proc = spawn('git', this.argv, {
+    const proc = spawn(this.git, this.argv, {
       cwd: this.repoTop,
       env: this.env,
       stdio: ['pipe', 'pipe', 'pipe'],

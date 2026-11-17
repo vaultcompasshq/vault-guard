@@ -47,6 +47,7 @@ import { BASELINE_FILENAME } from './baseline';
 import type { HeadTreeEntry } from './trust-base';
 import { climbsOut } from './utils/dot-dot';
 import { fileSetGitEnv } from './utils/git-env';
+import { isInsideDir, resolveGitBinary } from './utils/git-binary';
 import { readVerifiedHeadTree } from './utils/verified-head-tree';
 import { checkLocalGitConfig, localGitConfigRefusal } from './utils/local-git-config';
 
@@ -86,6 +87,8 @@ export class NoRepoControlsError extends Error {
 export interface HeadOnlyTree {
   /** Symlink-resolved worktree root. */
   repoRoot: string;
+  /** The absolute path of the git every call in this run used. */
+  git: string;
   /** The resolved HEAD commit. */
   head: string;
   /** Every regular file in the HEAD tree, absolute, to its blob object id. */
@@ -104,6 +107,8 @@ export interface HeadOnlyTree {
 export interface HeadOnlyReport {
   /** The full object id of the HEAD commit whose tree was scanned. */
   scannedCommit: string;
+  /** The repository root that commit belongs to (symlinks resolved), so a wrapper can check it judged the repository it meant to. */
+  scannedRoot: string;
   notScanned: {
     /** Gitlink paths: the submodule's content is another repository and was not scanned. */
     submodules: string[];
@@ -137,8 +142,12 @@ export function presentRepoControls(entries: Iterable<HeadTreeEntry>): string[] 
   return out.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
-function git(cwd: string, args: string[]): { ok: true; out: string } | { ok: false; detail: string } {
-  const r = spawnSync('git', ['-c', 'core.quotePath=false', ...args], {
+function git(
+  gitBin: string,
+  cwd: string,
+  args: string[],
+): { ok: true; out: string } | { ok: false; detail: string } {
+  const r = spawnSync(gitBin, ['-c', 'core.quotePath=false', ...args], {
     cwd,
     env: fileSetGitEnv(),
     encoding: 'utf-8',
@@ -159,10 +168,23 @@ function git(cwd: string, args: string[]): { ok: true; out: string } | { ok: fal
 export function loadHeadOnlyTree(startDir: string): HeadOnlyTree {
   // FIRST, before any other git call: a handed-over `.git/config` may name a
   // program, and every later call is a chance for git to run it.
-  const verdict = checkLocalGitConfig(startDir, fileSetGitEnv());
+  // git is resolved ONCE, to an absolute path, and that path is spawned everywhere
+  // in this run: a bare `git` is looked up in the child's working directory first
+  // on Windows, and that directory is the untrusted repository.
+  let gitBin: string;
+  try {
+    gitBin = resolveGitBinary();
+  } catch (e) {
+    throw new NoRepoControlsError(e instanceof Error ? e.message : String(e));
+  }
+  const realGit = realOrSelf(gitBin);
+  const here = realOrSelf(startDir);
+  if (isInsideDir(realGit, here)) throw gitInsideRepo(gitBin, here);
+
+  const verdict = checkLocalGitConfig(startDir, fileSetGitEnv(), gitBin);
   if (!verdict.ok) throw new NoRepoControlsError(localGitConfigRefusal(verdict, 'vault-guard'));
 
-  const top = git(startDir, ['rev-parse', '--show-toplevel']);
+  const top = git(gitBin, startDir, ['rev-parse', '--show-toplevel']);
   if (!top.ok || top.out.trim() === '') {
     throw new NoRepoControlsError(
       `vault-guard: --no-repo-controls needs a git work tree: ${top.ok ? 'git printed no toplevel' : top.detail}. ` +
@@ -175,9 +197,21 @@ export function loadHeadOnlyTree(startDir: string): HeadOnlyTree {
   } catch {
     // Keep git's spelling.
   }
-  assertOwnObjectStore(repoRoot);
+  if (isInsideDir(realGit, repoRoot)) throw gitInsideRepo(gitBin, repoRoot);
+  // The directory this runs in must BE the repository root git reports, so what
+  // is judged is the repository the person is standing in, not a repository a
+  // subdirectory happens to carry.
+  if (path.relative(here, repoRoot) !== '') {
+    throw new NoRepoControlsError(
+      'vault-guard: --no-repo-controls must run from the root of the repository being assessed: the current ' +
+        `directory is ${here}, but the top level git reports for it is ${repoRoot}. Run it from the root and name ` +
+        'a subdirectory or file as the target. Nothing was scanned.',
+    );
+  }
+  assertOwnObjectStore(repoRoot, gitBin);
+  assertNotNested(repoRoot, gitBin);
 
-  const head = git(repoRoot, ['rev-parse', '--verify', '--quiet', 'HEAD']);
+  const head = git(gitBin, repoRoot, ['rev-parse', '--verify', '--quiet', 'HEAD']);
   if (!head.ok || head.out.trim() === '') {
     throw new NoRepoControlsError(
       'vault-guard: --no-repo-controls judges the tree as at HEAD, and HEAD does not resolve to a ' +
@@ -189,7 +223,7 @@ export function loadHeadOnlyTree(startDir: string): HeadOnlyTree {
   try {
     // From the raw commit and trees, each hashed against its id: nothing the
     // object store says about the tree is taken on trust.
-    entries = readVerifiedHeadTree(repoRoot, head.out.trim());
+    entries = readVerifiedHeadTree(repoRoot, head.out.trim(), gitBin);
   } catch (e) {
     throw new NoRepoControlsError(e instanceof Error ? e.message : String(e));
   }
@@ -221,7 +255,7 @@ export function loadHeadOnlyTree(startDir: string): HeadOnlyTree {
   }
   const byPath = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
   submodules.sort(byPath);
-  return { repoRoot, head: head.out.trim(), blobs, present: presentRepoControls(entries), submodules };
+  return { repoRoot, git: gitBin, head: head.out.trim(), blobs, present: presentRepoControls(entries), submodules };
 }
 
 /**
@@ -240,6 +274,45 @@ export function headEntryKey(repoRoot: string, entryPath: string, impl: typeof p
   const rel = impl.relative(repoRoot, key);
   if (rel === '' || climbsOut(rel, impl) || impl.isAbsolute(rel)) return null;
   return key;
+}
+
+function gitInsideRepo(gitBin: string, dir: string): NoRepoControlsError {
+  return new NoRepoControlsError(
+    `vault-guard: refusing to run: the git found on PATH (${gitBin}) is inside ${dir}, the directory being ` +
+      'assessed, so running it would run code the repository supplies. Put git on PATH from outside the ' +
+      'repository. Nothing was scanned.',
+  );
+}
+
+/**
+ * Refuse a repository whose directory is tracked by a git work tree around it.
+ * An untracked `.git` planted in a subdirectory makes that subdirectory a
+ * repository of its own, with a clean history, while the outer repository holds
+ * the files an assessor means to judge; git run from the subdirectory reports
+ * the planted one. Asked of git itself, from the parent directory, so no file
+ * is read here. A repository that merely sits under an unrelated work tree
+ * (one that does not track this path) is judged as usual.
+ */
+function assertNotNested(repoRoot: string, gitBin: string): void {
+  const parent = path.dirname(repoRoot);
+  if (parent === repoRoot) return;
+  const up = git(gitBin, parent, ['-c', 'core.fsmonitor=false', 'rev-parse', '--show-toplevel']);
+  const refusal = (what: string): NoRepoControlsError =>
+    new NoRepoControlsError(
+      `vault-guard: refusing to run: ${repoRoot} is inside another git work tree${what}, so which repository is ` +
+        `being assessed is ambiguous (a .git planted in a subdirectory shadows the repository around it). ${CLONE_FRESH} ` +
+        'Nothing was scanned.',
+    );
+  if (!up.ok) {
+    if (/dubious ownership/i.test(up.detail)) throw refusal(' that git will not examine (dubious ownership)');
+    return;
+  }
+  const outer = realOrSelf(up.out.trim());
+  if (outer === '') return;
+  const rel = path.relative(outer, repoRoot).split(path.sep).join('/');
+  if (rel === '' || rel.startsWith('..')) return;
+  const tracked = git(gitBin, outer, ['-c', 'core.fsmonitor=false', 'ls-tree', '-r', '--name-only', '-z', 'HEAD', '--', rel]);
+  if (tracked.ok && tracked.out.length > 0) throw refusal(` (${outer}), which tracks files under it`);
 }
 
 /** The refusal for a git directory that is not the repository's own. */
@@ -291,7 +364,7 @@ function realOrSelf(p: string): string {
  * read from, the commit it names must be in this store, so it can only pick
  * a commit the repository already holds, and the report names that commit.
  */
-function assertOwnObjectStore(repoRoot: string): void {
+function assertOwnObjectStore(repoRoot: string, gitBin: string): void {
   const dotGit = path.join(repoRoot, '.git');
   const st = lstatOrCode(dotGit);
   if (typeof st === 'string') {
@@ -316,8 +389,8 @@ function assertOwnObjectStore(repoRoot: string): void {
   const objects = path.join(dotGit, 'objects');
   assertNoLinkIn(objects, '.git/objects');
 
-  const common = git(repoRoot, ['rev-parse', '--git-common-dir']);
-  const objPath = git(repoRoot, ['rev-parse', '--git-path', 'objects']);
+  const common = git(gitBin, repoRoot, ['rev-parse', '--git-common-dir']);
+  const objPath = git(gitBin, repoRoot, ['rev-parse', '--git-path', 'objects']);
   if (!common.ok || !objPath.ok) {
     throw notOwnStore(`git could not name its git directory (${!common.ok ? common.detail : !objPath.ok ? objPath.detail : ''})`);
   }

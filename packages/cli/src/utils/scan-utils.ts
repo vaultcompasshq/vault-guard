@@ -126,7 +126,12 @@ export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {})
  * the cwd in that case keeps the pre-existing behaviour, where anything
  * outside the cwd simply stays absolute.
  */
-export function resolveScanRoot(targetPaths: string[], cwd = process.cwd()): string {
+export function resolveScanRoot(
+  targetPaths: string[],
+  cwd = process.cwd(),
+  /** `--no-repo-controls`: whether `abs` is a file of the HEAD tree. When given, nothing is stat-ed. */
+  isTreeFile?: (abs: string) => boolean,
+): string {
   // The `scan` CLI command's positional is non-variadic, so it never passes
   // more than one path here; this branch exists for programmatic callers of
   // this function that scan several targets at once.
@@ -140,6 +145,8 @@ export function resolveScanRoot(targetPaths: string[], cwd = process.cwd()): str
   // root would end up naming a different file.
   const rel = path.relative(cwd, abs);
   if (rel === '' || (!climbsOut(rel) && !path.isAbsolute(rel))) return cwd;
+
+  if (isTreeFile) return isTreeFile(abs) ? path.dirname(abs) : abs;
 
   try {
     return fs.statSync(abs).isDirectory() ? abs : path.dirname(abs);
@@ -557,6 +564,8 @@ export interface ScanOptions {
   shareBlobs?: boolean;
   /** With `blobOnly`: bytes of over-limit blobs the run may hash without scanning (default {@link MAX_VERIFY_ONLY_BYTES}). For tests. */
   verifyOnlyBudgetBytes?: number;
+  /** With `blobOnly`: the absolute path of the git to run (`--no-repo-controls`). */
+  gitBinary?: string;
   /** With `blobOnly`: filled with each file skipped as binary (its extension and bytes agree), by absolute path and family. */
   binarySkipped?: Array<{ file: string; family: string }>;
 }
@@ -1280,7 +1289,7 @@ export async function scanHeadBlobsAsync(
     }
     entries.set(f, { repoTop: repoRoot, mode: '100644', oid, worktreeAlso: false, filtered: false });
   }
-  const content = new GitContentSource('head', fileSetGitEnv(), entries, 10, true, options.verifyOnlyBudgetBytes);
+  const content = new GitContentSource('head', fileSetGitEnv(), entries, 10, true, options.verifyOnlyBudgetBytes, options.gitBinary);
   // A blob named by many paths is scanned once per path profile, not once per path.
   let shared: SharedScans | undefined;
   if (options.shareBlobs !== false) {
@@ -1537,7 +1546,13 @@ export function displayScanResults(
       const directive = match.inlineDirectiveNotHonoured
         ? chalk.yellow('  (inline ignore directive not honoured)')
         : '';
-      console.log(findingLine(relativePath, match, bothCopies) + reason + directive);
+      const filter = match.contextFilterNotHonoured
+        ? chalk.yellow(`  (${match.contextFilterNotHonoured} filter not honoured)`)
+        : '';
+      const lowered = match.severityBeforePathRules
+        ? chalk.yellow(`  (lowered by path rules from ${match.severityBeforePathRules})`)
+        : '';
+      console.log(findingLine(relativePath, match, bothCopies) + reason + directive + filter + lowered);
     });
   });
 

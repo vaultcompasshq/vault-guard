@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { createHash } from 'crypto';
-import { SecretMatch, type ContentDemotion } from '../types';
+import { SecretMatch, type ContentDemotion, type ContextFilterKind } from '../types';
 import {
   GROUP_MIN,
   RunIndex,
@@ -675,13 +675,20 @@ export class SecretScanner {
           continue;
         }
 
+        // In a run that honours nothing the repository supplies (`mark`), a filter
+        // keyed on the repository's own path or surrounding text keeps the match
+        // and names itself on it instead of dropping it.
+        const keepFiltered = opts?.inlineDirectives === 'mark';
+        let ctxFilter: ContextFilterKind | undefined;
+
         if (
           GENERIC_ASSIGNMENT_IDS.has(type) &&
           opts?.filePath !== undefined &&
           isPythonPath(opts.filePath) &&
           isInsidePythonTripleQuoted(content, match.index)
         ) {
-          continue;
+          if (!keepFiltered) continue;
+          ctxFilter = 'python-triple-quoted';
         }
 
         // Suppress local/dev/example/placeholder connection strings -- the
@@ -724,7 +731,8 @@ export class SecretScanner {
           GENERIC_ASSIGNMENT_IDS.has(type) &&
           content[match.index + fullMatch.length] === '('
         ) {
-          continue;
+          if (!keepFiltered) continue;
+          ctxFilter ??= 'call-follows';
         }
 
         // Suppress unquoted assignments whose "value" is a bare reference to
@@ -737,7 +745,8 @@ export class SecretScanner {
           const charBefore = valueStart > 0 ? fullMatch[valueStart - 1] : '';
           const quoted = charBefore === '"' || charBefore === "'";
           if (!quoted && isCodeIdentifierReference(rawValue)) {
-            continue;
+            if (!keepFiltered) continue;
+            ctxFilter ??= 'identifier-reference';
           }
         }
 
@@ -754,7 +763,8 @@ export class SecretScanner {
             lineContent,
           )
         ) {
-          continue;
+          if (!keepFiltered) continue;
+          ctxFilter = 'doc-context';
         }
 
         const directiveCovers = ignoredLines.has(line);
@@ -789,6 +799,7 @@ export class SecretScanner {
             ? { valueDigest: createHash('sha256').update(fullMatch, 'utf8').digest('hex') }
             : {}),
           ...(directiveCovers ? { inlineDirectiveNotHonoured: true as const } : {}),
+          ...(ctxFilter !== undefined ? { contextFilterNotHonoured: ctxFilter } : {}),
         });
       }
     }
@@ -821,8 +832,8 @@ export class SecretScanner {
     // the same reason, and returns what dedupe displaced from a winner it
     // demoted (design 2026-10-17 data files, section 4.4).
     const { kept, displaced } = this.deduplicateTracked(raw);
-    const tested = this.applyInlineTestSeverity(kept, content, opts?.filePath);
-    const demoted = this.applyContentDemotion(tested, displaced, content, opts?.filePath);
+    const tested = this.applyInlineTestSeverity(kept, content, opts?.filePath, opts?.inlineDirectives === 'mark');
+    const demoted = this.applyContentDemotion(tested, displaced, content, opts?.filePath, opts?.inlineDirectives === 'mark');
     return this.assignGroupSlots(demoted, content);
   }
 
@@ -845,6 +856,7 @@ export class SecretScanner {
     displaced: SecretMatch[][],
     content: string,
     filePath: string | undefined,
+    recordOriginal = false,
   ): SecretMatch[] {
     if (matches.length === 0) return matches;
     let index: RunIndex | undefined;
@@ -879,7 +891,7 @@ export class SecretScanner {
     if (restore.length === 0) return out;
 
     // Restored matches get the in-file test step they would have had if kept.
-    const restored = this.applyInlineTestSeverity(restore, content, filePath);
+    const restored = this.applyInlineTestSeverity(restore, content, filePath, recordOriginal);
     const overlapsKept = (r: SecretMatch): boolean =>
       notDemoted.some(k => r.offset < k.offset + k.matchLength && k.offset < r.offset + r.matchLength);
     const survivors = this.deduplicateMatches(restored).filter(r => !overlapsKept(r));
@@ -922,6 +934,7 @@ export class SecretScanner {
     matches: SecretMatch[],
     content: string,
     filePath: string | undefined,
+    recordOriginal = false,
   ): SecretMatch[] {
     if (matches.length === 0 || !filePath) return matches;
     const regions = findInlineTestRegions(content, filePath);
@@ -933,7 +946,11 @@ export class SecretScanner {
         LOW_PRECISION_PATH_DOWNGRADE_IDS.has(m.type) &&
         isInsideInlineTestRegion(regions, m.offset)
       ) {
-        return { ...m, severity: 'low' as const };
+        return {
+          ...m,
+          severity: 'low' as const,
+          ...(recordOriginal ? { severityBeforePathRules: m.severity } : {}),
+        };
       }
       return m;
     });

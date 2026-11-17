@@ -223,6 +223,8 @@ export class GitContentSource {
     private readonly verifyObjects = false,
     /** Bytes of over-limit blobs this run may hash without scanning them. */
     private verifyOnlyBudget = MAX_VERIFY_ONLY_BYTES,
+    /** The git to run; a bare `git` unless the caller resolved an absolute path. */
+    private readonly gitBinary = 'git',
   ) {}
 
   /**
@@ -268,7 +270,7 @@ export class GitContentSource {
     }
     for (const [repoTop, oids] of byRepo) {
       this.batchChecks++;
-      const answers = batchCheckBlobs(repoTop, oids, this.env);
+      const answers = batchCheckBlobs(repoTop, oids, this.env, this.gitBinary);
       const known = this.checks.get(repoTop) ?? new Map<string, BlobCheck>();
       for (const [oid, c] of answers) known.set(oid, c);
       this.checks.set(repoTop, known);
@@ -279,7 +281,7 @@ export class GitContentSource {
     let c = this.checks.get(repoTop)?.get(oid);
     if (c === undefined) {
       this.batchChecks++;
-      c = batchCheckBlobs(repoTop, [oid], this.env).get(oid);
+      c = batchCheckBlobs(repoTop, [oid], this.env, this.gitBinary).get(oid);
       if (c === undefined) {
         throw new GitError(`vault-guard: git cat-file gave no answer for ${oid}`, 'git cat-file --batch-check');
       }
@@ -304,7 +306,7 @@ export class GitContentSource {
     }
     let r = this.readers.get(repoTop);
     if (!r) {
-      r = new BlobBatchReader(repoTop, this.env, this.window, this.verifyObjects);
+      r = new BlobBatchReader(repoTop, this.env, this.window, this.verifyObjects, this.gitBinary);
       this.readers.set(repoTop, r);
     }
     return r.read(oid);
@@ -322,7 +324,7 @@ export class GitContentSource {
     }
     let r = this.readers.get(repoTop);
     if (!r) {
-      r = new BlobBatchReader(repoTop, this.env, this.window, this.verifyObjects);
+      r = new BlobBatchReader(repoTop, this.env, this.window, this.verifyObjects, this.gitBinary);
       this.readers.set(repoTop, r);
     }
     return r.readHead(oid, n);
@@ -535,6 +537,7 @@ function scanText(
       }),
       file,
       opts.pathRoot,
+      opts.blobOnly === true,
       opts.blobOnly === true,
     );
   const first = timeSpan(clock, () => pass(hits, placeholderSkips));

@@ -216,6 +216,15 @@ const BUILT_IN_SKIPS_TEXT_ROWS = 200;
 
 const SKIP_REASON_DIRECTORY = 'vendored directory name, skipped by a built-in rule';
 
+/** "N paths were not scanned, ..." for a head-only run's verdict line. */
+function notScannedPhrase(report: HeadOnlyReport | undefined, notScanned: number): string {
+  const hidden = report ? builtInSkipTextPlan(report).hidden : 0;
+  const what = `${notScanned} path${notScanned === 1 ? ' was' : 's were'} not scanned`;
+  return hidden === 0
+    ? `${what}, listed above`
+    : `${what}, ${notScanned - hidden} listed above and ${hidden} not shown (the JSON report lists all)`;
+}
+
 /** The text report's grouping of the built-in skip rows, and how many it leaves out. */
 function builtInSkipTextPlan(report: HeadOnlyReport): {
   byReason: Map<string, string[]>;
@@ -253,7 +262,11 @@ function fillBuiltInSkips(
   for (const b of binary) {
     rows.push({
       path: relative(root, b.file).split(sep).join('/'),
-      reason: `binary file (${b.family}): its extension and its first bytes agree, so it was not scanned`,
+      reason:
+        `binary file (${b.family}): its extension and its first bytes agree, so it was not scanned` +
+        (b.family === 'archive' || b.family === 'document'
+          ? '; its content may still be readable text (a .tar stores members in plaintext)'
+          : ''),
       order: 2,
     });
   }
@@ -329,7 +342,7 @@ export async function scanCommand(
     ? { honoured: false, present: headOnly.present }
     : undefined;
   const headOnlyReport: HeadOnlyReport | undefined = headOnly
-    ? { scannedCommit: headOnly.head, notScanned: { submodules: headOnly.submodules, builtInSkips: [], builtInSkipsOmitted: 0 } }
+    ? { scannedCommit: headOnly.head, scannedRoot: headOnly.repoRoot, notScanned: { submodules: headOnly.submodules, builtInSkips: [], builtInSkipsOmitted: 0 } }
     : undefined;
 
   // Base for every path this run renders, serializes, ignore-matches and
@@ -717,6 +730,7 @@ export async function scanCommand(
         content: contentReport,
         inlineDirectives: 'mark',
         binarySkipped,
+        gitBinary: headOnly.git,
       });
       if (headOnlyReport) fillBuiltInSkips(headOnlyReport, builtInSkipPaths, binarySkipped, root);
     } else {
@@ -1008,7 +1022,11 @@ export async function scanCommand(
     // `--staged`, otherwise the scan target when it sits outside the cwd, else
     // the cwd. JSON, SARIF and text all use it, so one finding is spelled one
     // way in every format.
-    const displayRoot = staged ? outputBase : resolveScanRoot(targetPaths, cwd);
+    const displayRoot = staged ? outputBase : resolveScanRoot(
+          targetPaths,
+          cwd,
+          headOnly ? abs => headOnly.blobs.has(pathResolve(headOnly.repoRoot, relative(cwd, abs))) : undefined,
+        );
 
     if (format === 'json') {
       // The document is still emitted: CI wants the artifact even when the
@@ -1123,6 +1141,7 @@ export async function scanCommand(
             `Scanned commit: ${headOnlyReport.scannedCommit} (untracked and uncommitted files are not judged)`,
           ),
         );
+        console.log(chalk.gray(`Scanned repository root: ${printablePath(headOnlyReport.scannedRoot)}`));
         for (const p of headOnlyReport.notScanned.submodules) {
           console.log(chalk.yellow(`Not scanned, submodule: ${printablePath(p)}`));
         }
@@ -1155,6 +1174,22 @@ export async function scanCommand(
         for (const p of repoControls.present) {
           console.log(chalk.yellow(`Present, not honoured: ${printablePath(p)}`));
         }
+      }
+      const filtered = results.reduce((n, r) => n + r.matches.filter(m => m.contextFilterNotHonoured !== undefined).length, 0);
+      if (filtered > 0) {
+        console.log(
+          chalk.yellow(
+            `Context filters not honoured: ${filtered} finding(s) a documentation path, a nearby comment or a code-shape rule would have dropped are reported`,
+          ),
+        );
+      }
+      const loweredCount = results.reduce((n, r) => n + r.matches.filter(m => m.severityBeforePathRules !== undefined).length, 0);
+      if (loweredCount > 0) {
+        console.log(
+          chalk.yellow(
+            `Lowered by path rules: ${loweredCount} finding(s) sit in test, documentation or locale paths (or an in-file test block); their severity before the rules is in the report`,
+          ),
+        );
       }
       const marked = results.reduce((n, r) => n + r.matches.filter(m => m.inlineDirectiveNotHonoured).length, 0);
       if (marked > 0) {
@@ -1308,16 +1343,12 @@ export async function scanCommand(
           headOnlyReport.notScanned.builtInSkips.length +
           headOnlyReport.notScanned.builtInSkipsOmitted
         : 0;
-      const hidden = headOnlyReport ? builtInSkipTextPlan(headOnlyReport).hidden : 0;
-      const what = `${notScanned} path${notScanned === 1 ? ' was' : 's were'} not scanned`;
       console.log(
         chalk.green.bold('✅ SUCCESS:'),
         chalk.white(
           notScanned === 0
             ? 'No secrets found\n'
-            : hidden === 0
-              ? `No secrets found in the files scanned; ${what}, listed above\n`
-              : `No secrets found in the files scanned; ${what}, ${notScanned - hidden} listed above and ${hidden} not shown (the JSON report lists all)\n`,
+            : `No secrets found in the files scanned; ${notScannedPhrase(headOnlyReport, notScanned)}\n`,
         ),
       );
       return 0;
@@ -1328,6 +1359,25 @@ export async function scanCommand(
     if (blocking === 0) {
       // Findings exist but all sit below the gate. Say so explicitly -- a silent
       // exit 0 after printing findings reads like a bug.
+      if (headOnlyReport) {
+        // This mode reads no config, so the only way to tighten is the flag; and
+        // it says how many findings the path rules lowered and what was not scanned.
+        const lowered = results.reduce((n, r) => n + r.matches.filter(m => m.severityBeforePathRules !== undefined).length, 0);
+        const notScannedNow =
+          headOnlyReport.notScanned.submodules.length +
+          headOnlyReport.notScanned.builtInSkips.length +
+          headOnlyReport.notScanned.builtInSkipsOmitted;
+        console.log(
+          chalk.white(
+            `${totalMatches} finding(s) below the gate "${failOn}"` +
+              (lowered > 0 ? `, ${lowered} of them lowered by path rules (severity_before_path_rules in the report)` : '') +
+              ' -- not failing the gate.' +
+              (notScannedNow > 0 ? ` ${notScannedPhrase(headOnlyReport, notScannedNow)}.` : ''),
+          ),
+        );
+        console.log(chalk.gray('   --fail-on low makes every finding block\n'));
+        return 0;
+      }
       console.log(
         chalk.white(
           `${totalMatches} finding(s), none at or above severity "${failOn}" -- not failing the gate.`,

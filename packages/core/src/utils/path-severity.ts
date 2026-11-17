@@ -174,6 +174,8 @@ export function applyPathAwareSeverity(
   filePath: string,
   pathRoot?: string,
   lexical = false,
+  /** Keep each lowered match's severity from before the path rules (`--no-repo-controls`). */
+  recordOriginal = false,
 ): SecretMatch[] {
   if (matches.length === 0) return matches;
   const ctxPath = contextPathFor(filePath, pathRoot, lexical);
@@ -194,7 +196,11 @@ export function applyPathAwareSeverity(
 
   return matches.map(m => {
     if (allowed(m.type) && m.severity !== 'low') {
-      return { ...m, severity: 'low' as const };
+      return {
+        ...m,
+        severity: 'low' as const,
+        ...(recordOriginal ? { severityBeforePathRules: m.severity } : {}),
+      };
     }
     return m;
   });

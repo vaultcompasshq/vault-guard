@@ -1537,6 +1537,32 @@ printed in this mode). A spy on every fs read function over a whole run
 replacing the whole working tree (`replacing the whole working tree with
 hostile content leaves the report byte-identical`) hold this.
 
+Which repository is judged is fixed before anything is read. git is resolved
+once, by `utils/git-binary.ts` (`resolveGitBinary`: PATH walked by this code,
+empty and relative entries skipped, `.exe` and `.com` only on Windows), and that
+absolute path is spawned by the config check, `rev-parse`, the `cat-file`
+readers and `readVerifiedHeadTree`; a resolved git inside the repository or the
+current directory is refused, because on Windows a bare `git` is looked up in the
+child's working directory first. The current directory must be the top level git
+reports (`loadHeadOnlyTree`), and a repository inside another work tree that
+tracks files under its path is refused (`assertNotNested`, asked of git from the
+parent): an untracked `.git` planted in a subdirectory otherwise shadows the
+outer repository. `scannedRoot` carries the root judged. Other modes still spawn
+a bare `git`; this is not changed here.
+
+A filter keyed on the repository's own path or surrounding text does not drop a
+finding in this mode. The scanner (`inlineDirectives: 'mark'`) keeps a match the
+documentation-context rule (`doc-context`), the Python triple-quote rule
+(`python-triple-quoted`), the following-`(` rule (`call-follows`) or the
+bare-identifier rule (`identifier-reference`) would drop, and sets
+`contextFilterNotHonoured`. Filters that key on the value alone (an alphabet
+run, a redacted template, a password hash, the public sample JWT, an
+environment-variable name token, a short Docker token example, entropy) and the
+PEM-header-without-body rule are unchanged; placeholder declines and
+connection-string declines are counted. A severity lowered by a path rule or an
+in-file test block records `severityBeforePathRules`, and the text and the
+below-gate verdict count them.
+
 A blob over the scan limit is hashed without being scanned, but only up to
 `MAX_VERIFY_ONLY_BYTES` (2 GiB, counted by the size git reports) per run;
 past it the blob is reported as over the limit and not verified, exit 2. The
@@ -1572,7 +1598,15 @@ times`, `the same blob under a docs path and a source path is judged per path`,
 `%s and %s: the shared run reports each path as scanning it alone does`, `a
 blob under x.png and under .png: the key under the dotfile name is reported`,
 `a vendored directory, a minified file, a lockfile and a log holding keys: exit
-0, each listed`, `JSON lists every skip; the text shows a capped share and says how many are
+0, each listed`, `a planted .git in a subdirectory that the outer repository tracks: exit 2,
+nothing judged`, `from the root, a target naming that subdirectory still finds the
+key`, `run from a subdirectory of the repository: exit 2, run it from the root`,
+`a symlinked working directory is the root once resolved, and the report names
+the real root`, `a git found on PATH inside the repository being assessed: exit
+2`, `an appid comment in a website path: kept, marked doc-context, and the
+lowering is recorded`, `a finding lowered by a website path carries its severity
+before the rules, in JSON, SARIF and text`, `the below-gate verdict counts the
+lowered findings, qualifies the pass and advises only --fail-on`, `JSON lists every skip; the text shows a capped share and says how many are
 not shown`, `250 lockfiles do not crowd out the one log that holds a key`, `a
 key after a binary header is listed as not scanned, and the verdict is
 qualified`, `over-limit blobs past the verification budget are reported as not

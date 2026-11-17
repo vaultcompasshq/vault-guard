@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 
 import { scanCommand } from '../../commands/scan';
-import { newContentReport, newRunSkipCounts, scanHeadBlobsAsync } from '../../utils/scan-utils';
+import { newContentReport, newRunSkipCounts, resolveScanRoot, scanHeadBlobsAsync } from '../../utils/scan-utils';
 import { BlobBatchReader, GitError, SecretScanner } from '@vaultcompass/vault-guard-core';
 import { AWS_KEY, capture, git, gitStub, parse, runCli, stubCalls, subcommand, tmpDir, write } from './git-fixture';
 
@@ -29,8 +29,8 @@ jest.mock('../../../../core/src/utils/local-git-config', () => {
   const actual = jest.requireActual('../../../../core/src/utils/local-git-config');
   return {
     ...actual,
-    checkLocalGitConfig: (cwd: string, env: NodeJS.ProcessEnv) =>
-      mockConfigCheck.stubbed ? { ok: true, keys: [] } : actual.checkLocalGitConfig(cwd, env),
+    checkLocalGitConfig: (cwd: string, env: NodeJS.ProcessEnv, git?: string) =>
+      mockConfigCheck.stubbed ? { ok: true, keys: [] } : actual.checkLocalGitConfig(cwd, env, git),
   };
 });
 
@@ -82,16 +82,23 @@ const originalPath = process.env.PATH;
 
 async function scanIn(
   dir: string,
-  opts: { format?: 'text' | 'json' | 'sarif'; staged?: boolean; trustBase?: string; noRepoControls?: boolean } = {},
+  opts: {
+    format?: 'text' | 'json' | 'sarif';
+    staged?: boolean;
+    trustBase?: string;
+    noRepoControls?: boolean;
+    target?: string;
+    failOn?: string;
+  } = {},
 ): Promise<{ code: number; log: string; err: string; stdout: string }> {
   process.chdir(dir);
   try {
     return await capture(() =>
       scanCommand(
-        '.',
+        opts.target ?? '.',
         opts.format ?? 'json',
         opts.staged ?? false,
-        undefined,
+        opts.failOn,
         opts.trustBase,
         false,
         opts.noRepoControls ?? true,
@@ -1245,23 +1252,34 @@ describe('--no-repo-controls: the working tree is never consulted', () => {
       tree([
         ['100644', 'a.txt', blob(`aws = "${AWS_KEY}"\n`)],
         ['40000', 'src', tree([['100644', 'app.js', blob('x = 1\n')]])],
+        ['40000', 'data', tree([['100644', 'keys.tsv', blob(GROUPED_TSV)]])],
       ]),
     );
     const root = fs.realpathSync.native(dir);
-    const touched = await fsPathsTouched(() => scanIn(dir));
+    const touched = await fsPathsTouched(async () => {
+      for (const format of ['text', 'json', 'sarif'] as const) {
+        await scanIn(dir, { format });
+        await scanIn(dir, { format, target: 'data' });
+      }
+    });
     // Allowed: anything under .git (the object-store checks), and realpath of the
     // repository root itself, which only locates the checkout and reads no file in it.
     const stray = touched.filter(([method, p]) => {
       const abs = path.resolve(p);
       const inGit = abs === path.join(root, '.git') || abs.startsWith(path.join(root, '.git') + path.sep);
       const locatesRoot = method.startsWith('fs.realpathSync') && (abs === root || abs === path.resolve(dir));
-      return !inGit && !locatesRoot;
+      // Finding git: a stat or realpath of a file named git on a PATH entry.
+      const findsGit = /(^|[\\/])git(\.exe|\.com)?$/.test(abs) && /stat|realpath|lstat/i.test(method);
+      return !inGit && !locatesRoot && !findsGit;
     });
     // The spy is live: the object-store lstat checks under .git were seen.
     expect(touched.some(([m, p]) => m === 'fs.lstatSync' && p.includes(`${path.sep}.git${path.sep}objects`))).toBe(true);
     expect(stray).toEqual([]);
   });
 });
+
+/** 25 rows of a header-only rule in a tab-delimited file: forms a group. */
+const GROUPED_TSV = ['id\tpayload', ...Array.from({ length: 25 }, (_, i) => `${i}\t{"type": "service_account"}`)].join('\n') + '\n';
 
 describe('--no-repo-controls: the working tree cannot change the result', () => {
   const HIGH = 'password: "Vq7Lp2Xz9Rt4Mk8Wn3Bd"\n';
@@ -1302,9 +1320,12 @@ describe('--no-repo-controls: the working tree cannot change the result', () => 
         ['40000', 'src', tree([['100644', 'app.js', blob(HIGH)]])],
         ['40000', 'docs', tree([['100644', 'g.txt', blob(HIGH)]])],
         ['120000', 'lnk', blob(`aws = "${AWS_KEY}"\n`)],
+        ['40000', 'data', tree([['100644', 'keys.tsv', blob(GROUPED_TSV)]])],
       ]),
     );
     const first = JSON.stringify(stripTiming(parse((await scanIn(dir)).stdout)));
+    // A header-only rule in 25 rows of a delimited file forms a group, whose members digest is keyed on the path.
+    expect(first).toContain('members_digest');
     // Hostile working tree: links into other directories, different bodies, a
     // directory where a file was, a config that would silence everything.
     fs.mkdirSync(path.join(dir, 'test'));
@@ -1313,6 +1334,7 @@ describe('--no-repo-controls: the working tree cannot change the result', () => 
     fs.writeFileSync(path.join(dir, '.vault-guard.baseline.json'), '{"entries":[]}');
     fs.symlinkSync('test', path.join(dir, 'src'));
     fs.symlinkSync('/', path.join(dir, 'docs'));
+    fs.symlinkSync('test', path.join(dir, 'data'));
     fs.writeFileSync(path.join(dir, 'lnk'), 'clean\n');
     fs.writeFileSync(path.join(dir, 'new-key.txt'), `aws = "${AWS_KEY}"\n`);
     const second = JSON.stringify(stripTiming(parse((await scanIn(dir)).stdout)));
@@ -1385,5 +1407,194 @@ describe('--no-repo-controls: budgets and what is held', () => {
     const maxHeld = Math.max(...[...readers].map(r => r.maxHeld));
     // Held at once: at most the reads in flight, not all N blobs waiting for their second name.
     expect(maxHeld).toBeLessThan(N);
+  });
+});
+
+describe('--no-repo-controls: which repository is judged', () => {
+  const identity = { ...process.env, ...IDENTITY };
+
+  /** An outer repository tracking sub/app.js (a key), with a planted, untracked clean repository in sub/. */
+  function plantedNested(): { outer: string; sub: string } {
+    const outer = tmpDir('vg-norc-outer-');
+    initClean(outer);
+    write(outer, 'sub/app.js', `aws = "${AWS_KEY}"\n`);
+    write(outer, 'top.txt', 'x\n');
+    commitClean(outer, 'outer');
+    const sub = path.join(outer, 'sub');
+    git(sub, ['init', '-q', '-b', 'main']);
+    write(sub, 'clean.txt', 'ok\n');
+    git(sub, ['add', 'clean.txt']);
+    git(sub, ['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'clean'], identity);
+    return { outer, sub };
+  }
+
+  itPosix('a planted .git in a subdirectory that the outer repository tracks: exit 2, nothing judged', async () => {
+    const { sub } = plantedNested();
+    const r = await scanIn(sub);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('inside another git work tree');
+    expect(r.err).toContain('which tracks files under it');
+    expect(r.stdout).toBe('');
+  });
+
+  itPosix('from the root, a target naming that subdirectory still finds the key', async () => {
+    const { outer } = plantedNested();
+    const r = await scanIn(outer, { target: 'sub' });
+    expect(r.code).toBe(1);
+    expect(files(parse(r.stdout) as Doc)).toEqual(['sub/app.js|aws-access']);
+  });
+
+  itPosix('a repository under an unrelated work tree that does not track it is judged as usual', async () => {
+    const outer = tmpDir('vg-norc-unrel-');
+    initClean(outer);
+    write(outer, 'other.txt', 'x\n');
+    commitClean(outer, 'outer');
+    const inner = path.join(outer, 'checkout');
+    fs.mkdirSync(inner);
+    initClean(inner);
+    write(inner, 'k.txt', `aws = "${AWS_KEY}"\n`);
+    commitClean(inner, 'inner');
+    expect((await scanIn(inner)).code).toBe(1);
+  });
+
+  itPosix('run from a subdirectory of the repository: exit 2, run it from the root', async () => {
+    const dir = rawRepo(({ blob, tree }) => tree([['40000', 'src', tree([['100644', 'a.txt', blob(`aws = "${AWS_KEY}"\n`)]])]]));
+    fs.mkdirSync(path.join(dir, 'src'));
+    const r = await scanIn(path.join(dir, 'src'));
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('must run from the root of the repository being assessed');
+    expect(r.err).toContain(fs.realpathSync.native(dir));
+  });
+
+  itPosix('a symlinked working directory is the root once resolved, and the report names the real root', async () => {
+    const dir = rawRepo(({ blob, tree }) => tree([['100644', 'a.txt', blob(`aws = "${AWS_KEY}"\n`)]]));
+    const link = path.join(tmpDir('vg-norc-link-'), 'link');
+    fs.symlinkSync(dir, link);
+    const r = await scanIn(link);
+    expect(r.code).toBe(1);
+    expect((parse(r.stdout) as unknown as { scannedRoot: string }).scannedRoot).toBe(fs.realpathSync.native(dir));
+    const text = await scanIn(link, { format: 'text' });
+    expect(text.log).toContain(`Scanned repository root: ${fs.realpathSync.native(dir)}`);
+    const sarif = JSON.parse((await scanIn(link, { format: 'sarif' })).stdout) as { runs: Array<{ properties: Record<string, unknown> }> };
+    expect(sarif.runs[0].properties.scannedRoot).toBe(fs.realpathSync.native(dir));
+  });
+});
+
+describe('--no-repo-controls: git is run by absolute path', () => {
+  itPosix('a git found on PATH inside the repository being assessed: exit 2', async () => {
+    const dir = rawRepo(({ blob, tree }) => tree([['100644', 'a.txt', blob(`aws = "${AWS_KEY}"\n`)]]));
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    const realGit = execFileSync('/bin/sh', ['-c', 'command -v git']).toString().trim();
+    fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\nexec ${realGit} "$@"\n`, { mode: 0o755 });
+    process.env.PATH = `${bin}${path.delimiter}${process.env.PATH ?? ''}`;
+    const r = await scanIn(dir);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('is inside');
+    expect(r.err).toContain('assessed');
+    expect(r.stdout).toBe('');
+  });
+
+  // The Windows job runs this: libuv looks in the child's working directory before
+  // PATH for a bare name, so a git.exe in the repository would have been run.
+  const itWin32 = process.platform === 'win32' ? it : it.skip;
+  itWin32('a git.exe at the repository root is never executed', async () => {
+    const dir = rawRepo(({ blob, tree }) => tree([['100644', 'a.txt', blob(`aws = "${AWS_KEY}"\n`)]]));
+    fs.copyFileSync(process.execPath, path.join(dir, 'git.exe'));
+    const r = await scanIn(dir);
+    expect(r.code).toBe(1);
+    expect(files(parse(r.stdout) as Doc)).toEqual(['a.txt|aws-access']);
+  });
+});
+
+describe('--no-repo-controls: filters keyed on repository-chosen evidence keep the finding and say so', () => {
+  const K = 'Zq9Lp2Xz9Rt4Mk8Wn3BdQ1x7Yv5';
+  interface M {
+    type: string;
+    severity: string;
+    context_filter_not_honoured?: string;
+    severity_before_path_rules?: string;
+  }
+  const matchesOf = (stdout: string, file: string): M[] =>
+    ((parse(stdout) as unknown as { results: Array<{ file: string; matches: M[] }> }).results.find(r => r.file === file)?.matches ?? []);
+
+  itPosix('an appid comment in a website path: kept, marked doc-context, and the lowering is recorded', async () => {
+    const dir = rawRepo(({ blob, tree }) =>
+      tree([['40000', 'lib', tree([['40000', 'website', tree([['100644', 'keys2.js', blob(`const api_key = "${K}"; // appid\n`)]])]])]]),
+    );
+    const r = await scanIn(dir);
+    const m = matchesOf(r.stdout, 'lib/website/keys2.js');
+    expect(m).toHaveLength(1);
+    expect(m[0].context_filter_not_honoured).toBe('doc-context');
+    expect(m[0].severity_before_path_rules).toBe('high');
+    const text = await scanIn(dir, { format: 'text' });
+    expect(text.log).toContain('Context filters not honoured: 1 finding(s)');
+    expect(text.log).toContain('(doc-context filter not honoured)');
+  });
+
+  itPosix('a generic key inside a Python triple-quoted string: kept, marked', async () => {
+    const dir = rawRepo(({ blob, tree }) => tree([['100644', 'x.py', blob(`doc = """\napi_key = "${K}"\n"""\n`)]]));
+    const m = matchesOf((await scanIn(dir)).stdout, 'x.py');
+    expect(m.map(x => x.context_filter_not_honoured)).toContain('python-triple-quoted');
+  });
+
+  itPosix('an unquoted generic key followed by "(": kept, marked', async () => {
+    const dir = rawRepo(({ blob, tree }) => tree([['100644', 'a.txt', blob(`api_key = ${K}(x)\n`)]]));
+    const m = matchesOf((await scanIn(dir)).stdout, 'a.txt');
+    expect(m.map(x => x.context_filter_not_honoured)).toContain('call-follows');
+  });
+});
+
+describe('--no-repo-controls: path rules that lower a severity are visible', () => {
+  const K = 'Zq9Lp2Xz9Rt4Mk8Wn3BdQ1x7Yv5';
+  function websiteRepo(): string {
+    return rawRepo(({ blob, tree }) =>
+      tree([
+        ['40000', 'lib', tree([['40000', 'website', tree([['100644', 'keys.js', blob(`const api_key = "${K}";\n`)]])]])],
+        ['100644', 'run.log', blob('x\n')],
+        ['100644', 'ok.txt', blob('fine\n')],
+      ]),
+    );
+  }
+
+  itPosix('a finding lowered by a website path carries its severity before the rules, in JSON, SARIF and text', async () => {
+    const dir = websiteRepo();
+    const r = await scanIn(dir);
+    expect(r.code).toBe(0);
+    const doc = parse(r.stdout) as unknown as { results: Array<{ matches: Array<{ severity: string; severity_before_path_rules?: string }> }> };
+    expect(doc.results[0].matches[0]).toMatchObject({ severity: 'low', severity_before_path_rules: 'high' });
+    const sarif = JSON.parse((await scanIn(dir, { format: 'sarif' })).stdout) as {
+      runs: Array<{ results: Array<{ properties?: Record<string, unknown> }> }>;
+    };
+    expect(sarif.runs[0].results[0].properties?.['vault-guard/severity_before_path_rules']).toBe('high');
+    const text = await scanIn(dir, { format: 'text' });
+    expect(text.log).toContain('(lowered by path rules from high)');
+    expect(text.log).toContain('Lowered by path rules: 1 finding(s)');
+  });
+
+  itPosix('the below-gate verdict counts the lowered findings, qualifies the pass and advises only --fail-on', async () => {
+    const dir = websiteRepo();
+    const text = await scanIn(dir, { format: 'text' });
+    expect(text.log).toContain('1 finding(s) below the gate "medium", 1 of them lowered by path rules');
+    expect(text.log).toContain('1 path was not scanned');
+    expect(text.log).toContain('--fail-on low makes every finding block');
+    expect(text.log).not.toContain('fail_on');
+    expect((await scanIn(dir, { format: 'text', failOn: 'low' })).code).toBe(1);
+  });
+});
+
+describe('--no-repo-controls: smaller disclosures', () => {
+  itPosix('an archive-family binary skip says its content may still be readable text', async () => {
+    const tar = Buffer.alloc(512, 0);
+    tar.write('ustar', 257);
+    tar.write(`aws = "${AWS_KEY}"\n`, 300);
+    const dir = rawRepo(({ blob, tree }) => tree([['100644', 'a.tar', blob(tar)], ['100644', 'ok.txt', blob('fine\n')]]));
+    const doc = parse((await scanIn(dir)).stdout) as unknown as { notScanned: { builtInSkips: Array<{ path: string; reason: string }> } };
+    expect(doc.notScanned.builtInSkips[0].reason).toContain('may still be readable text');
+  });
+
+  it('resolveScanRoot decides file or directory from the tree, never by stat', () => {
+    expect(resolveScanRoot(['../lib/x.js'], '/r/sub', () => true)).toBe('/r/lib');
+    expect(resolveScanRoot(['../lib/x.js'], '/r/sub', () => false)).toBe('/r/lib/x.js');
   });
 });

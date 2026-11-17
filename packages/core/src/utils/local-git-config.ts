@@ -91,8 +91,8 @@ export type LocalGitConfigVerdict =
  * against the allowlist. Reading config runs no program. Fails closed: a git
  * failure is a verdict of its own, never a pass.
  */
-export function checkLocalGitConfig(cwd: string, env: NodeJS.ProcessEnv): LocalGitConfigVerdict {
-  const r = spawnSync('git', ['config', '--local', '--list', '--name-only', '-z'], {
+export function checkLocalGitConfig(cwd: string, env: NodeJS.ProcessEnv, git = 'git'): LocalGitConfigVerdict {
+  const r = spawnSync(git, ['config', '--local', '--list', '--name-only', '-z'], {
     cwd,
     env,
     encoding: 'utf-8',
