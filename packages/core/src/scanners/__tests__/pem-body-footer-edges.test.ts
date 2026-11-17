@@ -17,6 +17,16 @@ function body(n: number, seed: number): string {
 const withFooter = (lines: string[]): string => [HEADER, ...lines, FOOTER].join('\n') + '\n';
 const declines = (text: string): boolean => isPemHeaderWithoutBody(text, text.indexOf(HEADER) + HEADER.length);
 
+describe('padding on its own line counts only as the last line, and adds no length', () => {
+  it('a = in the middle is not a body line', () => {
+    expect(declines(withFooter([body(31, 1), '=', body(29, 2), body(33, 3), body(17, 4)]))).toBe(true);
+  });
+  it('the = line adds nothing to the length check (63 characters plus padding is not 64)', () => {
+    expect(declines(withFooter([body(31, 20), body(32, 21), '=']))).toBe(true);
+    expect(declines(withFooter([body(31, 20), body(33, 21), '=']))).toBe(false);
+  });
+});
+
 describe('padding folded onto its own line', () => {
   const lines = [body(31, 1), body(29, 2), body(33, 3), body(17, 4)];
   it('a lone = is still part of the body', () => expect(declines(withFooter([...lines, '=']))).toBe(false));
@@ -43,17 +53,23 @@ describe('an ellipsis between the armor lines marks a truncated example, when li
     expect(declines(withFooter(['MIIEpAIBAAKCAQEAx7Kf9mQ2pL8vB3nR5', '...', 'wT1abcDEF==']))).toBe(true);
   });
 
-  it('a truncated example with a long first line (40+ characters) still declines', () => {
-    expect(declines(withFooter([body(44, 8), '...', 'wT1abcDEF==']))).toBe(true);
+  it('a truncated example whose first line is 36 characters still declines', () => {
+    expect(declines(withFooter([body(36, 8), '...', 'wT1abcDEF==']))).toBe(true);
   });
 
-  it('a full-length body with an ellipsis line in it is still a body (64 or more characters around it)', () => {
+  it('a full-length body with an ellipsis line in it is still a body', () => {
     const full = [body(32, 9), body(32, 10), '...', body(32, 11)];
     expect(declines(withFooter(full))).toBe(false);
   });
 
-  it('exactly 64 characters around the ellipsis is a body, 63 is not', () => {
-    expect(declines(withFooter([body(32, 12), '...', body(32, 13)]))).toBe(false);
-    expect(declines(withFooter([body(32, 12), '...', body(31, 13)]))).toBe(true);
+  it('48 base64 characters around the ellipsis are not a truncated example, 47 are', () => {
+    // One 40-character line is a body by the single-token rule; the ellipsis cap is what declines it.
+    expect(declines(withFooter([body(40, 12), '...', body(8, 13)]))).toBe(false);
+    expect(declines(withFooter([body(40, 12), '...', body(7, 13)]))).toBe(true);
+  });
+
+  it('an Ed25519-length body (64 characters) ending in "+" with an ellipsis line is reported', () => {
+    // The peeling of a trailing "+" counts it as 63; counted before the peeling it is 64.
+    expect(declines(withFooter([`${body(63, 14)}+`, '...']))).toBe(false);
   });
 });
