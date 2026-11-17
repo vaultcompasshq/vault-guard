@@ -14,7 +14,7 @@ import { VaultGuardConfig } from '../config';
 import { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from '../utils/entropy';
 import { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, isShortDockerPatExample } from '../utils/placeholder';
 import { applyPathAwareSeverity } from '../utils/path-severity';
-import { contextPathFor } from '../utils/path-parts';
+import { contextPathFor, isPythonPath } from '../utils/path-parts';
 import { decodeTextBuffer } from '../utils/text-decode';
 import { LOW_PRECISION_PATH_DOWNGRADE_IDS } from '../utils/path-downgrade-ids';
 import { findInlineTestRegions, isInsideInlineTestRegion } from '../utils/inline-test-context';
@@ -675,7 +675,8 @@ export class SecretScanner {
 
         if (
           GENERIC_ASSIGNMENT_IDS.has(type) &&
-          opts?.filePath?.endsWith('.py') &&
+          opts?.filePath !== undefined &&
+          isPythonPath(opts.filePath) &&
           isInsidePythonTripleQuoted(content, match.index)
         ) {
           continue;

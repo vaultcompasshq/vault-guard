@@ -269,6 +269,16 @@ function finderFor(filePath: string): InlineTestRegionFinder | undefined {
 }
 
 /**
+ * Which registered finder `filePath` selects (an index into the registry), or
+ * -1. Lets a caller key on exactly the decision {@link findInlineTestRegions}
+ * makes about a path, without copying the rule.
+ */
+export function inlineTestFinderId(filePath: string): number {
+  const finder = finderFor(filePath);
+  return finder === undefined ? -1 : FINDERS.indexOf(finder);
+}
+
+/**
  * Locate in-file test regions for `content`. Returns an empty array when the
  * file's language has no finder registered, or when `filePath` is unknown.
  */

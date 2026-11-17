@@ -552,6 +552,8 @@ export interface ScanOptions {
   inlineDirectives?: 'honour' | 'mark';
   /** Never read a disk copy: a file with no blob is a GitError (`--no-repo-controls`). */
   blobOnly?: boolean;
+  /** With `blobOnly`: false scans every path of a shared blob on its own (default true). For tests. */
+  shareBlobs?: boolean;
 }
 
 /**
@@ -1261,7 +1263,7 @@ export async function scanHeadBlobsAsync(
   }
   const content = new GitContentSource('head', fileSetGitEnv(), entries, 10, true);
   // A blob named by many paths is scanned once per path profile, not once per path.
-  const shared: SharedScans = new Map();
+  const shared: SharedScans | undefined = options.shareBlobs === false ? undefined : new Map();
   const results: ScanResult[] = [];
   const cwd = process.cwd();
   const blobOnly: ScanOptions = { ...options, blobOnly: true };

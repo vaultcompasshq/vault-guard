@@ -1,7 +1,9 @@
 import path from 'path';
 import type { SecretMatch } from '../types';
 import { isDocumentationPath } from './doc-context';
-import { contextPathFor, splitPathParts } from './path-parts';
+import { binaryCandidate } from './binary-type';
+import { inlineTestFinderId } from './inline-test-context';
+import { contextPathFor, isPythonPath, splitPathParts } from './path-parts';
 import { LOCALE_PATH_DOWNGRADE_IDS, LOW_PRECISION_PATH_DOWNGRADE_IDS } from './path-downgrade-ids';
 
 /**
@@ -199,18 +201,28 @@ export function applyPathAwareSeverity(
 
 /**
  * Everything about a file's PATH that can change what scanning its content
- * reports: the text after the last dot (the inline-test finder and the Python
- * triple-quote rule key on it), and the test, documentation and locale
- * judgements on the root-relative path (severity downgrades and documentation
- * suppression). Two paths with equal profiles scan identical content to
- * identical matches, so `--no-repo-controls` scans a blob once per profile and
- * reports it under every path. A new path-dependent rule must be added here.
+ * reports, built by calling the very functions the scan calls, never by
+ * re-deriving them from the text of the path:
+ *  - `binaryCandidate(path)`, the binary-by-name decision (the extension of
+ *    the basename, lowercased: a dotfile such as `.png` has none);
+ *  - `inlineTestFinderId(path)`, which inline-test finder the path selects;
+ *  - `isPythonPath(path)`, the scanner's Python rule;
+ *  - the test, documentation and locale judgements on the root-relative path,
+ *    which drive severity downgrades and documentation suppression.
+ * Two paths with equal profiles scan identical content to identical matches, so
+ * `--no-repo-controls` scans a blob once per profile and reports it under every
+ * path. A new path-dependent rule must be added here; the property test in
+ * `no-repo-controls.test.ts` (shared run equals each path scanned alone) fails
+ * when a pair of paths it covers is judged differently under one profile.
+ * Built-in name skips are decided per path before any sharing.
  */
 export function pathScanProfile(filePath: string, pathRoot?: string): string {
   const ctx = contextPathFor(filePath, pathRoot);
-  const dot = filePath.lastIndexOf('.');
+  const cand = binaryCandidate(filePath);
   return JSON.stringify([
-    dot === -1 ? '' : filePath.slice(dot),
+    cand === undefined ? '' : `${cand.family}${cand.ext}`,
+    inlineTestFinderId(filePath),
+    isPythonPath(filePath),
     isTestFilePath(ctx),
     isDocumentationPath(ctx),
     isLocalePath(ctx),

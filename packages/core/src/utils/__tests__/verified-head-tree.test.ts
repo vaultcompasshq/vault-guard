@@ -36,5 +36,9 @@ describe('pathScanProfile', () => {
     expect(pathScanProfile('/r/docs/x.txt', '/r')).not.toBe(pathScanProfile('/r/src/x.txt', '/r'));
     expect(pathScanProfile('/r/test/x.js', '/r')).not.toBe(pathScanProfile('/r/src/x.js', '/r'));
     expect(pathScanProfile('/r/a/x.py', '/r')).not.toBe(pathScanProfile('/r/a/x.txt', '/r'));
+    // The binary-by-name rule: a dotfile named .png has no extension, x.png does.
+    expect(pathScanProfile('/r/.png', '/r')).not.toBe(pathScanProfile('/r/x.png', '/r'));
+    expect(pathScanProfile('/r/X.PNG', '/r')).toBe(pathScanProfile('/r/x.png', '/r'));
+    expect(pathScanProfile('/r/a.b/file', '/r')).toBe(pathScanProfile('/r/file', '/r'));
   });
 });

@@ -247,7 +247,8 @@ A symlink's blob, the link's target text, is verified and scanned like any file
 and reported under the link's path; the link is never followed. (On a checkout
 without symlink support git writes that text out as a regular file.) A blob
 that several paths name is scanned once per distinct path profile (its
-extension and its test, documentation and locale context) and reported under
+binary-by-name decision, extension rules, and test, documentation and locale
+context, each decided by the functions the scan itself uses) and reported under
 every path. Modes are read the way git reads them, as octal by file type:
 a regular file is scanned whatever its permission bits (`100664`, `100600`,
 `0100644`), and a tree written as `0040000` is descended into. A mode that is

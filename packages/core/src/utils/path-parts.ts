@@ -26,6 +26,15 @@ export function splitPathParts(filePath: string): string[] {
 }
 
 /**
+ * The Python rule's path test (a triple-quoted string is not a generic
+ * assignment). Case-sensitive on purpose; the scanner and the path profile
+ * both call this, so they cannot disagree.
+ */
+export function isPythonPath(filePath: string): boolean {
+  return filePath.endsWith('.py');
+}
+
+/**
  * The path that test / documentation / locale context is judged on.
  *
  * Context words (`docs`, `tests`, `examples`, anything ending in `test`) must

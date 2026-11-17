@@ -1485,11 +1485,16 @@ A file or symlink mode that names an object the store does not have is a
 refusal, never a skip, even for a name a built-in rule would not scan.
 
 A blob that several paths name is scanned once per path profile
-(`pathScanProfile`: the text after the last dot, and the test, documentation
-and locale judgements on the root-relative path) and the result is reported
+(`pathScanProfile`, built by calling the functions the scan itself calls:
+`binaryCandidate` for the binary-by-name decision, `inlineTestFinderId`,
+`isPythonPath`, and the test, documentation and locale judgements on the
+root-relative path; never by slicing the path text, which treated a file named
+`.png` like `x.png`) and the result is reported
 under every path, with each path's own counters, inline-directive and
-placeholder records. Those are the only path inputs the scan reads; a new
-path-dependent rule must be added to the profile. A blob named by 700 paths
+placeholder records. Those are the only path inputs the scan reads (listed by reading the scan path
+from `scanHeadBlobsAsync` to the scanner); a new path-dependent rule must be
+added to the profile, and a built-in name skip is decided per path before any
+sharing. A blob named by 700 paths
 that differ only by directory is read and scanned once, not 700 times.
 
 Built-in name rules (a vendored directory name as a direct child of the scan
@@ -1525,6 +1530,8 @@ listed as a submodule`, `a loose object replaced by a huge blob: exit 2, the obj
 hold what its ids claim`, `a real file over the scan limit: exit 2, kept as
 too_large, no clone-fresh advice`, `30 paths, one blob: read once, reported 30
 times`, `the same blob under a docs path and a source path is judged per path`,
+`%s and %s: the shared run reports each path as scanning it alone does`, `a
+blob under x.png and under .png: the key under the dotfile name is reported`,
 `a vendored directory, a minified file, a lockfile and a log holding keys: exit
 0, each listed`, `the list is capped, with the count of the rest`, `2,100,000
 rows in one tree: exit 2, too large to list, quickly`; core

@@ -774,7 +774,7 @@ describe('--no-repo-controls: the object store must hold what its ids claim', ()
  */
 function rawRepo(
   build: (api: {
-    blob: (text: string) => string;
+    blob: (text: string | Buffer) => string;
     tree: (rows: Array<[string, string, string]>) => string;
     rawTree: (bytes: Buffer) => string;
   }) => string,
@@ -1028,4 +1028,58 @@ describe('--no-repo-controls: one very wide tree is refused while it is parsed',
     expect(r.err).toContain('2000000 tree rows');
     expect(Date.now() - t0).toBeLessThan(90_000);
   }, 300_000);
+});
+
+describe('--no-repo-controls: sharing a blob between paths never changes what a path reports', () => {
+  // One blob built to react to every path input the scan reads: PNG magic then text
+  // (a binary-by-name skip), a Python triple-quoted password (a .py rule), and a key.
+  const BLOB = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.from(`\nx = """\npassword = "hunter2hunter2xx"\n"""\naws = "${AWS_KEY}"\n`),
+  ]);
+
+  const PAIRS: Array<[string, string]> = [
+    ['x.png', '.png'],
+    ['.png', 'x.png'],
+    ['a.b/file', 'file'],
+    ['X.PNG', 'x.png'],
+    ['x.png', 'x.png.'],
+    ['file.', 'file'],
+    ['x.py', 'x.PY'],
+    ['x.py', 'x.txt'],
+    ['foo.min.js', 'bar.js'],
+    ['docs/a.txt', 'src/a.txt'],
+    ['test/a.js', 'src/a.js'],
+    ['yarn.lock', 'a.txt'],
+    ['a/b.rs', 'a/b.RS'],
+  ];
+
+  it.each(PAIRS)('%s and %s: the shared run reports each path as scanning it alone does', async (a, b) => {
+    const dir = rawRepo(({ blob, tree }) => tree([['100644', 'seed.txt', blob(BLOB)]]));
+    const oid = sha(dir, 'HEAD:seed.txt');
+    const paths = [a, b].map(p => path.join(dir, p));
+    const blobs = new Map(paths.map(p => [p, oid]));
+    const run = async (files: string[], shareBlobs: boolean): Promise<string> => {
+      const results = await scanHeadBlobsAsync(files, blobs, dir, new SecretScanner({}), {
+        blobOnly: true,
+        shareBlobs,
+        skipBinary: true,
+        inlineDirectives: 'mark',
+      });
+      return JSON.stringify(results.map(r => [path.relative(dir, r.file), r.matches.map(m => [m.type, m.line, m.severity])]).sort());
+    };
+    const alone = JSON.parse(await run([paths[0]], false)) as unknown[];
+    const aloneB = JSON.parse(await run([paths[1]], false)) as unknown[];
+    expect(JSON.parse(await run(paths, true))).toEqual([...alone, ...aloneB].sort());
+    expect(JSON.parse(await run(paths, false))).toEqual([...alone, ...aloneB].sort());
+  });
+
+  itPosix('a blob under x.png and under .png: the key under the dotfile name is reported', async () => {
+    const dir = rawRepo(({ blob, tree }) => {
+      const oid = blob(BLOB);
+      return tree([['100644', 'x.png', oid], ['100644', '.png', oid]]);
+    });
+    const r = await scanIn(dir);
+    expect(files(parse(r.stdout) as Doc).some(f => f.startsWith('.png|'))).toBe(true);
+  });
 });
