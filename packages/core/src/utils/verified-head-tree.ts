@@ -208,11 +208,23 @@ export function readVerifiedHeadTree(repoRoot: string, headOid: string): Verifie
   const rowsById = new Map<string, Row[]>();
   const want = (ids: string[]): string[] => [...new Set(ids)].filter(i => !rowsById.has(i));
   let next = want([rootId]);
+  // The read is bounded as well as the walk below. A round reads one level
+  // of the tree, so a round past the depth limit is a tree deeper than the
+  // limit; and the rows and bytes of the distinct trees read are counted, so
+  // a store of very many or very large trees refuses here, before the walk.
+  let rounds = 0;
+  let rowsRead = 0;
+  let bytesRead = 0;
   while (next.length > 0) {
+    if (++rounds > MAX_TREE_DEPTH) throw tooLarge(`deeper than ${MAX_TREE_DEPTH} directories`);
     const named: string[] = [];
     for (const [oid, o] of readVerified(repoRoot, next, alg)) {
       if (o.type !== 'tree') throw lie(`${o.type} ${oid} is where a tree is named`);
+      bytesRead += o.bytes.length;
+      if (bytesRead > MAX_BUFFER) throw tooLarge(`the trees are over ${MAX_BUFFER} bytes`);
       const rows = parseTree(o.bytes, rawLen, oid);
+      rowsRead += rows.length;
+      if (rowsRead > MAX_TREE_ROWS_WALKED) throw tooLarge(`over ${MAX_TREE_ROWS_WALKED} tree rows`);
       rowsById.set(oid, rows);
       // Only ids named by verified tree bytes are followed.
       for (const row of rows) if (row.kind === 'tree') named.push(row.oid);
