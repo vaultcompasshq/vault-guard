@@ -192,31 +192,45 @@ export function isPemHeaderWithoutBody(content: string, headerEndOffset: number)
 
   // A truncated example: an ellipsis line (`...`, the Unicode ellipsis, `[...]`,
   // `<snip>`) between the armor lines, with only a little base64 around it. It
-  // would otherwise read as a blank line. The cap is 64 base64 characters, the
-  // size of the shortest key body there is (Ed25519 PKCS8): a documentation
-  // example stays under it, a full-length body with a stray ellipsis line does
-  // not decline, so the line cannot be used to hide a whole key.
+  // would otherwise read as a blank line. The cap is 48 base64 characters, counted
+  // BEFORE `cleanPemToken` peels a trailing `+` (list syntax, but also a base64
+  // character: about one line in 64 ends in one). The smallest real body is 64
+  // (Ed25519 PKCS8), so 48 leaves 16 characters of margin for that peeling and
+  // for line ends the author trimmed, and a documentation example (a few lines,
+  // truncated) stays under it. A full-length body with a stray ellipsis line is
+  // not declined, so the line cannot be used to hide a whole key.
   if (hasFooter && lines.some(isEllipsisLine)) {
     let base64Chars = 0;
     for (const line of lines) {
       if (isEllipsisLine(line)) continue;
       for (const raw of line.split(/\s+/)) {
-        const t = cleanPemToken(raw);
-        if (/^[A-Za-z0-9+/]+={0,2}$/.test(t)) base64Chars += t.length;
+        if (!/^[A-Za-z0-9+/]+={0,2}$/.test(cleanPemToken(raw))) continue;
+        base64Chars += raw.replace(/^[^A-Za-z0-9+/]+|[^A-Za-z0-9+/=]+$/g, '').length;
       }
     }
     if (base64Chars < ELLIPSIS_BODY_CAP) return true;
   }
 
+  // The last line with anything on it: only there may a padding-only line stand.
+  let lastLineWithTokens = -1;
+  lines.forEach((l, i) => {
+    if (l.split(/\s+/).some(r => cleanPemToken(r) !== '')) lastLineWithTokens = i;
+  });
+
+  let lineNo = -1;
   for (const line of lines) {
+    lineNo++;
     const tokens: string[] = [];
     for (const raw of line.split(/\s+/)) {
       const token = cleanPemToken(raw);
       if (token !== '') tokens.push(token);
     }
     if (tokens.length === 0) continue;
-    // A `=` or `==` on a line of its own is base64 padding folded onto a new line.
-    if (tokens.length === 1 && (/^[A-Za-z0-9+/]+={0,2}$/.test(tokens[0]) || /^={1,2}$/.test(tokens[0]))) between.push(tokens[0]);
+    // A `=` or `==` on a line of its own is base64 padding folded onto a new line,
+    // and that is a body line only as the LAST one; it adds nothing to the length.
+    if (tokens.length === 1 && /^={1,2}$/.test(tokens[0])) {
+      if (lineNo !== lastLineWithTokens) betweenOk = false;
+    } else if (tokens.length === 1 && /^[A-Za-z0-9+/]+={0,2}$/.test(tokens[0])) between.push(tokens[0]);
     // An RFC 1421 header of a legacy encrypted key (`Proc-Type: 4,ENCRYPTED`, `DEK-Info: ...`).
     else if (!/^\s*[A-Za-z][A-Za-z0-9-]*:\s/.test(line)) betweenOk = false;
 
@@ -272,7 +286,7 @@ export function isPemHeaderWithoutBody(content: string, headerEndOffset: number)
 }
 
 /** Base64 characters around an ellipsis line below which the span is a truncated example. */
-const ELLIPSIS_BODY_CAP = 64;
+const ELLIPSIS_BODY_CAP = 48;
 
 /** A line that only marks something left out: `...`, the Unicode ellipsis, `[...]`, `<snip>`. */
 function isEllipsisLine(line: string): boolean {
