@@ -1447,8 +1447,9 @@ on any mismatch:
   bounded by the depth limit;
 - every blob the scan reads, hashed as it streams from `cat-file --batch`,
   including a blob read only for its head and then skipped as binary. A
-  blob skipped without a read (too large, or filtered by name) is not hashed.
-  The message names a path that holds the bad blob.
+  blob skipped by name before any read (a lockfile, a log, a vendored
+  directory) is not hashed. An over-limit blob is hashed without being scanned
+  (below). The message names a path that holds the bad blob.
 
 Modes are classified as git does, from the octal value by the file-type bits:
 a directory (`40000`, `040000`, `0040000`) is a tree and is descended into; a
@@ -1497,14 +1498,52 @@ added to the profile, and a built-in name skip is decided per path before any
 sharing. A blob named by 700 paths
 that differ only by directory is read and scanned once, not 700 times.
 
-Built-in name rules (a vendored directory name as a direct child of the scan
-root, and lockfile, log, source-map and minified-bundle names) still skip, and
-the exit code is unchanged, but the repository chooses those names, so each
-skip is listed: `notScanned.builtInSkips` in JSON and SARIF (`path`, `reason`;
-a directory is one row), a `Not scanned, built-in skip:` line each in text,
-capped at 200 rows with the rest in `builtInSkipsOmitted`. When anything is
-under `notScanned` the text verdict reads "No secrets found in the files
-scanned; N paths were not scanned, listed above".
+Built-in rules still skip, and the exit code is unchanged, but the repository
+chooses the names and the bytes, so each skip is listed: a vendored directory
+name as a direct child of the scan root (one row for the directory), a
+lockfile, log, source-map or minified-bundle name (one row each, with its own
+reason), and a binary file whose extension and first bytes agree (one row,
+reason `binary file (<family>)`: a key placed after a PNG header is not found,
+and the report says the file was not scanned). `notScanned.builtInSkips` in
+JSON and SARIF lists every row (`path`, `reason`) up to a safety ceiling of
+100,000, with the count beyond it in `builtInSkipsOmitted`. The text prints a
+`Not scanned, built-in skip:` line per row, shared out among the reasons so one
+noisy reason cannot crowd another out (200 rows in all), then says how many
+are not shown and that the JSON report lists all. When anything is under
+`notScanned` the text verdict reads "No secrets found in the files scanned; N
+paths were not scanned, listed above" (or "... M listed above and K not shown
+(the JSON report lists all)").
+
+The working tree cannot change the result. Every path judgement is lexical, so
+`path-parts.ts` (`contextPathFor`, `lexical`), `path-severity.ts`
+(`applyPathAwareSeverity`, `pathScanProfile`), the scanner's documentation
+suppression (`lexicalPaths`), and the content fingerprints and groups
+(`match-fingerprint.ts` `contentRelPath`, `scan-output.ts` `formGroups`,
+`baseline.ts`) make no filesystem call in this mode. The fingerprint option is
+set by the cli's `formatJson` and `formatSarif` whenever a `--no-repo-controls`
+report is passed, and by `displayScanResults` and `applyBaseline`; the
+baseline byte reader never falls back to the disk. The only filesystem reads
+in a run are the `lstat` and `readdir` checks under `.git`, and `realpath` of
+the repository root (which only locates the checkout). Audited reachable
+`fs` and child-process uses: `scan.ts` `canonicalPath` (the root, allowed);
+`scan.ts` named-link `lstat`/`stat` (only with `--trust-base`, not reachable);
+`scan.ts` baseline `readBytes` disk read (disabled here); `loadHeadOnlyTree`
+(`realpath` of the root, `git`); `assertOwnObjectStore` (`lstat`/`readdir`
+under `.git`, `git`); `readVerifiedHeadTree` and `GitContentSource`/
+`BlobBatchReader` (`git cat-file` only); `getHeadTreeFilesToScan` (path
+arithmetic only); the reporters and upgrade notice (no `fs`; the notice is not
+printed in this mode). A spy on every fs read function over a whole run
+(`no fs call touches a path outside .git`) and a run before and after
+replacing the whole working tree (`replacing the whole working tree with
+hostile content leaves the report byte-identical`) hold this.
+
+A blob over the scan limit is hashed without being scanned, but only up to
+`MAX_VERIFY_ONLY_BYTES` (2 GiB, counted by the size git reports) per run;
+past it the blob is reported as over the limit and not verified, exit 2. The
+reader forgets a blob's bytes as soon as every distinct path profile of it has
+been scanned: the paths that will reuse a result finish their references when
+the first scan ends, so a second name placed late in the tree does not hold
+the bytes.
 
 The check is against git's hash, so it is as strong as that hash: a sha1
 collision is out of scope. It does not make a tampered repository safe to
@@ -1533,7 +1572,15 @@ times`, `the same blob under a docs path and a source path is judged per path`,
 `%s and %s: the shared run reports each path as scanning it alone does`, `a
 blob under x.png and under .png: the key under the dotfile name is reported`,
 `a vendored directory, a minified file, a lockfile and a log holding keys: exit
-0, each listed`, `the list is capped, with the count of the rest`, `2,100,000
+0, each listed`, `JSON lists every skip; the text shows a capped share and says how many are
+not shown`, `250 lockfiles do not crowd out the one log that holds a key`, `a
+key after a binary header is listed as not scanned, and the verdict is
+qualified`, `over-limit blobs past the verification budget are reported as not
+verified, exit 2`, `kept bytes of a shared header-only blob are filed under
+every path`, `a blob named twice, the second name last in the tree, is not held
+for the second name`, `src/app.js with src on disk a link to %s/: still judged
+as src/app.js (high)`, `no fs call touches a path outside .git (the repository
+root itself excepted)`, `2,100,000
 rows in one tree: exit 2, too large to list, quickly`; core
 `verified-head-tree.test.ts` (`spends its row budget while parsing and stops
 there, before the rows after it`, `is equal for paths that scan alike and

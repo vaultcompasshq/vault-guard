@@ -194,6 +194,15 @@ export function copyKey(file: string, source: MatchSource | undefined, stage?: 2
  * over every object id the run will read (sizes and missing objects are known
  * before any content moves), and one streaming `cat-file --batch`.
  */
+/**
+ * The most bytes of over-limit blobs one `--no-repo-controls` run hashes
+ * without scanning (2 GiB, counted by the size git reports). A blob that
+ * compresses to almost nothing can cost seconds to stream, so without a
+ * ceiling a crafted store could hold a run for hours; past it the blob is
+ * reported as over the limit and not verified (exit 2).
+ */
+export const MAX_VERIFY_ONLY_BYTES = 2 * 1024 * 1024 * 1024;
+
 export class GitContentSource {
   private readonly readers = new Map<string, BlobBatchReader>();
   private readonly checks = new Map<string, Map<string, BlobCheck>>();
@@ -212,7 +221,20 @@ export class GitContentSource {
     private readonly window = 10,
     /** Hash every blob read against its id (`--no-repo-controls`). */
     private readonly verifyObjects = false,
+    /** Bytes of over-limit blobs this run may hash without scanning them. */
+    private verifyOnlyBudget = MAX_VERIFY_ONLY_BYTES,
   ) {}
+
+  /**
+   * Spend `bytes` of the run's budget for hashing over-limit blobs, which are
+   * streamed through git to be verified but never scanned. False when the
+   * budget cannot cover it: the blob is then reported as not verified.
+   */
+  takeVerifyBudget(bytes: number): boolean {
+    if (bytes > this.verifyOnlyBudget) return false;
+    this.verifyOnlyBudget -= bytes;
+    return true;
+  }
 
   /** Add (or replace) what is known about tracked files. */
   add(entries: Map<string, TrackedEntry>): void {
@@ -508,10 +530,12 @@ function scanText(
         ignoreHits: h,
         placeholderSkips: p,
         pathRoot: opts.pathRoot,
+        ...(opts.blobOnly ? { lexicalPaths: true } : {}),
         ...(opts.inlineDirectives !== undefined ? { inlineDirectives: opts.inlineDirectives } : {}),
       }),
       file,
       opts.pathRoot,
+      opts.blobOnly === true,
     );
   const first = timeSpan(clock, () => pass(hits, placeholderSkips));
   const budget = opts.budgetMs;
@@ -842,6 +866,18 @@ async function scanTrackedCopies(
         'git cat-file --batch-check',
       );
     }
+    if (opts.blobOnly && c.size > max && !source.takeVerifyBudget(c.size)) {
+      return outcome({
+        failure: {
+          kind: 'read_error',
+          reason:
+            `${(c.size / 1024 / 1024).toFixed(1)} MiB: over the ${Math.round(max / 1024 / 1024)} MiB scan limit and not ` +
+            `verified (this run's ${Math.round(MAX_VERIFY_ONLY_BYTES / 1024 / 1024 / 1024)} GiB budget for hashing ` +
+            'over-limit files is spent), so it was not scanned',
+        },
+        ...mm(),
+      });
+    }
     if (blobCand) {
       // Head first: a confirmed binary is skipped at any size (4.7).
       const head = await source.readHead(entry.repoTop, b.oid, SNIFF_BYTES);
@@ -857,6 +893,7 @@ async function scanTrackedCopies(
       // zero bytes still streams and hashes the whole body, held nowhere), so
       // a verified size is reported as a real over-limit file and a replaced
       // object is a hash mismatch. A candidate's head read above already did it.
+      // (Its size was charged to the verification budget above.)
       if (opts.blobOnly && !blobCand) await source.readHead(entry.repoTop, b.oid, 0);
       return outcome({ failure: { kind: 'too_large', bytes: c.size }, ...mm() });
     }

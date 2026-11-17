@@ -589,6 +589,8 @@ export class SecretScanner {
       ignoreHits?: IgnoreDirectiveHits;
       placeholderSkips?: PlaceholderSkipHits;
       pathRoot?: string;
+      /** Judge the path's context (test, docs, locale) without any filesystem call. */
+      lexicalPaths?: boolean;
       /**
        * `honour` (the default) drops a finding an inline ignore directive
        * covers. `mark` keeps it, with `inlineDirectiveNotHonoured` set, for a
@@ -746,7 +748,7 @@ export class SecretScanner {
           opts?.filePath &&
           shouldSuppressDocContextMatch(
             type,
-            contextPathFor(opts.filePath, opts.pathRoot),
+            contextPathFor(opts.filePath, opts.pathRoot, opts.lexicalPaths),
             rawValue,
             fullMatch,
             lineContent,

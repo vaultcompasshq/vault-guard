@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 
 import { scanCommand } from '../../commands/scan';
-import { scanHeadBlobsAsync } from '../../utils/scan-utils';
+import { newContentReport, newRunSkipCounts, scanHeadBlobsAsync } from '../../utils/scan-utils';
 import { BlobBatchReader, GitError, SecretScanner } from '@vaultcompass/vault-guard-core';
 import { AWS_KEY, capture, git, gitStub, parse, runCli, stubCalls, subcommand, tmpDir, write } from './git-fixture';
 
@@ -931,6 +931,8 @@ describe('--no-repo-controls: an over-limit file is verified, then reported as o
     expect(r.code).toBe(2);
     expect(r.err).toContain('over the 32 MiB scan limit');
     expect(r.err).not.toContain('Clone the repository fresh');
+    expect(r.err).not.toContain('ignore.paths');
+    expect(r.err).toContain('reads no config');
     const doc = JSON.parse(r.stdout) as { run: { unscannable?: Array<{ kind: string }> } } & Record<string, unknown>;
     expect(JSON.stringify(doc)).toContain('too_large');
   }, 180_000);
@@ -952,21 +954,6 @@ describe('--no-repo-controls: a blob named by many paths is scanned once and rep
     } finally {
       spy.mockRestore();
     }
-  });
-
-  itPosix('the same blob under a docs path and a source path is judged per path', async () => {
-    const dir = rawRepo(({ blob, tree }) => {
-      const oid = blob(`password = "hunter2hunter2xx"\naws = "${AWS_KEY}"\n`);
-      return tree([
-        ['40000', 'docs', tree([['100644', 'a.md', oid]])],
-        ['40000', 'src', tree([['100644', 'a.md', oid]])],
-        ['100644', 'plain.md', oid],
-      ]);
-    });
-    const shared = await scanIn(dir);
-    const each = ['docs/a.md', 'src/a.md', 'plain.md'];
-    const found = (parse(shared.stdout) as Doc).results.map(r => r.file).sort();
-    expect(found.every(f => each.includes(f))).toBe(true);
   });
 });
 
@@ -996,7 +983,7 @@ describe('--no-repo-controls: names the built-in rules skip are listed, not hidd
     expect(text.log).not.toContain('No secrets found\n');
   });
 
-  itPosix('the list is capped, with the count of the rest', async () => {
+  itPosix('JSON lists every skip; the text shows a capped share and says how many are not shown', async () => {
     const dir = rawRepo(({ blob, tree }) => {
       const oid = blob(KEY);
       return tree([
@@ -1007,8 +994,47 @@ describe('--no-repo-controls: names the built-in rules skip are listed, not hidd
     const r = await scanIn(dir);
     expect(r.code).toBe(0);
     const doc = parse(r.stdout) as unknown as { notScanned: { builtInSkips: unknown[]; builtInSkipsOmitted: number } };
-    expect(doc.notScanned.builtInSkips).toHaveLength(200);
-    expect(doc.notScanned.builtInSkipsOmitted).toBe(5);
+    expect(doc.notScanned.builtInSkips).toHaveLength(205);
+    expect(doc.notScanned.builtInSkipsOmitted).toBe(0);
+    const text = await scanIn(dir, { format: 'text' });
+    expect(text.log).toContain('5 more (log file, skipped by a built-in name rule) not shown; the JSON report lists all');
+    expect(text.log).toContain('205 paths were not scanned, 200 listed above and 5 not shown (the JSON report lists all)');
+  });
+
+  itPosix('250 lockfiles do not crowd out the one log that holds a key', async () => {
+    const dir = rawRepo(({ blob, tree }) => {
+      const oid = blob('x\n');
+      return tree([
+        ['100644', 'ok.txt', blob('fine\n')],
+        ['100644', 'zz.log', blob(KEY)],
+        ...Array.from({ length: 250 }, (_, i): [string, string, string] => ['100644', `a${String(i).padStart(3, '0')}.lock`, oid]),
+      ]);
+    });
+    const r = await scanIn(dir);
+    const doc = parse(r.stdout) as unknown as { notScanned: { builtInSkips: Array<{ path: string }> } };
+    expect(doc.notScanned.builtInSkips).toHaveLength(251);
+    expect(doc.notScanned.builtInSkips.some(s => s.path === 'zz.log')).toBe(true);
+    const text = await scanIn(dir, { format: 'text' });
+    expect(text.log).toContain('Not scanned, built-in skip: zz.log (log file');
+    expect(text.log).toContain('251 paths were not scanned, 101 listed above and 150 not shown (the JSON report lists all)');
+  });
+
+  itPosix('a key after a binary header is listed as not scanned, and the verdict is qualified', async () => {
+    const dir = rawRepo(({ blob, tree }) =>
+      tree([
+        ['100644', 'logo.png', blob(Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]), Buffer.from(KEY)]))],
+        ['100644', 'ok.txt', blob('fine\n')],
+      ]),
+    );
+    const r = await scanIn(dir);
+    expect(r.code).toBe(0);
+    const doc = parse(r.stdout) as unknown as { notScanned: { builtInSkips: Array<{ path: string; reason: string }> } };
+    expect(doc.notScanned.builtInSkips).toEqual([
+      { path: 'logo.png', reason: 'binary file (image): its extension and its first bytes agree, so it was not scanned' },
+    ]);
+    const text = await scanIn(dir, { format: 'text' });
+    expect(text.log).toContain('Not scanned, built-in skip: logo.png (binary file (image)');
+    expect(text.log).toContain('No secrets found in the files scanned; 1 path was not scanned, listed above');
   });
 });
 
@@ -1031,55 +1057,333 @@ describe('--no-repo-controls: one very wide tree is refused while it is parsed',
 });
 
 describe('--no-repo-controls: sharing a blob between paths never changes what a path reports', () => {
-  // One blob built to react to every path input the scan reads: PNG magic then text
-  // (a binary-by-name skip), a Python triple-quoted password (a .py rule), and a key.
-  const BLOB = Buffer.concat([
-      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-      Buffer.from(`\nx = """\npassword = "hunter2hunter2xx"\n"""\naws = "${AWS_KEY}"\n`),
+  // Blobs built to react to every path input the scan reads.
+  const MIXED = Buffer.concat([
+    // PNG magic then text: a binary-by-name skip under x.png, a text scan under .png.
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.from(`\nx = """\npassword = "hunter2hunter2xx"\n"""\naws = "${AWS_KEY}"\n`),
   ]);
+  // Generic password assignments: downgraded in test, docs and locale paths.
+  const TEXT = Buffer.from(`password = "Vq7Lp2Xz9Rt4Mk8Wn3Bd"\napi_key = "Zq9Lp2Xz9Rt4Mk8Wn3BdQ"\naws = "${AWS_KEY}"\n`);
+  // A key inside a Rust test module: lower severity only where the inline-test finder applies.
+  const RUST = Buffer.from(
+    `fn main() {}\n#[cfg(test)]\nmod tests {\n    const K: &str = "${AWS_KEY}";\n    let password = "Vq7Lp2Xz9Rt4Mk8Wn3Bd";\n}\n`,
+  );
+  // Generic assignments inside a Python triple-quoted string: no finding only under a .py name.
+  const PY = Buffer.from('doc = """\npassword = "Vq7Lp2Xz9Rt4Mk8Wn3Bd"\napi_key = "Zq9Lp2Xz9Rt4Mk8Wn3BdQ"\n"""\n');
+  const BLOBS = { MIXED, TEXT, RUST, PY };
 
-  const PAIRS: Array<[string, string]> = [
-    ['x.png', '.png'],
-    ['.png', 'x.png'],
-    ['a.b/file', 'file'],
-    ['X.PNG', 'x.png'],
-    ['x.png', 'x.png.'],
-    ['file.', 'file'],
-    ['x.py', 'x.PY'],
-    ['x.py', 'x.txt'],
-    ['foo.min.js', 'bar.js'],
-    ['docs/a.txt', 'src/a.txt'],
-    ['test/a.js', 'src/a.js'],
-    ['yarn.lock', 'a.txt'],
-    ['a/b.rs', 'a/b.RS'],
+  /** [path, other path, blob, whether the two paths must be judged differently]. */
+  const PAIRS: Array<[string, string, keyof typeof BLOBS, boolean]> = [
+    ['x.png', '.png', 'MIXED', true],
+    ['.png', 'x.png', 'MIXED', true],
+    ['a.b/file', 'file', 'MIXED', false],
+    ['X.PNG', 'x.png', 'MIXED', false],
+    ['x.png', 'x.png.', 'MIXED', true],
+    ['file.', 'file', 'MIXED', false],
+    ['x.py', 'x.PY', 'PY', true],
+    ['x.py', 'x.txt', 'PY', true],
+    ['foo.min.js', 'bar.js', 'MIXED', false],
+    ['docs/a.txt', 'src/a.txt', 'TEXT', true],
+    ['test/a.js', 'src/a.js', 'TEXT', true],
+    ['locales/a.txt', 'src/a.txt', 'TEXT', true],
+    ['yarn.lock', 'a.txt', 'MIXED', false],
+    ['a/b.rs', 'a/b.RS', 'RUST', false],
+    ['a/b.rs', 'a/b.txt', 'RUST', true],
   ];
 
-  it.each(PAIRS)('%s and %s: the shared run reports each path as scanning it alone does', async (a, b) => {
-    const dir = rawRepo(({ blob, tree }) => tree([['100644', 'seed.txt', blob(BLOB)]]));
-    const oid = sha(dir, 'HEAD:seed.txt');
+  interface Snapshot {
+    results: unknown;
+    stats: { filesScanned: number; bytesScanned: number };
+    binary: number;
+    typeMismatch: unknown;
+    placeholders: number;
+    inline: number;
+    kept: string[];
+    unreadable: unknown;
+  }
+
+  const snapshot = async (
+    dir: string,
+    blobs: Map<string, string>,
+    files: string[],
+    shareBlobs: boolean,
+  ): Promise<Snapshot> => {
+    const stats = { filesScanned: 0, bytesScanned: 0 };
+    const skips = newRunSkipCounts();
+    const placeholderSkips = { count: 0, locations: [] as Array<{ file: string; line: number }> };
+    const inlineSuppressed = { count: 0, criticalVendorAnchored: 0 };
+    const content = newContentReport();
+    const unreadable: never[] = [];
+    const results = await scanHeadBlobsAsync(files, blobs, dir, new SecretScanner({}), {
+      blobOnly: true,
+      shareBlobs,
+      skipBinary: true,
+      inlineDirectives: 'mark',
+      stats,
+      skips,
+      placeholderSkips,
+      inlineSuppressed,
+      content,
+      unreadable,
+    });
+    const rel = (f: string): string => path.relative(dir, f);
+    return {
+      results: results.map(r => ({ ...r, file: rel(r.file) })).sort((x, y) => (x.file < y.file ? -1 : 1)),
+      stats,
+      binary: skips.binary,
+      typeMismatch: skips.typeMismatch.map(t => ({ ...t, file: rel(t.file) })),
+      placeholders: placeholderSkips.count,
+      inline: inlineSuppressed.count,
+      kept: [...content.kept.keys()].map(k => rel(k.split('\0')[0]) + '|' + k.split('\0').slice(1).join('|')).sort(),
+      unreadable,
+    };
+  };
+
+  it.each(PAIRS)('%s and %s (%s): the shared run reports each path as scanning it alone does', async (a, b, which, differs) => {
+    const dir = rawRepo(({ blob, tree }) => tree([['100644', 'seed.bin', blob(BLOBS[which])]]));
+    const oid = sha(dir, 'HEAD:seed.bin');
     const paths = [a, b].map(p => path.join(dir, p));
     const blobs = new Map(paths.map(p => [p, oid]));
-    const run = async (files: string[], shareBlobs: boolean): Promise<string> => {
-      const results = await scanHeadBlobsAsync(files, blobs, dir, new SecretScanner({}), {
-        blobOnly: true,
-        shareBlobs,
-        skipBinary: true,
-        inlineDirectives: 'mark',
-      });
-      return JSON.stringify(results.map(r => [path.relative(dir, r.file), r.matches.map(m => [m.type, m.line, m.severity])]).sort());
+    const aloneA = await snapshot(dir, blobs, [paths[0]], false);
+    const aloneB = await snapshot(dir, blobs, [paths[1]], false);
+    const sum: Snapshot = {
+      results: [...(aloneA.results as unknown[]), ...(aloneB.results as unknown[])].sort((x, y) =>
+        (x as { file: string }).file < (y as { file: string }).file ? -1 : 1,
+      ),
+      stats: {
+        filesScanned: aloneA.stats.filesScanned + aloneB.stats.filesScanned,
+        bytesScanned: aloneA.stats.bytesScanned + aloneB.stats.bytesScanned,
+      },
+      binary: aloneA.binary + aloneB.binary,
+      typeMismatch: [...(aloneA.typeMismatch as unknown[]), ...(aloneB.typeMismatch as unknown[])],
+      placeholders: aloneA.placeholders + aloneB.placeholders,
+      inline: aloneA.inline + aloneB.inline,
+      kept: [...aloneA.kept, ...aloneB.kept].sort(),
+      unreadable: [...(aloneA.unreadable as unknown[]), ...(aloneB.unreadable as unknown[])],
     };
-    const alone = JSON.parse(await run([paths[0]], false)) as unknown[];
-    const aloneB = JSON.parse(await run([paths[1]], false)) as unknown[];
-    expect(JSON.parse(await run(paths, true))).toEqual([...alone, ...aloneB].sort());
-    expect(JSON.parse(await run(paths, false))).toEqual([...alone, ...aloneB].sort());
+    expect(await snapshot(dir, blobs, paths, true)).toEqual(sum);
+    expect(await snapshot(dir, blobs, paths, false)).toEqual(sum);
+    // Not vacuous: where the rules judge the two paths differently, the alone results differ.
+    const matchesOf = (snap: Snapshot): string =>
+      JSON.stringify((snap.results as Array<{ matches: unknown }>).map(r => r.matches));
+    if (differs) {
+      expect([matchesOf(aloneA), aloneA.binary, aloneA.typeMismatch]).not.toEqual([
+        matchesOf(aloneB),
+        aloneB.binary,
+        aloneB.typeMismatch,
+      ]);
+    }
   });
 
   itPosix('a blob under x.png and under .png: the key under the dotfile name is reported', async () => {
     const dir = rawRepo(({ blob, tree }) => {
-      const oid = blob(BLOB);
+      const oid = blob(MIXED);
       return tree([['100644', 'x.png', oid], ['100644', '.png', oid]]);
     });
     const r = await scanIn(dir);
     expect(files(parse(r.stdout) as Doc).some(f => f.startsWith('.png|'))).toBe(true);
+  });
+
+  itPosix('the same blob under a docs path and a source path is judged per path', async () => {
+    const dir = rawRepo(({ blob, tree }) => {
+      const oid = blob(TEXT);
+      return tree([
+        ['40000', 'docs', tree([['100644', 'a.txt', oid]])],
+        ['40000', 'src', tree([['100644', 'a.txt', oid]])],
+      ]);
+    });
+    const doc = parse((await scanIn(dir)).stdout) as unknown as {
+      results: Array<{ file: string; matches: Array<{ type: string; severity: string }> }>;
+    };
+    const sev = (file: string): string[] => (doc.results.find(r => r.file === file)?.matches ?? []).map(m => `${m.type}:${m.severity}`);
+    expect(sev('src/a.txt').length).toBeGreaterThan(0);
+    expect(sev('src/a.txt')).not.toEqual(sev('docs/a.txt'));
+    expect(sev('src/a.txt').some(x => x.endsWith(':high') || x.endsWith(':critical'))).toBe(true);
+  });
+});
+
+/** Every fs function that reads or inspects a path, spied for the run of `fn`; the paths seen are returned. */
+async function fsPathsTouched(fn: () => Promise<unknown>): Promise<Array<[string, string]>> {
+  // The module object itself (a namespace import is frozen), so the code under test sees the spies.
+  const realFs = jest.requireActual<typeof import('fs')>('fs');
+  const seen: Array<[string, string]> = [];
+  const spies: jest.SpyInstance[] = [];
+  const watch = (obj: object, name: string, label: string): void => {
+    const o = obj as Record<string, (...a: unknown[]) => unknown>;
+    if (typeof o[name] !== 'function') return;
+    const real = o[name];
+    spies.push(
+      jest.spyOn(o, name).mockImplementation(function (this: unknown, ...args: unknown[]) {
+        const first = args[0];
+        if (typeof first === 'string' || first instanceof URL || Buffer.isBuffer(first)) seen.push([label, String(first)]);
+        return real.apply(this, args);
+      }),
+    );
+  };
+  for (const n of ['readFileSync', 'readdirSync', 'statSync', 'lstatSync', 'existsSync', 'openSync', 'readlinkSync', 'accessSync', 'opendirSync', 'createReadStream', 'readFile', 'readdir', 'stat', 'lstat', 'open', 'access', 'readlink', 'opendir', 'realpath', 'writeFileSync', 'mkdirSync']) {
+    watch(realFs, n, `fs.${n}`);
+    watch(realFs.promises, n, `fs.promises.${n}`);
+  }
+  // realpathSync is a function with a .native member: spy the member, then keep it on the spy.
+  const realpathNative = realFs.realpathSync.native;
+  watch(realFs.realpathSync, 'native', 'fs.realpathSync.native');
+  const nativeSpy = realFs.realpathSync.native;
+  watch(realFs, 'realpathSync', 'fs.realpathSync');
+  (realFs.realpathSync as unknown as { native: typeof realpathNative }).native = nativeSpy;
+  try {
+    await fn();
+  } finally {
+    for (const sp of spies) sp.mockRestore();
+  }
+  return seen;
+}
+
+describe('--no-repo-controls: the working tree is never consulted', () => {
+  itPosix('no fs call touches a path outside .git (the repository root itself excepted)', async () => {
+    const dir = rawRepo(({ blob, tree }) =>
+      tree([
+        ['100644', 'a.txt', blob(`aws = "${AWS_KEY}"\n`)],
+        ['40000', 'src', tree([['100644', 'app.js', blob('x = 1\n')]])],
+      ]),
+    );
+    const root = fs.realpathSync.native(dir);
+    const touched = await fsPathsTouched(() => scanIn(dir));
+    // Allowed: anything under .git (the object-store checks), and realpath of the
+    // repository root itself, which only locates the checkout and reads no file in it.
+    const stray = touched.filter(([method, p]) => {
+      const abs = path.resolve(p);
+      const inGit = abs === path.join(root, '.git') || abs.startsWith(path.join(root, '.git') + path.sep);
+      const locatesRoot = method.startsWith('fs.realpathSync') && (abs === root || abs === path.resolve(dir));
+      return !inGit && !locatesRoot;
+    });
+    // The spy is live: the object-store lstat checks under .git were seen.
+    expect(touched.some(([m, p]) => m === 'fs.lstatSync' && p.includes(`${path.sep}.git${path.sep}objects`))).toBe(true);
+    expect(stray).toEqual([]);
+  });
+});
+
+describe('--no-repo-controls: the working tree cannot change the result', () => {
+  const HIGH = 'password: "Vq7Lp2Xz9Rt4Mk8Wn3Bd"\n';
+  const sevOf = (stdout: string): string[] =>
+    (parse(stdout) as Doc).results.flatMap(r => r.matches.map(m => (m as unknown as { severity: string }).severity));
+
+  itPosix.each(['test', 'docs', 'locales'])(
+    'src/app.js with src on disk a link to %s/: still judged as src/app.js (high)',
+    async target => {
+      const dir = rawRepo(({ blob, tree }) => tree([['40000', 'src', tree([['100644', 'app.js', blob(HIGH)]])]]));
+      expect(sevOf((await scanIn(dir)).stdout)).toEqual(['high']);
+      fs.mkdirSync(path.join(dir, target));
+      fs.symlinkSync(target, path.join(dir, 'src'));
+      const r = await scanIn(dir);
+      expect(r.code).toBe(1);
+      expect(sevOf(r.stdout)).toEqual(['high']);
+    },
+  );
+
+  const stripTiming = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(stripTiming);
+    if (v !== null && typeof v === 'object') {
+      return Object.fromEntries(
+        Object.entries(v as Record<string, unknown>)
+          .filter(([k]) => !/(^|_)(ms|duration|elapsed|time|timestamp|seconds)($|_)|Ms$|At$/i.test(k))
+          .map(([k, x]) => [k, stripTiming(x)]),
+      );
+    }
+    return v;
+  };
+
+  itPosix('replacing the whole working tree with hostile content leaves the report byte-identical', async () => {
+    const dir = rawRepo(({ blob, tree }) =>
+      tree([
+        ['100644', 'a.txt', blob(`aws = "${AWS_KEY}"\n`)],
+        ['100644', '.gitignore', blob('a.txt\n')],
+        ['100644', '.vault-guard.json', blob('{"ignore":{"paths":["a.txt"]}}')],
+        ['40000', 'src', tree([['100644', 'app.js', blob(HIGH)]])],
+        ['40000', 'docs', tree([['100644', 'g.txt', blob(HIGH)]])],
+        ['120000', 'lnk', blob(`aws = "${AWS_KEY}"\n`)],
+      ]),
+    );
+    const first = JSON.stringify(stripTiming(parse((await scanIn(dir)).stdout)));
+    // Hostile working tree: links into other directories, different bodies, a
+    // directory where a file was, a config that would silence everything.
+    fs.mkdirSync(path.join(dir, 'test'));
+    fs.mkdirSync(path.join(dir, 'a.txt'));
+    fs.writeFileSync(path.join(dir, '.vault-guard.json'), '{"ignore":{"paths":["**"]}}');
+    fs.writeFileSync(path.join(dir, '.vault-guard.baseline.json'), '{"entries":[]}');
+    fs.symlinkSync('test', path.join(dir, 'src'));
+    fs.symlinkSync('/', path.join(dir, 'docs'));
+    fs.writeFileSync(path.join(dir, 'lnk'), 'clean\n');
+    fs.writeFileSync(path.join(dir, 'new-key.txt'), `aws = "${AWS_KEY}"\n`);
+    const second = JSON.stringify(stripTiming(parse((await scanIn(dir)).stdout)));
+    expect(JSON.parse(second)).toEqual(JSON.parse(first));
+    expect(second).toBe(first);
+  });
+});
+
+describe('--no-repo-controls: budgets and what is held', () => {
+  const sizeMiB = (n: number, fill: string): string => fill.repeat(n * 1024 * 1024);
+
+  itPosix('over-limit blobs past the verification budget are reported as not verified, exit 2', async () => {
+    const dir = rawRepo(({ blob, tree }) =>
+      tree([
+        ['100644', 'big1.dat', blob(sizeMiB(33, 'a'))],
+        ['100644', 'big2.dat', blob(sizeMiB(33, 'b'))],
+      ]),
+    );
+    const blobs = new Map([
+      [path.join(dir, 'big1.dat'), sha(dir, 'HEAD:big1.dat')],
+      [path.join(dir, 'big2.dat'), sha(dir, 'HEAD:big2.dat')],
+    ]);
+    const unreadable: Array<{ kind?: 'too_large' | 'read_error' | 'scan_budget'; file: string; reason: string }> = [];
+    await scanHeadBlobsAsync([...blobs.keys()], blobs, dir, new SecretScanner({}), {
+      blobOnly: true,
+      verifyOnlyBudgetBytes: 40 * 1024 * 1024,
+      unreadable,
+      concurrency: 1,
+    });
+    expect(unreadable.map(u => u.kind).sort()).toEqual(['read_error', 'too_large']);
+    expect(unreadable.find(u => u.kind === 'read_error')?.reason).toContain('not verified');
+  }, 180_000);
+
+  itPosix('kept bytes of a shared header-only blob are filed under every path', async () => {
+    const PEM = '-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\n-----END RSA PRIVATE KEY-----\n';
+    const dir = rawRepo(({ blob, tree }) => tree([['100644', 'a.txt', blob(PEM)], ['100644', 'b.txt', blob(PEM)]]));
+    const blobs = new Map([
+      [path.join(dir, 'a.txt'), sha(dir, 'HEAD:a.txt')],
+      [path.join(dir, 'b.txt'), sha(dir, 'HEAD:b.txt')],
+    ]);
+    for (const shareBlobs of [true, false]) {
+      const content = newContentReport();
+      await scanHeadBlobsAsync([...blobs.keys()], blobs, dir, new SecretScanner({}), { blobOnly: true, shareBlobs, content });
+      const keys = [...content.kept.keys()].map(k => path.relative(dir, k.split('\0')[0]) + '|' + k.split('\0')[1]).sort();
+      expect([shareBlobs, keys]).toEqual([shareBlobs, ['a.txt|head', 'b.txt|head']]);
+    }
+  });
+
+  itPosix('a blob named twice, the second name last in the tree, is not held for the second name', async () => {
+    const N = 30;
+    const dir = rawRepo(({ blob, tree }) =>
+      tree([
+        ...Array.from({ length: N }, (_, i): [string, string, string] => ['100644', `a${String(i).padStart(2, '0')}.txt`, blob(`line ${i}\n`)]),
+        ...Array.from({ length: N }, (_, i): [string, string, string] => ['100644', `z${String(i).padStart(2, '0')}.txt`, blob(`line ${i}\n`)]),
+      ]),
+    );
+    const names = [...Array.from({ length: N }, (_, i) => `a${String(i).padStart(2, '0')}.txt`), ...Array.from({ length: N }, (_, i) => `z${String(i).padStart(2, '0')}.txt`)];
+    const blobs = new Map(names.map(n => [path.join(dir, n), sha(dir, `HEAD:${n}`)]));
+    const readers = new Set<BlobBatchReader>();
+    const real = BlobBatchReader.prototype.read;
+    const spy2 = jest.spyOn(BlobBatchReader.prototype, 'read').mockImplementation(function (this: BlobBatchReader, oid: string) {
+      readers.add(this);
+      return real.call(this, oid);
+    });
+    try {
+      await scanHeadBlobsAsync([...blobs.keys()], blobs, dir, new SecretScanner({}), { blobOnly: true, concurrency: 10 });
+    } finally {
+      spy2.mockRestore();
+    }
+    const maxHeld = Math.max(...[...readers].map(r => r.maxHeld));
+    // Held at once: at most the reads in flight, not all N blobs waiting for their second name.
+    expect(maxHeld).toBeLessThan(N);
   });
 });

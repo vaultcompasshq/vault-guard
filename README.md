@@ -233,8 +233,13 @@ chooses its own file names they are listed, not only counted: a vendored
 directory name as a direct child of the scan root (`node_modules`, `vendor`,
 `.git` and the like, one row per directory), and lockfiles, logs, source maps
 and minified bundles by name (one row per file), as `Not scanned, built-in
-skip:` in text and `notScanned.builtInSkips` in JSON and SARIF, capped at 200
-rows with the count of the rest in `builtInSkipsOmitted`. A key committed as
+skip:` in text and `notScanned.builtInSkips` in JSON and SARIF. JSON and SARIF list every row up to a
+ceiling of 100,000; the text shows a share per reason and says how many are not
+shown. A binary file whose extension and first bytes agree is listed too (a key
+placed after a PNG header is not scanned, and the report says so). The working
+tree never changes the result: every path judgement here is lexical, with no
+filesystem call, so a `src` that is a link to `test/` on disk does not turn
+`src/app.js` into a test file. A key committed as
 `node_modules/k.js`, `x.min.js` or `app.log` is therefore not found, exit 0,
 and the report says so: when anything is under "not scanned" the text verdict
 reads "No secrets found in the files scanned; N paths were not scanned, listed

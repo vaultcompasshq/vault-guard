@@ -32,6 +32,7 @@ import {
   loadHeadOnlyTree,
   NoRepoControlsError,
   getHeadTreeFilesToScan,
+  builtInSkipReason,
   type HeadOnlyTree,
   type RepoControlsReport,
   type HeadOnlyReport,
@@ -147,6 +148,8 @@ export function reportIncomplete(
   staged: boolean,
   trustBase: TrustBaseReport | undefined,
   between?: () => void,
+  /** `--no-repo-controls` reads no config, so it cannot be told to exclude a file. */
+  noRepoControls = false,
 ): void {
   // Sorted, so the first file named is the same on every run (entries are
   // pushed in completion order from concurrent batches).
@@ -181,6 +184,10 @@ export function reportIncomplete(
       );
       const note = excludeEntryNote(exclude);
       if (note) console.error(`    ${chalk.gray(`(${note})`)}`);
+    } else if (noRepoControls) {
+      console.error(
+        `    ${chalk.gray('this mode reads no config, so the file cannot be excluded; assess it on its own')}`,
+      );
     } else {
       console.error(`    ${chalk.gray('check the path, or stop passing it to vault-guard')}`);
     }
@@ -190,14 +197,70 @@ export function reportIncomplete(
     chalk.gray(
       `\n   vault-guard cannot vouch for every ${staged ? 'staged file' : 'file it was asked to scan'}.\n` +
         '   Refusing to produce a ✅ result that may be incorrect (exit 2).\n' +
-        '   Fix the cause, or exclude the file deliberately: an excluded file is counted\n' +
-        '   and reported as "Excluded by config ignore", never hidden.\n',
+        (noRepoControls
+          ? '   This mode reads no config, so nothing can be excluded: assess the file on its own.\n'
+          : '   Fix the cause, or exclude the file deliberately: an excluded file is counted\n' +
+            '   and reported as "Excluded by config ignore", never hidden.\n'),
     ),
   );
 }
 
-/** How many built-in skips a `--no-repo-controls` report lists; the rest are counted. */
-const BUILT_IN_SKIPS_LISTED = 200;
+/**
+ * A safety ceiling on the rows of `notScanned.builtInSkips` in JSON and SARIF,
+ * which are machine-read and list every skip below it; past it the rest are
+ * counted in `builtInSkipsOmitted`. The text report lists far fewer.
+ */
+export const BUILT_IN_SKIPS_CEILING = 100_000;
+/** The most built-in skip rows the text report prints, shared out among the reasons. */
+const BUILT_IN_SKIPS_TEXT_ROWS = 200;
+
+const SKIP_REASON_DIRECTORY = 'vendored directory name, skipped by a built-in rule';
+
+/** The text report's grouping of the built-in skip rows, and how many it leaves out. */
+function builtInSkipTextPlan(report: HeadOnlyReport): {
+  byReason: Map<string, string[]>;
+  share: number;
+  hidden: number;
+} {
+  const byReason = new Map<string, string[]>();
+  for (const s of report.notScanned.builtInSkips) {
+    const list = byReason.get(s.reason) ?? [];
+    list.push(s.path);
+    byReason.set(s.reason, list);
+  }
+  const share = Math.max(1, Math.floor(BUILT_IN_SKIPS_TEXT_ROWS / Math.max(1, byReason.size)));
+  let hidden = report.notScanned.builtInSkipsOmitted;
+  for (const paths of byReason.values()) hidden += Math.max(0, paths.length - share);
+  return { byReason, share, hidden };
+}
+
+/**
+ * What the built-in rules skipped, from the repository's own names and bytes,
+ * as rows: a vendored directory is one row, a file skipped by name or as binary
+ * (its extension and first bytes agree) one row each. Directories first, then
+ * by path.
+ */
+function fillBuiltInSkips(
+  report: HeadOnlyReport,
+  byName: Map<string, 'directory' | 'file'>,
+  binary: Array<{ file: string; family: string }>,
+  root: string,
+): void {
+  const rows: Array<{ path: string; reason: string; order: number }> = [];
+  for (const [p, kind] of byName) {
+    rows.push({ path: p.split(sep).join('/'), reason: kind === 'directory' ? SKIP_REASON_DIRECTORY : builtInSkipReason(p), order: kind === 'directory' ? 0 : 1 });
+  }
+  for (const b of binary) {
+    rows.push({
+      path: relative(root, b.file).split(sep).join('/'),
+      reason: `binary file (${b.family}): its extension and its first bytes agree, so it was not scanned`,
+      order: 2,
+    });
+  }
+  rows.sort((a, b) => a.order - b.order || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  report.notScanned.builtInSkips = rows.slice(0, BUILT_IN_SKIPS_CEILING).map(({ path: p, reason }) => ({ path: p, reason }));
+  report.notScanned.builtInSkipsOmitted = Math.max(0, rows.length - BUILT_IN_SKIPS_CEILING);
+}
 
 export async function scanCommand(
   targetPath: string | string[],
@@ -638,19 +701,7 @@ export async function scanCommand(
         prSkips.typeFilteredFiles += skipped.typeFilteredFiles;
         prSkips.nestedVendored = [...(prSkips.nestedVendored ?? []), ...(skipped.nestedVendored ?? [])];
       }
-      if (headOnlyReport) {
-        const rows = [...builtInSkipPaths]
-          .sort(([a, ka], [b, kb]) => (ka !== kb ? (ka === 'directory' ? -1 : 1) : a < b ? -1 : a > b ? 1 : 0))
-          .map(([p, kind]) => ({
-            path: p.split(sep).join('/'),
-            reason:
-              kind === 'directory'
-                ? 'vendored directory name, skipped by a built-in rule'
-                : 'lockfile, log, source map or minified bundle, skipped by a built-in name rule',
-          }));
-        headOnlyReport.notScanned.builtInSkips = rows.slice(0, BUILT_IN_SKIPS_LISTED);
-        headOnlyReport.notScanned.builtInSkipsOmitted = Math.max(0, rows.length - BUILT_IN_SKIPS_LISTED);
-      }
+      const binarySkipped: Array<{ file: string; family: string }> = [];
       results = await scanHeadBlobsAsync([...selected], headOnly.blobs, root, scanner, {
         verbose: format === 'text',
         skipBinary: true,
@@ -665,7 +716,9 @@ export async function scanCommand(
         scannedFiles,
         content: contentReport,
         inlineDirectives: 'mark',
+        binarySkipped,
       });
+      if (headOnlyReport) fillBuiltInSkips(headOnlyReport, builtInSkipPaths, binarySkipped, root);
     } else {
       results = await scanFilesAsync(targetPaths, scanner, {
         verbose: format === 'text',
@@ -788,6 +841,7 @@ export async function scanCommand(
       {
         anchor: outputBase,
         contentRoot,
+        ...(headOnly ? { lexicalPaths: true } : {}),
         isValueBearing: id => scanner.isValueBearing(id),
         // A header-only entry's file digest is taken over the bytes the
         // finding came from, kept by the scan: the blob for a blob match, the
@@ -795,7 +849,8 @@ export async function scanCommand(
         readBytes: (f: string, source, stage) => {
           const kept = contentReport.kept.get(copyKey(f, source, stage));
           if (kept !== undefined) return kept;
-          if (source === undefined || source === 'file' || source === 'worktree') return fs.readFileSync(f);
+          // Never the disk under --no-repo-controls: every copy there is a blob.
+          if (!headOnly && (source === undefined || source === 'file' || source === 'worktree')) return fs.readFileSync(f);
           throw new Error(`no bytes kept for ${f}`);
         },
       },
@@ -978,7 +1033,7 @@ export async function scanCommand(
       if (scanIncomplete) {
         // stdout carries the document; the reason and the remedy go to stderr,
         // so the Action and any wrapper that shows stderr can say why.
-        reportIncomplete(unreadable, staged, trustBase);
+        reportIncomplete(unreadable, staged, trustBase, undefined, headOnly !== undefined);
         flushDeferred();
         return INCOMPLETE_SCAN_EXIT;
       }
@@ -1003,7 +1058,7 @@ export async function scanCommand(
           '\n',
       );
       if (scanIncomplete) {
-        reportIncomplete(unreadable, staged, trustBase);
+        reportIncomplete(unreadable, staged, trustBase, undefined, headOnly !== undefined);
         flushDeferred();
         return INCOMPLETE_SCAN_EXIT;
       }
@@ -1071,12 +1126,26 @@ export async function scanCommand(
         for (const p of headOnlyReport.notScanned.submodules) {
           console.log(chalk.yellow(`Not scanned, submodule: ${printablePath(p)}`));
         }
-        for (const s of headOnlyReport.notScanned.builtInSkips) {
-          console.log(chalk.yellow(`Not scanned, built-in skip: ${printablePath(s.path)} (${s.reason})`));
+        // Grouped by reason, each reason's share of the rows capped, so one noisy
+        // reason (250 lockfiles) cannot crowd another (one log) out of view.
+        const plan = builtInSkipTextPlan(headOnlyReport);
+        for (const [reason, paths] of plan.byReason) {
+          for (const p of paths.slice(0, plan.share)) {
+            console.log(chalk.yellow(`Not scanned, built-in skip: ${printablePath(p)} (${reason})`));
+          }
+          if (paths.length > plan.share) {
+            console.log(
+              chalk.yellow(
+                `Not scanned, built-in skip: ${paths.length - plan.share} more (${reason}) not shown; the JSON report lists all`,
+              ),
+            );
+          }
         }
         if (headOnlyReport.notScanned.builtInSkipsOmitted > 0) {
           console.log(
-            chalk.yellow(`Not scanned, built-in skip: and ${headOnlyReport.notScanned.builtInSkipsOmitted} more (list capped)`),
+            chalk.yellow(
+              `Not scanned, built-in skip: ${headOnlyReport.notScanned.builtInSkipsOmitted} more beyond the report's ceiling of ${BUILT_IN_SKIPS_CEILING} rows`,
+            ),
           );
         }
       }
@@ -1224,9 +1293,9 @@ export async function scanCommand(
         // "here is what I found" and "here is what I never looked at".
         if (results.length > 0) {
           console.error('');
-          displayScanResults(results, blocking, displayRoot);
+          displayScanResults(results, blocking, displayRoot, headOnly !== undefined);
         }
-      });
+      }, headOnly !== undefined);
       // Everything else this run had to say on stderr follows the block.
       flushDeferred();
       warningSummary();
@@ -1239,18 +1308,22 @@ export async function scanCommand(
           headOnlyReport.notScanned.builtInSkips.length +
           headOnlyReport.notScanned.builtInSkipsOmitted
         : 0;
+      const hidden = headOnlyReport ? builtInSkipTextPlan(headOnlyReport).hidden : 0;
+      const what = `${notScanned} path${notScanned === 1 ? ' was' : 's were'} not scanned`;
       console.log(
         chalk.green.bold('✅ SUCCESS:'),
         chalk.white(
-          notScanned > 0
-            ? `No secrets found in the files scanned; ${notScanned} path${notScanned === 1 ? ' was' : 's were'} not scanned, listed above\n`
-            : 'No secrets found\n',
+          notScanned === 0
+            ? 'No secrets found\n'
+            : hidden === 0
+              ? `No secrets found in the files scanned; ${what}, listed above\n`
+              : `No secrets found in the files scanned; ${what}, ${notScanned - hidden} listed above and ${hidden} not shown (the JSON report lists all)\n`,
         ),
       );
       return 0;
     }
 
-    displayScanResults(results, blocking, displayRoot);
+    displayScanResults(results, blocking, displayRoot, headOnly !== undefined);
 
     if (blocking === 0) {
       // Findings exist but all sit below the gate. Say so explicitly -- a silent

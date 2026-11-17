@@ -1202,6 +1202,23 @@ function isGeneratedArtifact(basename: string): boolean {
   );
 }
 
+/**
+ * Why {@link shouldIgnoreFile} skips a name, as the label a report gives: one
+ * label per rule, so a report can group the skips and one noisy rule cannot
+ * hide another.
+ */
+export function builtInSkipReason(filePath: string): string {
+  const ext = path.extname(filePath);
+  const basename = path.basename(filePath);
+  let what = 'built-in name rule';
+  if (ext === '.lock' || basename === 'package-lock.json' || basename === 'pnpm-lock.yaml' || basename === 'yarn.lock') {
+    what = 'lockfile';
+  } else if (ext === '.log') what = 'log file';
+  else if (ext === '.map') what = 'source map';
+  else if (isGeneratedArtifact(basename)) what = 'minified or bundled file';
+  return `${what}, skipped by a built-in name rule`;
+}
+
 function shouldIgnoreFile(
   filePath: string,
   gitignoreTester?: (filePath: string) => boolean,

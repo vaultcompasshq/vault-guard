@@ -17,7 +17,6 @@ import {
   GitError,
   ObjectMismatchError,
   scanFileContent,
-  copyKey,
   pathScanProfile,
   listNamedTrackedFiles,
   inspectWorktree,
@@ -99,7 +98,8 @@ export function formatJson(results: ScanResult[], opts: ScanFormatOptions = {}):
     run: opts.run,
     trustBase: opts.trustBase,
     ...(opts.repoControls ? { repoControls: opts.repoControls } : {}),
-    ...(opts.headOnly ? { headOnly: opts.headOnly } : {}),
+    // A `--no-repo-controls` report keys every path lexically: no filesystem call.
+    ...(opts.headOnly ? { headOnly: opts.headOnly, lexicalPaths: true } : {}),
   });
 }
 export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {}): string {
@@ -111,7 +111,8 @@ export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {})
     run: opts.run,
     trustBase: opts.trustBase,
     ...(opts.repoControls ? { repoControls: opts.repoControls } : {}),
-    ...(opts.headOnly ? { headOnly: opts.headOnly } : {}),
+    // A `--no-repo-controls` report keys every path lexically: no filesystem call.
+    ...(opts.headOnly ? { headOnly: opts.headOnly, lexicalPaths: true } : {}),
   });
 }
 
@@ -554,6 +555,10 @@ export interface ScanOptions {
   blobOnly?: boolean;
   /** With `blobOnly`: false scans every path of a shared blob on its own (default true). For tests. */
   shareBlobs?: boolean;
+  /** With `blobOnly`: bytes of over-limit blobs the run may hash without scanning (default {@link MAX_VERIFY_ONLY_BYTES}). For tests. */
+  verifyOnlyBudgetBytes?: number;
+  /** With `blobOnly`: filled with each file skipped as binary (its extension and bytes agree), by absolute path and family. */
+  binarySkipped?: Array<{ file: string; family: string }>;
 }
 
 /**
@@ -630,7 +635,13 @@ interface SharedScan {
 }
 
 /** Scans in flight or done, by blob id and path profile (`--no-repo-controls`). */
-type SharedScans = Map<string, Promise<SharedScan>>;
+interface SharedScans {
+  scans: Map<string, Promise<SharedScan>>;
+  /** The share key of each path, computed once before any scan. */
+  keyOf: Map<string, string>;
+  /** How many paths hold each key. */
+  counts: Map<string, number>;
+}
 
 /**
  * Read a file's content through the run's content source and fold what it
@@ -669,33 +680,41 @@ async function scanOneFile(
   return { file, outcome, hits, placeholderSkips };
   };
   let ran: SharedScan;
-  const shareKey = shared && entry ? `${entry.oid}\0${pathScanProfile(file, pathRoot)}` : undefined;
-  const prior = shareKey !== undefined ? shared?.get(shareKey) : undefined;
+  const shareKey = shared?.keyOf.get(file);
+  const prior = shareKey !== undefined ? shared?.scans.get(shareKey) : undefined;
   if (prior !== undefined) {
     // The same blob under a path with the same path-dependent inputs: its
     // content was (or is being) scanned already, so its result is reused and
-    // reported under this path. Each reuse still finishes a reference to the
-    // blob, so the reader forgets it after the last path.
+    // reported under this path. A reuse takes no reference to the blob (the
+    // first path released them all, below), so the bytes are not held for it.
     const first = await prior;
-    const from = copyKey(first.file, 'file');
+    // Kept bytes are filed under the path and the copy's own source and stage
+    // (`<file> NUL head`), so re-file every entry the first path made.
     const kept = new Map<string, Buffer>();
-    for (const [k, v] of first.outcome.kept) kept.set(k === from ? copyKey(file, 'file') : k, v);
-    if (entry?.oid !== undefined) content?.done(entry.repoTop, entry.oid);
+    const prefix = `${first.file}\0`;
+    for (const [k, v] of first.outcome.kept) kept.set(k.startsWith(prefix) ? `${file}\0${k.slice(prefix.length)}` : k, v);
     ran = {
       ...first,
       file,
       outcome: { ...first.outcome, matches: first.outcome.matches.map(m => ({ ...m })), kept },
     };
-  } else if (shareKey !== undefined) {
+  } else if (shareKey !== undefined && shared !== undefined) {
     const p = run();
-    shared?.set(shareKey, p);
+    shared.scans.set(shareKey, p);
     ran = await p;
+    // The paths that will reuse this result never read the blob: finish their
+    // references now, so the reader forgets the bytes as soon as every distinct
+    // path profile has been scanned, not when the last duplicate path is reached.
+    if (entry?.oid !== undefined) {
+      for (let i = 1; i < (shared.counts.get(shareKey) ?? 1); i++) content?.done(entry.repoTop, entry.oid);
+    }
   } else {
     ran = await run();
   }
   const { outcome, hits, placeholderSkips } = ran;
   if (outcome.skippedByType) {
     recordBinarySkip(outcome.skippedByType.family, options);
+    options.binarySkipped?.push({ file, family: outcome.skippedByType.family });
     return null;
   }
   if (outcome.failure?.kind === 'too_large') {
@@ -1261,9 +1280,19 @@ export async function scanHeadBlobsAsync(
     }
     entries.set(f, { repoTop: repoRoot, mode: '100644', oid, worktreeAlso: false, filtered: false });
   }
-  const content = new GitContentSource('head', fileSetGitEnv(), entries, 10, true);
+  const content = new GitContentSource('head', fileSetGitEnv(), entries, 10, true, options.verifyOnlyBudgetBytes);
   // A blob named by many paths is scanned once per path profile, not once per path.
-  const shared: SharedScans | undefined = options.shareBlobs === false ? undefined : new Map();
+  let shared: SharedScans | undefined;
+  if (options.shareBlobs !== false) {
+    shared = { scans: new Map(), keyOf: new Map(), counts: new Map() };
+    for (const f of files) {
+      const oid = blobs.get(f);
+      if (oid === undefined) continue;
+      const key = `${oid}\0${pathScanProfile(f, repoRoot, true)}`;
+      shared.keyOf.set(f, key);
+      shared.counts.set(key, (shared.counts.get(key) ?? 0) + 1);
+    }
+  }
   const results: ScanResult[] = [];
   const cwd = process.cwd();
   const blobOnly: ScanOptions = { ...options, blobOnly: true };
@@ -1451,6 +1480,7 @@ export function displayScanResults(
   results: ScanResult[],
   blocking?: number,
   base: string = process.cwd(),
+  lexicalPaths = false,
 ): void {
   if (results.length === 0) {
     console.log(chalk.green.bold('✅ SUCCESS:'), chalk.white('No secrets found\n'));
@@ -1467,7 +1497,7 @@ export function displayScanResults(
   // the same pure function every formatter uses, on the same post-baseline
   // results. Each element below is printed only when it applies, so a run
   // with no demotion and no group prints exactly what 1.11.0 printed.
-  const formed = formGroups(results);
+  const formed = formGroups(results, lexicalPaths ? { lexicalPaths: true } : {});
   const counts = contentRunCounts(results, formed);
   const groupedClause =
     counts.match_groups > 0

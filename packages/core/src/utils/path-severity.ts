@@ -173,9 +173,10 @@ export function applyPathAwareSeverity(
   matches: SecretMatch[],
   filePath: string,
   pathRoot?: string,
+  lexical = false,
 ): SecretMatch[] {
   if (matches.length === 0) return matches;
-  const ctxPath = contextPathFor(filePath, pathRoot);
+  const ctxPath = contextPathFor(filePath, pathRoot, lexical);
   if (!isLowPrecisionContextPath(ctxPath)) return matches;
   // A match is downgraded when ANY context the path is in allows its rule:
   // a test path the low-precision set (throwaway PEMs and DSNs live there),
@@ -216,8 +217,8 @@ export function applyPathAwareSeverity(
  * when a pair of paths it covers is judged differently under one profile.
  * Built-in name skips are decided per path before any sharing.
  */
-export function pathScanProfile(filePath: string, pathRoot?: string): string {
-  const ctx = contextPathFor(filePath, pathRoot);
+export function pathScanProfile(filePath: string, pathRoot?: string, lexical = false): string {
+  const ctx = contextPathFor(filePath, pathRoot, lexical);
   const cand = binaryCandidate(filePath);
   return JSON.stringify([
     cand === undefined ? '' : `${cand.family}${cand.ext}`,

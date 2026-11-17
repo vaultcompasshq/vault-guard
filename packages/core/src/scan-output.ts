@@ -216,7 +216,10 @@ function slotKey(m: SecretMatch): string | undefined {
  * `contentRoot` is the root the content fingerprint is keyed on, so a group
  * id never reads the displayed path.
  */
-export function formGroups(results: FileScanResult[], opts: { contentRoot?: string } = {}): FormedGroups {
+export function formGroups(
+  results: FileScanResult[],
+  opts: { contentRoot?: string; lexicalPaths?: boolean } = {},
+): FormedGroups {
   const root = opts.contentRoot ?? process.cwd();
   const byFile: MatchGroup[][] = [];
   const memberOf: Array<Array<MatchGroup | undefined>> = [];
@@ -235,7 +238,7 @@ export function formGroups(results: FileScanResult[], opts: { contentRoot?: stri
     let rel: string | undefined;
     for (const idx of buckets.values()) {
       if (idx.length < GROUP_MIN) continue;
-      rel ??= contentRelPath(r.file, root);
+      rel ??= contentRelPath(r.file, root, opts.lexicalPaths === true);
       const ms = idx.map(i => r.matches[i]).sort((a, b) => a.line - b.line || a.column - b.column);
       const m0 = ms[0];
       const slot = m0.groupSlot;
@@ -446,6 +449,8 @@ export interface FormatOptions {
    * inside git, the scan anchor outside it. Defaults to {@link cwd}.
    */
   contentRoot?: string;
+  /** Key every path lexically, with no filesystem call (`--no-repo-controls`). */
+  lexicalPaths?: boolean;
   /** Non-fatal diagnostics to include in structured output. */
   diagnostics?: Diagnostic[];
   /** Scan timing / coverage stats for JSON and SARIF `runs[].properties`. */
@@ -643,12 +648,15 @@ function contentKey(
   m: SecretMatch,
 ): string | undefined {
   const root = opts.contentRoot ?? fpCwd ?? process.cwd();
-  return contentFingerprintForMatch(root, file, m);
+  return contentFingerprintForMatch(root, file, m, opts.lexicalPaths === true);
 }
 
 /** The groups for a formatter call, keyed on the same root as the content fingerprint. */
 function groupsFor(results: FileScanResult[], opts: FormatOptions, fpCwd: string | null): FormedGroups {
-  return formGroups(results, { contentRoot: opts.contentRoot ?? fpCwd ?? process.cwd() });
+  return formGroups(results, {
+    contentRoot: opts.contentRoot ?? fpCwd ?? process.cwd(),
+    ...(opts.lexicalPaths ? { lexicalPaths: true } : {}),
+  });
 }
 
 /** `opts.run` with the four content counts of section 8.2, always present. */
