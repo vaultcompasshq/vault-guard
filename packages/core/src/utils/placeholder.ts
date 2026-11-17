@@ -550,7 +550,7 @@ export function isNonSecretConnectionString(url: string): boolean {
  * while a placeholder PASSWORD is the credential itself.
  */
 export function connectionStringDeclines(url: string): { host: boolean; password: boolean } {
-  const m = /^[a-z][a-z0-9+.-]*:\/\/([^:@/\s]+):([^@/\s]+)@([^:/?\s]+)/i.exec(url);
+  const m = /^[a-z][a-z0-9+.-]*:\/\/([^:@/\s]*):([^@/\s]+)@([^:/?\s]+)/i.exec(url);
   if (!m) return { host: false, password: false };
 
   const user = m[1];
