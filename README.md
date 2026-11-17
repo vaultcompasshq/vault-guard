@@ -235,6 +235,19 @@ gitlink is listed as `Not scanned, submodule:` in text and in
 `notScanned.submodules` in JSON and SARIF, and the run does not exit 2 over
 it; clone and assess the submodule's repository on its own.
 
+Symlinks are listed too, as `Not scanned, symlink:` and `notScanned.symlinks`,
+because the target text a link holds is not scanned; this does not change the
+exit code either. Modes are read the way git reads them, as octal by file type:
+a regular file is scanned whatever its permission bits (`100664`, `100600`,
+`0100644`), and a tree written as `0040000` is descended into. A mode that is
+none of directory, regular file, symlink or gitlink, or is not octal, refuses
+the run (exit 2) naming the entry and the mode, as does an entry whose object is
+not what its mode says (a file mode on a tree). Nothing is skipped silently
+because of its mode. The listing is bounded: more than 5,000,000 tree rows
+walked (a tree that names the same subtree many times counts once per parent),
+more than 512 MiB of paths, or a depth over 1000 directories is exit 2, "too
+large to list", never a truncated scan.
+
 ### What fails the build
 
 Findings at or above the **`--fail-on` threshold** produce exit code 1, and

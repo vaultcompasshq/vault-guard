@@ -275,7 +275,7 @@ describe('--no-repo-controls: the tree is judged as at HEAD, from blobs only', (
     expect((await scanIn(gone)).code).toBe(1);
   });
 
-  itPosix('runs only config, rev-parse, ls-tree and cat-file, with the config read first', () => {
+  itPosix('runs only config, rev-parse and cat-file, with the config read first', () => {
     const dir = repoWithSecret({ '.gitignore': 'secret.txt\n', '.gitattributes': 'secret.txt -text\n' });
     write(dir, 'secret.txt', 'edited on disk\n');
     const log = path.join(tmpDir('vg-norc-log-'), 'git.log');
@@ -289,10 +289,7 @@ describe('--no-repo-controls: the tree is judged as at HEAD, from blobs only', (
     const subs = stubCalls(log).map(c => subcommand(c.args));
     expect(subs[0]).toBe('config');
     expect(stubCalls(log)[0].args).toEqual(['config', '--local', '--list', '--name-only', '-z']);
-    expect([...new Set(subs)].sort()).toEqual(['cat-file', 'config', 'ls-tree', 'rev-parse']);
-    // ls-tree is a hint for tree ids only: the file list comes from verified raw trees.
-    const ls = stubCalls(log).find(c => subcommand(c.args) === 'ls-tree');
-    expect(ls?.args.slice(ls.args.indexOf('ls-tree'))).toEqual(['ls-tree', '-r', '-t', '-z', 'HEAD']);
+    expect([...new Set(subs)].sort()).toEqual(['cat-file', 'config', 'rev-parse']);
   });
 
   itPosix(
@@ -476,11 +473,15 @@ describe('--no-repo-controls: what the report says about the tree', () => {
     expect(json.code).toBe(1);
     expect((JSON.parse(json.stdout) as { notScanned?: unknown }).notScanned).toEqual({
       submodules: ['deps/inner', 'vendor-lib'],
+      symlinks: [],
     });
     const sarif = JSON.parse((await scanIn(dir, { format: 'sarif' })).stdout) as {
       runs: Array<{ properties: Record<string, unknown> }>;
     };
-    expect(sarif.runs[0].properties.notScanned).toEqual({ submodules: ['deps/inner', 'vendor-lib'] });
+    expect(sarif.runs[0].properties.notScanned).toEqual({
+      submodules: ['deps/inner', 'vendor-lib'],
+      symlinks: [],
+    });
     const text = await scanIn(dir, { format: 'text' });
     expect(text.log.split('\n').filter(l => l.startsWith('Not scanned, submodule: '))).toEqual([
       'Not scanned, submodule: deps/inner',
@@ -763,4 +764,151 @@ describe('--no-repo-controls: the object store must hold what its ids claim', ()
     expect(r.err).toMatch(/\.\.\. \(\d+ characters\)/);
     expect(r.err.length).toBeLessThan(1200);
   });
+});
+
+/**
+ * A repository built from raw objects, so a tree can carry modes `git mktree`
+ * would never write. `put` hashes a blob; `tree` writes a tree object verbatim.
+ */
+function rawRepo(
+  build: (api: {
+    blob: (text: string) => string;
+    tree: (rows: Array<[string, string, string]>) => string;
+  }) => string,
+): string {
+  const dir = tmpDir('vg-norc-raw-');
+  initClean(dir);
+  const run = (args: string[], input: string | Buffer): string =>
+    execFileSync('git', args, { cwd: dir, input }).toString().trim();
+  const root = build({
+    blob: text => run(['hash-object', '-w', '--stdin'], text),
+    tree: rows =>
+      run(
+        ['hash-object', '-t', 'tree', '--literally', '-w', '--stdin'],
+        Buffer.concat(rows.map(([mode, name, oid]) => Buffer.concat([Buffer.from(`${mode} ${name}\0`), rawOid(oid)]))),
+      ),
+  });
+  const commit = execFileSync('git', ['commit-tree', root, '-m', 'raw'], {
+    cwd: dir,
+    env: { ...process.env, ...IDENTITY },
+  })
+    .toString()
+    .trim();
+  git(dir, ['update-ref', 'refs/heads/main', commit]);
+  return dir;
+}
+
+describe('--no-repo-controls: a mode is classified the way git does, and never skipped', () => {
+  const KEY = `aws = "${AWS_KEY}"\n`;
+
+  itPosix.each(['100664', '100600', '0100644', '100744', '100755', '100444'])(
+    'a regular file with mode %s is scanned and its key reported',
+    async mode => {
+      const dir = rawRepo(({ blob, tree }) => tree([[mode, 'f.txt', blob(KEY)]]));
+      const r = await scanIn(dir);
+      expect(r.code).toBe(1);
+      expect(files(parse(r.stdout) as Doc)).toEqual(['f.txt|aws-access']);
+    },
+  );
+
+  itPosix.each(['40000', '40755', '040755', '040000', '0040000'])('a tree written with mode %s is descended into', async mode => {
+    const dir = rawRepo(({ blob, tree }) => tree([[mode, 'd', tree([['100644', 'inner.txt', blob(KEY)]])]]));
+    const r = await scanIn(dir);
+    expect(r.code).toBe(1);
+    expect(files(parse(r.stdout) as Doc)).toEqual(['d/inner.txt|aws-access']);
+  });
+
+  itPosix('a symlink is listed under notScanned.symlinks and does not change the exit code', async () => {
+    const dir = rawRepo(({ blob, tree }) => tree([['120000', 'link', blob('target.txt')], ['100644', 'ok.txt', blob('fine\n')]]));
+    const r = await scanIn(dir);
+    expect(r.code).toBe(0);
+    const doc = parse(r.stdout) as unknown as Doc & { notScanned: { submodules: string[]; symlinks: string[] } };
+    expect(doc.notScanned).toEqual({ submodules: [], symlinks: ['link'] });
+    const text = await scanIn(dir, { format: 'text' });
+    expect(text.log).toContain('Not scanned, symlink: link');
+  });
+
+  itPosix.each(['160000', '0160000'])('a gitlink written with mode %s is listed as a submodule', async mode => {
+    const dir = rawRepo(({ blob, tree }) => tree([[mode, 'sub', blob('x\n')], ['100644', 'ok.txt', blob('fine\n')]]));
+    const r = await scanIn(dir);
+    expect(r.code).toBe(0);
+    const doc = parse(r.stdout) as unknown as { notScanned: { submodules: string[] } };
+    expect(doc.notScanned.submodules).toEqual(['sub']);
+  });
+
+  itPosix.each([
+    ['not octal', '10064x'],
+    ['not octal at all', 'abc'],
+    ['only a permission', '1'],
+    ['every type bit set', '170000'],
+    ['a fifo', '010644'],
+    ['a character device', '020644'],
+    ['no type bits', '000644'],
+  ])('a mode that is %s (%s): exit 2 naming the entry and its mode', async (_why, mode) => {
+    const dir = rawRepo(({ blob, tree }) => tree([[mode, 'weird.txt', blob(KEY)]]));
+    const r = await scanIn(dir);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('"weird.txt"');
+    expect(r.err).toContain(`"${mode}"`);
+    expect(r.stdout).toBe('');
+  });
+
+  itPosix('a file mode whose object is a tree: exit 2, not skipped', async () => {
+    const dir = rawRepo(({ blob, tree }) => tree([['100644', 'f.txt', tree([['100644', 'inner.txt', blob(KEY)]])]]));
+    const r = await scanIn(dir);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('"f.txt"');
+    expect(r.err).toContain('is a tree');
+  });
+
+  itPosix('a tree mode whose object is a blob: exit 2, not skipped', async () => {
+    const dir = rawRepo(({ blob, tree }) => tree([['40000', 'd', blob(KEY)]]));
+    const r = await scanIn(dir);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('is where a tree is named');
+  });
+});
+
+describe('--no-repo-controls: a tree that expands without bound is refused', () => {
+  itPosix('ten levels each naming one subtree ten times: exit 2 within seconds, too large to list', async () => {
+    const dir = rawRepo(({ blob, tree }) => {
+      let level = tree([['100644', 'leaf.txt', blob('x\n')]]);
+      for (let i = 0; i < 10; i++) {
+        level = tree(Array.from({ length: 10 }, (_, k): [string, string, string] => ['40000', `d${k}`, level]));
+      }
+      return level;
+    });
+    const t0 = Date.now();
+    const r = await scanIn(dir);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('too large to list');
+    expect(r.err).toContain('5000000 tree rows');
+    expect(r.stdout).toBe('');
+    expect(Date.now() - t0).toBeLessThan(60_000);
+  }, 120_000);
+
+  itPosix('a tree nested deeper than the depth limit: exit 2, too large to list', async () => {
+    const dir = rawRepo(({ blob, tree }) => {
+      let level = tree([['100644', 'leaf.txt', blob('x\n')]]);
+      for (let i = 0; i < 1005; i++) level = tree([['40000', 'd', level]]);
+      return level;
+    });
+    const r = await scanIn(dir);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('deeper than 1000 directories');
+  }, 120_000);
+});
+
+describe('--no-repo-controls: a size the object store claims is not presented as fact', () => {
+  itPosix('a loose object replaced by a huge blob: exit 2, the size is called unverified', async () => {
+    const dir = repoWithSecret({ 'ok.txt': 'fine\n' }, 'x\n');
+    const big = Buffer.alloc(40 * 1024 * 1024, 0x61);
+    overwriteObject(dir, sha(dir, 'HEAD:secret.txt'), 'blob', big);
+    const r = await scanIn(dir, { format: 'text' });
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('the object store claims');
+    expect(r.err).toContain('was not verified');
+    expect(r.err).toContain('Clone the repository fresh and assess the clone.');
+    expect(r.err).not.toContain('MiB: over');
+  }, 120_000);
 });

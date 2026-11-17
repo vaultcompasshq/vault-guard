@@ -263,7 +263,7 @@ export async function scanCommand(
     ? { honoured: false, present: headOnly.present }
     : undefined;
   const headOnlyReport: HeadOnlyReport | undefined = headOnly
-    ? { scannedCommit: headOnly.head, notScanned: { submodules: headOnly.submodules } }
+    ? { scannedCommit: headOnly.head, notScanned: { submodules: headOnly.submodules, symlinks: headOnly.symlinks } }
     : undefined;
 
   // Base for every path this run renders, serializes, ignore-matches and
@@ -1049,6 +1049,9 @@ export async function scanCommand(
         );
         for (const p of headOnlyReport.notScanned.submodules) {
           console.log(chalk.yellow(`Not scanned, submodule: ${printablePath(p)}`));
+        }
+        for (const p of headOnlyReport.notScanned.symlinks) {
+          console.log(chalk.yellow(`Not scanned, symlink: ${printablePath(p)}`));
         }
       }
       if (repoControls.present.length === 0) {

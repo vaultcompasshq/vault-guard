@@ -4,24 +4,26 @@
  * against the id they were asked for.
  *
  * The commit is read and hashed, its `tree` line names the root tree, and the
- * file list is derived by parsing the verified raw tree bytes here, not from
- * `git ls-tree` output. `ls-tree -r -t -z HEAD` still runs, but only as a
- * hint: its tree ids seed the first batch read so a deep tree costs one
- * `cat-file --batch` call, not one per level. A tree it left out is read in a
- * further round, and a tree it invented is never used, because only ids named
- * by verified bytes are followed. The check is git's own hash (sha1 or
- * sha256, by id length), so it is as strong as that hash.
+ * file list is derived by parsing the verified raw tree bytes here. `git
+ * ls-tree` is not run at all. Trees are read one level per `cat-file --batch`
+ * call, and only ids named by already-verified bytes are followed; each new
+ * tree is parsed once, in the round it arrives. The cost is one call per
+ * directory level (a few for a real repository), which the depth limit bounds
+ * at 1000. The check is git's own hash (sha1 or sha256, by id length), so it
+ * is as strong as that hash.
  */
 
 import { spawnSync } from 'child_process';
 
 import { gitObjectId, hashAlgorithmForOid } from './blob-reader';
 import { fileSetGitEnv } from './git-env';
+import { HEAD_TREE_LISTING_MAX_BYTES } from '../trust-base';
 
 export interface VerifiedEntry {
-  /** Six-digit octal as `ls-tree` prints it, `040000` for a tree. */
+  /** The mode as written in the tree, normalized to its octal value with at least six digits. */
   mode: string;
-  type: 'blob' | 'tree' | 'commit';
+  /** `blob` is a regular file (any permission bits), `symlink` a link, `commit` a gitlink (submodule). */
+  type: 'blob' | 'symlink' | 'commit';
   oid: string;
   /** Root-relative, posix separators. */
   path: string;
@@ -35,12 +37,32 @@ export class ObjectStoreMismatch extends Error {
   }
 }
 
-const MAX_BUFFER = 1024 * 1024 * 1024;
+/**
+ * Limits on what a crafted store can make the listing do. Passing any of them
+ * refuses the run (exit 2), never a truncated scan. The byte limit is the one
+ * the old `ls-tree` listing had (`HEAD_TREE_LISTING_MAX_BYTES`, 512 MiB).
+ */
+/** Tree rows visited while walking, counting a shared tree once per parent that names it. */
+export const MAX_TREE_ROWS_WALKED = 5_000_000;
+/** Total bytes of the paths emitted. */
+export const MAX_TREE_PATH_BYTES = HEAD_TREE_LISTING_MAX_BYTES;
+/** Directory depth. */
+export const MAX_TREE_DEPTH = 1000;
+/** Raw bytes read from `cat-file --batch` in one call (commit and trees). */
+const MAX_BUFFER = HEAD_TREE_LISTING_MAX_BYTES;
 const REMEDY = 'Clone the repository fresh and assess the clone.';
 
 function lie(what: string): ObjectStoreMismatch {
   return new ObjectStoreMismatch(
     `vault-guard: the object store does not hold what its ids claim: ${what}. ${REMEDY} Nothing was scanned.`,
+  );
+}
+
+function tooLarge(what: string): ObjectStoreMismatch {
+  return new ObjectStoreMismatch(
+    `vault-guard: the HEAD tree is too large to list: ${what} (limits: ${MAX_TREE_ROWS_WALKED} tree rows walked, ` +
+      `${MAX_TREE_PATH_BYTES} bytes of paths, depth ${MAX_TREE_DEPTH}). A tree that names the same subtree many times ` +
+      'expands without bound. Nothing was scanned.',
   );
 }
 
@@ -59,6 +81,7 @@ function readVerified(
     stdio: ['pipe', 'pipe', 'pipe'],
     maxBuffer: MAX_BUFFER,
   });
+  if ((r.error as NodeJS.ErrnoException | undefined)?.code === 'ENOBUFS') throw tooLarge(`the commit and trees are over ${MAX_BUFFER} bytes`);
   if (r.error !== undefined || r.status !== 0) {
     const stderr = Buffer.isBuffer(r.stderr) ? r.stderr.toString('utf-8').trim() : '';
     throw new ObjectStoreMismatch(
@@ -90,46 +113,83 @@ function readVerified(
   return out;
 }
 
-/** The tree ids `git ls-tree -r -t -z HEAD` names. A hint: any failure gives none. */
-function treeIdHints(cwd: string): string[] {
-  const r = spawnSync('git', ['-c', 'core.quotePath=false', 'ls-tree', '-r', '-t', '-z', 'HEAD'], {
-    cwd,
-    env: fileSetGitEnv(),
-    stdio: ['ignore', 'pipe', 'ignore'],
-    maxBuffer: 512 * 1024 * 1024,
-  });
-  if (r.error !== undefined || r.status !== 0) return [];
-  const ids: string[] = [];
-  for (const rec of r.stdout.toString('latin1').split('\0')) {
-    const m = /^\d+ tree ([0-9a-f]+)\t/.exec(rec);
-    if (m) ids.push(m[1]);
+type Row = { mode: string; kind: 'tree' | 'file' | 'symlink' | 'gitlink'; name: string; oid: string };
+
+/**
+ * Classify a tree entry's mode the way git does: as octal, by the file-type
+ * bits (S_IFMT). A directory is a tree; a regular file is a file whatever its
+ * permission bits (100664, 100600, 0100644 and so on); 120000 is a symlink;
+ * 160000 is a gitlink. Any other mode, or text that is not octal, is refused:
+ * nothing is skipped silently because of its mode.
+ */
+export function classifyMode(mode: string): Row['kind'] | null {
+  if (!/^[0-7]{1,16}$/.test(mode)) return null;
+  switch (Number.parseInt(mode, 8) & 0o170000) {
+    case 0o040000:
+      return 'tree';
+    case 0o100000:
+      return 'file';
+    case 0o120000:
+      return 'symlink';
+    case 0o160000:
+      return 'gitlink';
+    default:
+      return null;
   }
-  return ids;
 }
 
-const isTreeMode = (mode: string): boolean => mode === '40000' || mode === '040000';
-
 /** Parse one raw tree: `<mode> <name>\0<raw id>` repeated. */
-function parseTree(bytes: Buffer, rawLen: number, treeId: string): Array<{ mode: string; name: string; oid: string }> {
-  const rows: Array<{ mode: string; name: string; oid: string }> = [];
+function parseTree(bytes: Buffer, rawLen: number, treeId: string): Row[] {
+  const rows: Row[] = [];
   let p = 0;
   while (p < bytes.length) {
     const sp = bytes.indexOf(0x20, p);
     const nul = sp === -1 ? -1 : bytes.indexOf(0, sp);
     if (sp === -1 || nul === -1 || bytes.length < nul + 1 + rawLen) throw lie(`tree ${treeId} is malformed`);
-    rows.push({
-      mode: bytes.toString('latin1', p, sp),
-      name: bytes.toString('utf-8', sp + 1, nul),
-      oid: bytes.subarray(nul + 1, nul + 1 + rawLen).toString('hex'),
-    });
+    const mode = bytes.toString('latin1', p, sp);
+    const name = bytes.toString('utf-8', sp + 1, nul);
+    const kind = classifyMode(mode);
+    if (kind === null) {
+      throw new ObjectStoreMismatch(
+        `vault-guard: the HEAD tree has an entry with a mode this scan will not guess at: ${JSON.stringify(name)} ` +
+          `has mode ${JSON.stringify(mode)} in tree ${treeId}, which is not a directory, a regular file, a symlink or a ` +
+          'gitlink. Nothing was scanned.',
+      );
+    }
+    rows.push({ mode, kind, name, oid: bytes.subarray(nul + 1, nul + 1 + rawLen).toString('hex') });
     p = nul + 1 + rawLen;
   }
   return rows;
 }
 
+/** `cat-file --batch-check` types for `oids`; an id git does not have is absent from the map. */
+function objectTypes(cwd: string, oids: string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  if (oids.length === 0) return out;
+  const r = spawnSync('git', ['-c', 'core.quotePath=false', 'cat-file', '--batch-check'], {
+    cwd,
+    env: fileSetGitEnv(),
+    input: oids.map(o => `${o}\n`).join(''),
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+    maxBuffer: MAX_BUFFER,
+  });
+  if (r.error !== undefined || r.status !== 0) {
+    throw new ObjectStoreMismatch(
+      `vault-guard: could not check the type of the files in the HEAD tree (git cat-file --batch-check): ` +
+        `${String(r.error ?? r.stderr).trim()}. Nothing was scanned.`,
+    );
+  }
+  for (const line of r.stdout.split('\n')) {
+    const parts = line.split(' ');
+    if (parts.length === 3) out.set(parts[0], parts[1]);
+  }
+  return out;
+}
+
 /**
- * Every non-tree entry of the HEAD commit's tree, recursive, from verified
- * raw objects. Throws {@link ObjectStoreMismatch}.
+ * Every non-directory entry of the HEAD commit's tree, recursive, from
+ * verified raw objects. Throws {@link ObjectStoreMismatch}.
  */
 export function readVerifiedHeadTree(repoRoot: string, headOid: string): VerifiedEntry[] {
   const alg = hashAlgorithmForOid(headOid);
@@ -144,28 +204,33 @@ export function readVerifiedHeadTree(repoRoot: string, headOid: string): Verifie
   if (m === null || m[1].length !== hexLen) throw lie(`commit ${headOid} has no tree line`);
   const rootId = m[1];
 
-  const trees = new Map<string, Buffer>();
-  const want = (ids: string[]): string[] => [...new Set(ids)].filter(i => !trees.has(i));
-  let next = want([rootId, ...treeIdHints(repoRoot).filter(i => i.length === hexLen)]);
+  // Each tree id is read and parsed once, however many parents name it.
+  const rowsById = new Map<string, Row[]>();
+  const want = (ids: string[]): string[] => [...new Set(ids)].filter(i => !rowsById.has(i));
+  let next = want([rootId]);
   while (next.length > 0) {
+    const named: string[] = [];
     for (const [oid, o] of readVerified(repoRoot, next, alg)) {
       if (o.type !== 'tree') throw lie(`${o.type} ${oid} is where a tree is named`);
-      trees.set(oid, o.bytes);
-    }
-    // Only ids named by verified tree bytes are followed.
-    const named: string[] = [];
-    for (const [oid, bytes] of trees) {
-      for (const row of parseTree(bytes, rawLen, oid)) if (isTreeMode(row.mode)) named.push(row.oid);
+      const rows = parseTree(o.bytes, rawLen, oid);
+      rowsById.set(oid, rows);
+      // Only ids named by verified tree bytes are followed.
+      for (const row of rows) if (row.kind === 'tree') named.push(row.oid);
     }
     next = want(named);
   }
-  if (!trees.has(rootId)) throw lie(`root tree ${rootId} was not read`);
+  if (!rowsById.has(rootId)) throw lie(`root tree ${rootId} was not read`);
 
-  // Iterative, so a deeply nested tree cannot overflow the call stack.
+  // Iterative, so a deeply nested tree cannot overflow the call stack, and
+  // bounded: a tree shared by many parents is walked once per parent, which
+  // is how a few small objects can name billions of paths.
   const out: VerifiedEntry[] = [];
-  const rowsOf = (id: string): ReturnType<typeof parseTree> => {
-    if (!trees.has(id)) throw lie(`tree ${id} was not read`);
-    return parseTree(trees.get(id) as Buffer, rawLen, id);
+  let walked = 0;
+  let pathBytes = 0;
+  const rowsOf = (id: string): Row[] => {
+    const rows = rowsById.get(id);
+    if (rows === undefined) throw lie(`tree ${id} was not read`);
+    return rows;
   };
   const stack = [{ rows: rowsOf(rootId), i: 0, prefix: '' }];
   while (stack.length > 0) {
@@ -175,13 +240,31 @@ export function readVerifiedHeadTree(repoRoot: string, headOid: string): Verifie
       continue;
     }
     const row = top.rows[top.i++];
+    if (++walked > MAX_TREE_ROWS_WALKED) throw tooLarge(`over ${MAX_TREE_ROWS_WALKED} tree rows`);
     const p = top.prefix + row.name;
-    if (isTreeMode(row.mode)) {
+    pathBytes += Buffer.byteLength(p);
+    if (pathBytes > MAX_TREE_PATH_BYTES) throw tooLarge(`over ${MAX_TREE_PATH_BYTES} bytes of paths`);
+    if (row.kind === 'tree') {
+      if (stack.length >= MAX_TREE_DEPTH) throw tooLarge(`deeper than ${MAX_TREE_DEPTH} directories`);
       stack.push({ rows: rowsOf(row.oid), i: 0, prefix: `${p}/` });
-    } else if (row.mode === '160000') {
+    } else if (row.kind === 'gitlink') {
       out.push({ mode: '160000', type: 'commit', oid: row.oid, path: p });
     } else {
-      out.push({ mode: row.mode.padStart(6, '0'), type: 'blob', oid: row.oid, path: p });
+      out.push({ mode: row.mode, type: row.kind === 'symlink' ? 'symlink' : 'blob', oid: row.oid, path: p });
+    }
+  }
+
+  // A file or symlink mode must name a blob. A tree where a file is claimed (or
+  // the reverse, caught above where trees are read) is refused, not skipped.
+  const types = objectTypes(repoRoot, [...new Set(out.filter(e => e.type !== 'commit').map(e => e.oid))]);
+  for (const e of out) {
+    if (e.type === 'commit') continue;
+    const t = types.get(e.oid);
+    if (t !== undefined && t !== 'blob') {
+      throw new ObjectStoreMismatch(
+        `vault-guard: the HEAD tree is inconsistent: ${JSON.stringify(e.path)} has mode ${e.mode}, which is a ` +
+          `${e.type === 'symlink' ? 'symlink' : 'regular file'}, but its object ${e.oid} is a ${t}. Nothing was scanned.`,
+      );
     }
   }
   return out;

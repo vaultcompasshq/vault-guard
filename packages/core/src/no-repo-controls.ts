@@ -15,8 +15,8 @@
  *    kept and marked.
  *
  *  - The tree is judged as at HEAD, from blobs only. The file set is
- *    `git ls-tree -r -z HEAD` and content is `git cat-file`. The run never
- *    runs `status`, `hash-object`, `check-attr` or `ls-files`, and never reads
+ *    parsed from the HEAD commit's raw trees and content is `git cat-file`.
+ *    The run never runs `status`, `ls-tree`, `hash-object`, `check-attr` or `ls-files`, and never reads
  *    a working-tree copy. That is NOT pull-request mode: `--trust-base` reads
  *    a disk copy that differs from HEAD, through `status`, and `status` runs a
  *    repository-configured clean filter on a stat-dirty file.
@@ -30,13 +30,13 @@
  *    commit, every tree, and every blob the scan reads are hashed (git's own
  *    sha1 or sha256, by id length) and compared with the id they were asked
  *    for; a mismatch refuses the run. The file list comes from the verified
- *    raw trees (`utils/verified-head-tree.ts`), not from `ls-tree` output.
+ *    raw trees (`utils/verified-head-tree.ts`), not from `ls-tree` output (which is not run).
  *
  * The git calls are `config --local --list`, `rev-parse --show-toplevel`,
  * `rev-parse --git-common-dir` and `--git-path objects`, `rev-parse --verify
- * HEAD`, `ls-tree -r -t -z HEAD` (a hint of tree ids only), and
- * `cat-file --batch` (commit and trees, then the blobs) with
- * `cat-file --batch-check`.
+ * HEAD`, then `cat-file --batch` (the commit, then the trees a level at a
+ * time), `cat-file --batch-check` (the type of each file's object), and
+ * `cat-file --batch-check` and `--batch` for the blobs. Not `ls-tree`.
  */
 
 import { spawnSync } from 'child_process';
@@ -94,6 +94,8 @@ export interface HeadOnlyTree {
   present: string[];
   /** Every gitlink (submodule) path in the HEAD tree, root-relative, sorted: not descended into. */
   submodules: string[];
+  /** Every symlink path in the HEAD tree, root-relative, sorted: the link is listed, its target text is not scanned. */
+  symlinks: string[];
 }
 
 /**
@@ -107,6 +109,8 @@ export interface HeadOnlyReport {
   notScanned: {
     /** Gitlink paths: the submodule's content is another repository and was not scanned. */
     submodules: string[];
+    /** Symlink paths: the target text a link holds was not scanned. */
+    symlinks: string[];
   };
 }
 
@@ -188,6 +192,7 @@ export function loadHeadOnlyTree(startDir: string): HeadOnlyTree {
   const blobs = new Map<string, string>();
   const seen = new Set<string>();
   const submodules: string[] = [];
+  const symlinks: string[] = [];
   for (const e of entries) {
     // Paths are decoded as UTF-8, so two raw names that are not valid UTF-8
     // can read as one, and a crafted tree can hold one name twice. Either
@@ -205,11 +210,15 @@ export function loadHeadOnlyTree(startDir: string): HeadOnlyTree {
     }
     seen.add(key);
     if (e.type === 'commit') submodules.push(e.path);
-    if (e.type !== 'blob' || (e.mode !== '100644' && e.mode !== '100755')) continue;
-    blobs.set(key, e.oid);
+    else if (e.type === 'symlink') symlinks.push(e.path);
+    // Every regular file is read, whatever its permission bits: nothing is
+    // dropped for its mode (the verified listing refuses a mode it cannot classify).
+    else if (e.type === 'blob') blobs.set(key, e.oid);
   }
-  submodules.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  return { repoRoot, head: head.out.trim(), blobs, present: presentRepoControls(entries), submodules };
+  const byPath = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+  submodules.sort(byPath);
+  symlinks.sort(byPath);
+  return { repoRoot, head: head.out.trim(), blobs, present: presentRepoControls(entries), submodules, symlinks };
 }
 
 /**

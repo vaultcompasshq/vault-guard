@@ -203,9 +203,15 @@ function recordTooLarge(
   options: ScanOptions,
   exclude?: string,
 ): void {
-  const reason = `${(bytes / 1024 / 1024).toFixed(1)} MiB: over ${Math.round(maxBytes / 1024 / 1024)} MiB, not scanned`;
+  // In --no-repo-controls the size is only what the object store claims: it
+  // came from cat-file, and the object has not been read, so not verified.
+  const reason = options.blobOnly
+    ? `the object store claims ${(bytes / 1024 / 1024).toFixed(1)} MiB, over the ${Math.round(maxBytes / 1024 / 1024)} MiB ` +
+      'scan limit, so the file was not scanned. That size was not verified against the object, which may have ' +
+      'been replaced. Clone the repository fresh and assess the clone.'
+    : `${(bytes / 1024 / 1024).toFixed(1)} MiB: over ${Math.round(maxBytes / 1024 / 1024)} MiB, not scanned`;
   options.unreadable?.push({
-    kind: 'too_large',
+    kind: options.blobOnly ? 'read_error' : 'too_large',
     file: displayFile,
     reason,
     ...(exclude ? { exclude } : {}),
