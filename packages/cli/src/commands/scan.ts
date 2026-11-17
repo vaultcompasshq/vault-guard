@@ -216,6 +216,11 @@ const BUILT_IN_SKIPS_TEXT_ROWS = 200;
 
 const SKIP_REASON_DIRECTORY = 'vendored directory name, skipped by a built-in rule';
 
+/** The placeholder declines of a head-only run, for its verdict line. */
+function placeholderPhrase(n: number): string {
+  return `${n} value(s) skipped as placeholders (listed in the JSON report)`;
+}
+
 /** "N paths were not scanned, ..." for a head-only run's verdict line. */
 function notScannedPhrase(report: HeadOnlyReport | undefined, notScanned: number): string {
   const hidden = report ? builtInSkipTextPlan(report).hidden : 0;
@@ -342,7 +347,7 @@ export async function scanCommand(
     ? { honoured: false, present: headOnly.present }
     : undefined;
   const headOnlyReport: HeadOnlyReport | undefined = headOnly
-    ? { scannedCommit: headOnly.head, scannedRoot: headOnly.repoRoot, notScanned: { submodules: headOnly.submodules, builtInSkips: [], builtInSkipsOmitted: 0 } }
+    ? { scannedCommit: headOnly.head, scannedRoot: headOnly.repoRoot, placeholderSkips: { skips: [], omitted: 0 }, notScanned: { submodules: headOnly.submodules, builtInSkips: [], builtInSkipsOmitted: 0 } }
     : undefined;
 
   // Base for every path this run renders, serializes, ignore-matches and
@@ -573,7 +578,7 @@ export async function scanCommand(
   // `ignore-next-line` directives across every file. Reported even at zero so
   // the run always states whether the scanner was silenced inline.
   const inlineSuppressed = { count: 0, criticalVendorAnchored: 0 };
-  const placeholderSkips: { count: number; locations: Array<{ file: string; line: number }> } = {
+  const placeholderSkips: { count: number; locations: Array<{ file: string; line: number; rule?: string }> } = {
     count: 0,
     locations: [],
   };
@@ -732,7 +737,15 @@ export async function scanCommand(
         binarySkipped,
         gitBinary: headOnly.git,
       });
-      if (headOnlyReport) fillBuiltInSkips(headOnlyReport, builtInSkipPaths, binarySkipped, root);
+      if (headOnlyReport) {
+        fillBuiltInSkips(headOnlyReport, builtInSkipPaths, binarySkipped, root);
+        // Every placeholder decline, by file, line and rule (never the value).
+        const rows = placeholderSkips.locations
+          .map(l => ({ file: l.file.split(sep).join('/'), line: l.line, rule: l.rule ?? 'unknown' }))
+          .sort((a, b) => (a.file !== b.file ? (a.file < b.file ? -1 : 1) : a.line - b.line || (a.rule < b.rule ? -1 : 1)));
+        headOnlyReport.placeholderSkips.skips = rows.slice(0, BUILT_IN_SKIPS_CEILING);
+        headOnlyReport.placeholderSkips.omitted = Math.max(0, rows.length - BUILT_IN_SKIPS_CEILING);
+      }
     } else {
       results = await scanFilesAsync(targetPaths, scanner, {
         verbose: format === 'text',
@@ -1179,7 +1192,7 @@ export async function scanCommand(
       if (filtered > 0) {
         console.log(
           chalk.yellow(
-            `Context filters not honoured: ${filtered} finding(s) a documentation path, a nearby comment or a code-shape rule would have dropped are reported`,
+            `Context filters not honoured: ${filtered} finding(s) the repository's path or surrounding text would have dropped are reported`,
           ),
         );
       }
@@ -1343,12 +1356,16 @@ export async function scanCommand(
           headOnlyReport.notScanned.builtInSkips.length +
           headOnlyReport.notScanned.builtInSkipsOmitted
         : 0;
+      const qualifiers = [
+        ...(notScanned > 0 ? [notScannedPhrase(headOnlyReport, notScanned)] : []),
+        ...(headOnlyReport && placeholderSkips.count > 0 ? [placeholderPhrase(placeholderSkips.count)] : []),
+      ];
       console.log(
         chalk.green.bold('✅ SUCCESS:'),
         chalk.white(
-          notScanned === 0
+          qualifiers.length === 0
             ? 'No secrets found\n'
-            : `No secrets found in the files scanned; ${notScannedPhrase(headOnlyReport, notScanned)}\n`,
+            : `No secrets found in the files scanned; ${qualifiers.join('; ')}\n`,
         ),
       );
       return 0;
@@ -1375,7 +1392,8 @@ export async function scanCommand(
             `${totalMatches} finding(s) below the gate "${failOn}"` +
               (lowered > 0 ? `, ${lowered} of them lowered by path or content rules (severity_before_path_rules or demotion in the report)` : '') +
               ' -- not failing the gate.' +
-              (notScannedNow > 0 ? ` ${notScannedPhrase(headOnlyReport, notScannedNow)}.` : ''),
+              (notScannedNow > 0 ? ` ${notScannedPhrase(headOnlyReport, notScannedNow)}.` : '') +
+              (placeholderSkips.count > 0 ? ` ${placeholderPhrase(placeholderSkips.count)}.` : ''),
           ),
         );
         console.log(chalk.gray('   --fail-on low makes every finding block\n'));

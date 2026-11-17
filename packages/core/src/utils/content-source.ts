@@ -641,7 +641,17 @@ function freshSkips(): PlaceholderSkipHits {
 
 function foldSkips(into: PlaceholderSkipHits, blob: PlaceholderSkipHits, disk: PlaceholderSkipHits): void {
   into.count += blob.count + Math.max(0, disk.count - blob.count);
-  into.lines.push(...new Set([...blob.lines, ...disk.lines]));
+  const seen = new Set<string>();
+  for (const hits of [blob, disk]) {
+    hits.lines.forEach((line, i) => {
+      const rule = hits.rules?.[i];
+      const key = `${line}\0${rule ?? ''}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      into.lines.push(line);
+      if (rule !== undefined) (into.rules ??= []).push(rule);
+    });
+  }
 }
 
 /**

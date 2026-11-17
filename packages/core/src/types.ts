@@ -72,7 +72,8 @@ export type ContextFilterKind =
   | 'call-follows'
   | 'identifier-reference'
   | 'pem-no-body'
-  | 'local-host';
+  | 'local-host'
+  | 'url-context';
 
 /** Why a match was demoted. See {@link SecretMatch.demotion}. */
 export type DemotionReason = 'data-uri-binary-payload' | 'base64-binary-run';

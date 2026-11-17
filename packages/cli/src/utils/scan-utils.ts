@@ -517,7 +517,7 @@ export interface ScanOptions {
    * Placeholder values the scanner declined. Not a user suppression.
    * Locations name the file and line and never the value.
    */
-  placeholderSkips?: { count: number; locations: Array<{ file: string; line: number }> };
+  placeholderSkips?: { count: number; locations: Array<{ file: string; line: number; rule?: string }> };
   /**
    * Pull-request mode's file set. When present, a directory target's file list
    * is the tracked files intersected with the walk's own filtering, rather than
@@ -640,7 +640,7 @@ interface SharedScan {
   file: string;
   outcome: Awaited<ReturnType<typeof scanFileContent>>;
   hits: IgnoreDirectiveHits;
-  placeholderSkips: { count: number; lines: number[] } | undefined;
+  placeholderSkips: { count: number; lines: number[]; rules?: string[] } | undefined;
 }
 
 /** Scans in flight or done, by blob id and path profile (`--no-repo-controls`). */
@@ -673,7 +673,7 @@ async function scanOneFile(
   const entry = content?.entryFor(path.resolve(file));
   const run = async (): Promise<SharedScan> => {
   const hits: IgnoreDirectiveHits = { count: 0, lines: [] };
-  const placeholderSkips = options.placeholderSkips ? { count: 0, lines: [] as number[] } : undefined;
+  const placeholderSkips = options.placeholderSkips ? { count: 0, lines: [] as number[], rules: [] as string[] } : undefined;
   const outcome = await scanFileContent(scanner, file, entry, entry ? content : undefined, {
     pathRoot,
     maxBytes: maxSize,
@@ -752,9 +752,10 @@ async function scanOneFile(
   recordInlineSuppression(hits, display, options);
   if (options.placeholderSkips && placeholderSkips && placeholderSkips.count > 0) {
     options.placeholderSkips.count += placeholderSkips.count;
-    for (const line of placeholderSkips.lines) {
-      options.placeholderSkips.locations.push({ file: display, line });
-    }
+    placeholderSkips.lines.forEach((line, i) => {
+      const rule = placeholderSkips.rules?.[i];
+      options.placeholderSkips?.locations.push({ file: display, line, ...(rule !== undefined ? { rule } : {}) });
+    });
   }
   const report = options.content;
   if (report) {

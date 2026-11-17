@@ -380,6 +380,7 @@ export interface JsonOutput {
   /** Present only on a `--no-repo-controls` run: the HEAD commit judged. */
   scannedCommit?: string;
   scannedRoot?: string;
+  placeholderSkips?: HeadOnlyReport['placeholderSkips'];
   /** Present only on a `--no-repo-controls` run: paths listed but not scanned. */
   notScanned?: HeadOnlyReport['notScanned'];
   results: Array<{
@@ -683,7 +684,7 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
     ...(run ? { run } : {}),
     ...(opts.trustBase ? { trustBase: opts.trustBase } : {}),
     ...(opts.repoControls ? { repoControls: opts.repoControls } : {}),
-    ...(opts.headOnly ? { scannedCommit: opts.headOnly.scannedCommit, scannedRoot: opts.headOnly.scannedRoot, notScanned: opts.headOnly.notScanned } : {}),
+    ...(opts.headOnly ? { scannedCommit: opts.headOnly.scannedCommit, scannedRoot: opts.headOnly.scannedRoot, placeholderSkips: opts.headOnly.placeholderSkips, notScanned: opts.headOnly.notScanned } : {}),
     results: results.map(({ file, matches }, fi) => ({
       file: normalizeFilePath(file, opts.cwd, opts.scanRoot),
       matches: matches.map((m, mi) => {
@@ -905,7 +906,7 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
           ...(vaultGuardRunProps ?? {}),
           ...(opts.repoControls ? { repoControls: opts.repoControls } : {}),
           ...(opts.headOnly
-            ? { scannedCommit: opts.headOnly.scannedCommit, scannedRoot: opts.headOnly.scannedRoot, notScanned: opts.headOnly.notScanned }
+            ? { scannedCommit: opts.headOnly.scannedCommit, scannedRoot: opts.headOnly.scannedRoot, placeholderSkips: opts.headOnly.placeholderSkips, notScanned: opts.headOnly.notScanned }
             : {}),
         }
       : undefined;

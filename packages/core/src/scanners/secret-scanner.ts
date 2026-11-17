@@ -353,6 +353,19 @@ const HUMAN_CHOSEN_VALUE_IDS = new Set([
 export interface PlaceholderSkipHits {
   count: number;
   lines: number[];
+  /** The rule id of each skip, parallel to {@link lines}. */
+  rules?: string[];
+}
+
+/**
+ * The part of a whole-match value that is the secret, for the rules whose
+ * match carries free text beside it (connection strings, Azure storage). Any
+ * other rule: undefined, its value is the capture group or the whole match.
+ */
+function secretPartOf(type: string, fullMatch: string): string | undefined {
+  if (type === 'azure-storage') return /AccountKey=([A-Za-z0-9+/=]+)/.exec(fullMatch)?.[1];
+  if (/-url$/.test(type)) return /^[a-z][a-z0-9+.-]*:\/\/[^:@/\s]+:([^@/\s]+)@/i.exec(fullMatch)?.[1];
+  return undefined;
 }
 
 export interface IgnoreDirectiveHits {
@@ -612,7 +625,7 @@ export class SecretScanner {
     const suppressedByDirective: SecretMatch[] | null = opts?.ignoreHits ? [] : null;
     // Placeholder declines, deduped by match offset at the end so two rules
     // on one value count once. Recorded only when the caller asked.
-    const placeholderRaw: Array<{ line: number; offset: number }> | null = opts?.placeholderSkips ? [] : null;
+    const placeholderRaw: Array<{ line: number; offset: number; rule: string }> | null = opts?.placeholderSkips ? [] : null;
 
     // Fresh `RegExp` per invocation so concurrent or interleaved `scanContent`
     // calls (e.g. across `await` in a worker pool) never share `lastIndex`.
@@ -634,6 +647,19 @@ export class SecretScanner {
         const rawValue = match[1] ?? match[0];
         const fullMatch = match[0];
 
+        // In a run that honours nothing the repository supplies (`mark`), a filter
+        // keyed on the repository's own path or surrounding text keeps the match
+        // and names itself on it instead of dropping it.
+        const keepFiltered = opts?.inlineDirectives === 'mark';
+        let ctxFilter: ContextFilterKind | undefined;
+        // A rule with no capture group has the whole match as its "value": a
+        // connection string carries a user, host, database and query beside the
+        // password, an Azure connection string an account name beside the key.
+        // Where the repository's text is not trusted, the value filters judge the
+        // secret part alone, so a marker in the host or database name cannot
+        // clear a real password.
+        const judged = keepFiltered ? (secretPartOf(type, fullMatch) ?? rawValue) : rawValue;
+
         // Ahead of the entropy gate on purpose. Shannon entropy ignores
         // character order, so a hand-typed alphabet run scores near the maximum
         // for its length and sails through. This runs for vendor-anchored rules
@@ -644,25 +670,33 @@ export class SecretScanner {
         // That safety argument does not hold for rules whose value a person
         // types, where a run is a weak password rather than a fake one, so
         // those rules are exempt. See HUMAN_CHOSEN_VALUE_IDS.
-        if (!HUMAN_CHOSEN_VALUE_IDS.has(type) && isSequentialRunPlaceholder(rawValue)) {
+        if (!HUMAN_CHOSEN_VALUE_IDS.has(type) && isSequentialRunPlaceholder(judged)) {
           continue;
         }
 
         const threshold = minEntropy ?? (minEntropy === 0 ? 0 : undefined);
-        if (threshold !== undefined && shannonEntropy(rawValue) < threshold) {
+        if (threshold !== undefined && shannonEntropy(judged) < threshold) {
           continue;
         }
 
         // Suppress documentation samples / test fixtures (e.g. AWS's
         // `AKIAIOSFODNN7EXAMPLE`, `password: 'testPass1234'`). The aggressive
         // tier only applies to the low-precision generic patterns.
-        if (isPlaceholderSecret(rawValue, { aggressive: aggressivePlaceholder === true })) {
-          this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index);
+        if (isPlaceholderSecret(judged, { aggressive: aggressivePlaceholder === true })) {
+          this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index, type);
           continue;
         }
 
-        if (isRedactedTemplateValue(rawValue)) {
+        if (isRedactedTemplateValue(judged)) {
           continue;
+        }
+
+        // The secret part is clean; the marker sits elsewhere in the text.
+        if (
+          judged !== rawValue &&
+          (isPlaceholderSecret(rawValue, { aggressive: aggressivePlaceholder === true }) || isRedactedTemplateValue(rawValue))
+        ) {
+          ctxFilter = 'url-context';
         }
 
         if (GENERIC_ASSIGNMENT_IDS.has(type) && isEnvVarNameToken(rawValue)) {
@@ -678,9 +712,6 @@ export class SecretScanner {
         // In a run that honours nothing the repository supplies (`mark`), a filter
         // keyed on the repository's own path or surrounding text keeps the match
         // and names itself on it instead of dropping it.
-        const keepFiltered = opts?.inlineDirectives === 'mark';
-        let ctxFilter: ContextFilterKind | undefined;
-
         if (
           GENERIC_ASSIGNMENT_IDS.has(type) &&
           opts?.filePath !== undefined &&
@@ -697,7 +728,7 @@ export class SecretScanner {
         if (connectionString === true) {
           const declined = connectionStringDeclines(fullMatch);
           if (declined.password || (declined.host && !keepFiltered)) {
-            this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index);
+            this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index, type);
             continue;
           }
           // The host is text the repository chose: kept, and named on the match.
@@ -818,6 +849,7 @@ export class SecretScanner {
         seen.add(hit.offset);
         opts.placeholderSkips.count += 1;
         opts.placeholderSkips.lines.push(hit.line);
+        (opts.placeholderSkips.rules ??= []).push(hit.rule);
       }
     }
 
@@ -980,12 +1012,13 @@ export class SecretScanner {
    * Index position 0 = start of line 1.
    */
   private notePlaceholderSkip(
-    into: Array<{ line: number; offset: number }> | null,
+    into: Array<{ line: number; offset: number; rule: string }> | null,
     lineIndex: number[],
     index: number,
+    rule: string,
   ): void {
     if (into === null) return;
-    into.push({ line: this.lineFromIndex(lineIndex, index), offset: index });
+    into.push({ line: this.lineFromIndex(lineIndex, index), offset: index, rule });
   }
 
   private buildLineIndex(content: string): number[] {

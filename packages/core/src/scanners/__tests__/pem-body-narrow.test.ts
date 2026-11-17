@@ -83,3 +83,27 @@ describe('connection strings: the host and the password decline for different re
     expect(ph.count).toBe(1);
   });
 });
+
+describe('the value filters judge the secret part of a whole-match rule in mark mode', () => {
+  const scanner = new SecretScanner({});
+  const pw = 'Vq7hR2mX9kLp4TzB';
+  const dsns = [
+    `postgres://app:${pw}@prod-db.acme.io:5432/main?application_name=example-worker`,
+    `mongodb://dummy_svc:${pw}@cluster0.ab1cd.mongodb.net/db`,
+    `redis://example:${pw}@cache.acme.io:6379`,
+  ];
+
+  it.each(dsns)('elsewhere a marker anywhere in the URL declines it: %s', dsn => {
+    expect(scanner.scanContent(`${dsn}\n`, {})).toHaveLength(0);
+  });
+
+  it.each(dsns)('in mark mode the marker outside the password keeps it, named url-context: %s', dsn => {
+    expect(scanner.scanContent(`${dsn}\n`, { inlineDirectives: 'mark' }).map(m => m.contextFilterNotHonoured)).toEqual(['url-context']);
+  });
+
+  it('a placeholder password stays declined in mark mode, with its rule recorded', () => {
+    const ph = { count: 0, lines: [] as number[], rules: [] as string[] };
+    expect(scanner.scanContent('postgres://app:changeme@prod-db.acme.io:5432/main\n', { inlineDirectives: 'mark', placeholderSkips: ph })).toHaveLength(0);
+    expect(ph).toMatchObject({ count: 1, lines: [1], rules: ['postgresql-url'] });
+  });
+});

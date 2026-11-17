@@ -1680,3 +1680,56 @@ describe('scan takes one path', () => {
     expect(r.stderr).toContain('scan takes one path, got 2');
   });
 });
+
+describe('--no-repo-controls: the secret part alone is judged, and every placeholder decline is listed', () => {
+  const PW = 'Vq7hR2mX9kLp4TzB';
+  const kindsOf = (stdout: string, file: string): Array<string | undefined> =>
+    ((parse(stdout) as unknown as { results: Array<{ file: string; matches: Array<{ context_filter_not_honoured?: string }> }> }).results
+      .find(r => r.file === file)?.matches ?? []).map(m => m.context_filter_not_honoured);
+
+  const DSNS: Array<[string, string]> = [
+    ['a query parameter', `postgres://app:${PW}@prod-db.acme.io:5432/main?application_name=example-worker`],
+    ['the user', `mongodb://dummy_svc:${PW}@cluster0.ab1cd.mongodb.net/db`],
+    ['the database name', `postgres://app:${PW}@prod-db.acme.io:5432/dummy_data`],
+    ['the host', `postgres://app:${PW}@example-cache.acme.io:5432/main`],
+    ['a redis user', `redis://example:${PW}@cache.acme.io:6379`],
+    ['a fragment', `mysql://app:${PW}@prod-db.acme.io:3306/main#placeholder`],
+  ];
+
+  itPosix.each(DSNS)('a marker only in %s does not clear a real password: kept, marked url-context', async (_where, dsn) => {
+    const dir = rawRepo(({ blob, tree }) => tree([['100644', 'app.env', blob(`DATABASE_URL=${dsn}\n`)]]));
+    const r = await scanIn(dir);
+    expect(r.code).toBe(1);
+    expect(kindsOf(r.stdout, 'app.env')).toEqual(['url-context']);
+  });
+
+  itPosix('an Azure storage string with a marker in the account name: kept, marked url-context', async () => {
+    const key = 'Vq7hR2mX9kLp4TzB'.repeat(5);
+    const dir = rawRepo(({ blob, tree }) =>
+      tree([['100644', 'a.env', blob(`CS=DefaultEndpointsProtocol=https;AccountName=examplestore;AccountKey=${key}==\n`)]]),
+    );
+    expect(kindsOf((await scanIn(dir)).stdout, 'a.env')).toEqual(['url-context']);
+  });
+
+  itPosix('a placeholder PASSWORD is still a counted decline, listed by file, line and rule, never the value', async () => {
+    const dir = rawRepo(({ blob, tree }) =>
+      tree([['100644', 'c.env', blob('x=1\nDATABASE_URL=postgres://app:changeme@prod-db.acme.io:5432/main\n')], ['100644', 'ok.txt', blob('fine\n')]]),
+    );
+    const r = await scanIn(dir);
+    expect(r.code).toBe(0);
+    const doc = parse(r.stdout) as unknown as { placeholderSkips: { skips: Array<{ file: string; line: number; rule: string }>; omitted: number } };
+    expect(doc.placeholderSkips).toEqual({ skips: [{ file: 'c.env', line: 2, rule: 'postgresql-url' }], omitted: 0 });
+    expect(r.stdout).not.toContain('changeme');
+    const sarif = JSON.parse((await scanIn(dir, { format: 'sarif' })).stdout) as { runs: Array<{ properties: Record<string, unknown> }> };
+    expect(sarif.runs[0].properties.placeholderSkips).toEqual(doc.placeholderSkips);
+    const text = await scanIn(dir, { format: 'text' });
+    expect(text.log).toContain('1 value(s) skipped as placeholders (listed in the JSON report)');
+    expect(text.log).not.toContain('No secrets found\n');
+  });
+
+  itPosix('the context-filter count line names the repository path or surrounding text', async () => {
+    const dir = rawRepo(({ blob, tree }) => tree([['100644', 'a.env', blob(`DATABASE_URL=postgres://app:${PW}@db/main\n`)]]));
+    const text = await scanIn(dir, { format: 'text' });
+    expect(text.log).toContain("Context filters not honoured: 1 finding(s) the repository's path or surrounding text would have dropped are reported");
+  });
+});

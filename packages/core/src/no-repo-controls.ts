@@ -109,6 +109,15 @@ export interface HeadOnlyReport {
   scannedCommit: string;
   /** The repository root that commit belongs to (symlinks resolved), so a wrapper can check it judged the repository it meant to. */
   scannedRoot: string;
+  /**
+   * Every value a placeholder rule declined (file, line, rule id; never the
+   * value), so an assessor can look: the filter can drop a plausible real
+   * password. Capped like `notScanned.builtInSkips`, the rest counted.
+   */
+  placeholderSkips: {
+    skips: Array<{ file: string; line: number; rule: string }>;
+    omitted: number;
+  };
   notScanned: {
     /** Gitlink paths: the submodule's content is another repository and was not scanned. */
     submodules: string[];

@@ -1565,7 +1565,22 @@ short-Docker-token, password-hash, sample-JWT and identifier-shape filters take
 the captured value (or the whole match for the JWT) and nothing else; their
 rule choice (the key name) comes from which pattern matched. The connection
 string's placeholder PASSWORD is the credential itself and stays a counted
-decline; its HOST is repository-chosen text and is kept. The PEM rule reads the
+decline; its HOST is repository-chosen text and is kept. The rules with no capture group
+take the whole match as their value, so in this mode the value filters
+(placeholder, redacted template, sequential run, entropy) judge the secret part
+alone: the password of `postgresql-url`, `mysql-url`, `mongodb-url` and
+`redis-url`, and the `AccountKey` of `azure-storage`. A marker in the user, host,
+database, query or fragment (or the account name) cannot clear it: the finding is
+kept and marked `url-context`. The six rules with no capture group and free text
+in the match are those five and `gcp-service-account` (a fixed string, no value
+to judge); no rule with a capture group has free text inside its group. Elsewhere
+a marker anywhere in the URL still declines it (docs/RULES.md). Every placeholder
+decline in this mode is listed, by file, line and rule id and never the value,
+as `placeholderSkips` in JSON and the SARIF run properties (the notScanned
+ceiling, the rest counted), because the filter can drop a plausible real
+password; the text verdict says "N value(s) skipped as placeholders (listed in
+the JSON report)" and a run with no findings does not read as an unqualified
+pass. The PEM rule reads the
 text after the header (a body is a single base64 token of 40 or more characters,
 or a run of single-token base64 lines of one width, at any fold width; and where an END footer closes it, any base64-only single-token lines between the armor lines, of any widths, 64 or more characters joined with a lowercase letter, an uppercase letter and a digit, `+` or `/`). A severity lowered by a path rule or an
 in-file test block records `severityBeforePathRules`, and the text and the
@@ -1615,7 +1630,11 @@ key`, `run from a subdirectory of the repository: exit 2, run it from the root`,
 `a symlinked working directory is the root once resolved, and the report names
 the real root`, `a git found on PATH inside the repository being assessed: exit
 2`, `an appid comment in a website path: kept, marked doc-context, and the
-lowering is recorded`, `a finding lowered by a website path carries its severity
+lowering is recorded`, `a marker only in %s does not clear a real password: kept, marked
+url-context`, `an Azure storage string with a marker in the account name: kept,
+marked url-context`, `a placeholder PASSWORD is still a counted decline, listed by
+file, line and rule, never the value`, `the context-filter count line names the
+repository path or surrounding text`, `a finding lowered by a website path carries its severity
 before the rules, in JSON, SARIF and text`, `the below-gate verdict counts the
 lowered findings, qualifies the pass and advises only --fail-on`, `JSON lists every skip; the text shows a capped share and says how many are
 not shown`, `250 lockfiles do not crowd out the one log that holds a key`, `a

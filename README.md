@@ -296,9 +296,14 @@ Which repository, and how it is run:
   documentation path (`docs`, `website`, any `.md`) with an `appid` or `algolia`
   comment, a Python triple-quoted string, a following `(`, a bare identifier
   value, a private-key header whose following text reads as a label, and a
-  connection string whose host is `db`, `localhost` or `*.local` would each drop
-  a match elsewhere; here the finding is kept and marked (`context_filter_not_honoured` in JSON and SARIF, a marker and
+  connection string whose host is `db`, `localhost` or `*.local`, or whose user,
+  host, database or query holds `example`, `dummy` or `placeholder` (here the
+  password alone is judged), would each drop a match elsewhere; here the finding is kept and marked (`context_filter_not_honoured` in JSON and SARIF, a marker and
   a count line in text).
+- Every value skipped as a placeholder is listed (file, line and rule, never the
+  value) as `placeholderSkips` in the JSON report and the SARIF run properties,
+  and the text verdict counts them, because the placeholder filter can drop a
+  plausible real password (`Contest2024!Qz` contains "test").
 - Path rules (test, docs, locale and website directories, and a Rust test
   block) still lower a severity, as a noise control, but never silently: the
   finding carries `severity_before_path_rules`, the text marks it, and the
