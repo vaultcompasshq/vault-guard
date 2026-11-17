@@ -228,25 +228,40 @@ What it does not cover: only vault-guard's own reads. It does not make any other
 tool safe to run on that repository, it does not stop git hooks you run yourself
 (no command vault-guard runs fires a hook), and it does not check the git config
 outside the repository (your global and system config, and `GIT_CONFIG_*`
-variables, are yours). Built-in skips still apply and are counted: vendored
-directory names as a direct child of the scan root, and lockfiles, logs, source
-maps and minified bundles by name. Submodule contents are not scanned: each
+variables, are yours). Built-in skips still apply, and because the repository
+chooses its own file names they are listed, not only counted: a vendored
+directory name as a direct child of the scan root (`node_modules`, `vendor`,
+`.git` and the like, one row per directory), and lockfiles, logs, source maps
+and minified bundles by name (one row per file), as `Not scanned, built-in
+skip:` in text and `notScanned.builtInSkips` in JSON and SARIF, capped at 200
+rows with the count of the rest in `builtInSkipsOmitted`. A key committed as
+`node_modules/k.js`, `x.min.js` or `app.log` is therefore not found, exit 0,
+and the report says so: when anything is under "not scanned" the text verdict
+reads "No secrets found in the files scanned; N paths were not scanned, listed
+above", not an unqualified pass. Submodule contents are not scanned: each
 gitlink is listed as `Not scanned, submodule:` in text and in
 `notScanned.submodules` in JSON and SARIF, and the run does not exit 2 over
 it; clone and assess the submodule's repository on its own.
 
-Symlinks are listed too, as `Not scanned, symlink:` and `notScanned.symlinks`,
-because the target text a link holds is not scanned; this does not change the
-exit code either. Modes are read the way git reads them, as octal by file type:
+A symlink's blob, the link's target text, is verified and scanned like any file
+and reported under the link's path; the link is never followed. (On a checkout
+without symlink support git writes that text out as a regular file.) A blob
+that several paths name is scanned once per distinct path profile (its
+extension and its test, documentation and locale context) and reported under
+every path. Modes are read the way git reads them, as octal by file type:
 a regular file is scanned whatever its permission bits (`100664`, `100600`,
 `0100644`), and a tree written as `0040000` is descended into. A mode that is
 none of directory, regular file, symlink or gitlink, or is not octal, refuses
 the run (exit 2) naming the entry and the mode, as does an entry whose object is
 not what its mode says (a file mode on a tree). Nothing is skipped silently
-because of its mode. The listing is bounded: more than 5,000,000 tree rows
-walked (a tree that names the same subtree many times counts once per parent),
+because of its mode. The listing is bounded: more than 2,000,000 tree rows
+parsed or walked (a tree that names the same subtree many times counts once per
+parent; a single very wide tree is refused while it is parsed),
 more than 512 MiB of paths, or a depth over 1000 directories is exit 2, "too
-large to list", never a truncated scan.
+large to list", never a truncated scan. A file over the 32 MiB scan limit is
+hashed without being scanned: if it verifies, it is reported as over the limit
+(`too_large`, exit 2, not scanned); only a hash mismatch says the object store
+does not hold what its ids claim.
 
 ### What fails the build
 

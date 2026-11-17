@@ -17,6 +17,8 @@ import {
   GitError,
   ObjectMismatchError,
   scanFileContent,
+  copyKey,
+  pathScanProfile,
   listNamedTrackedFiles,
   inspectWorktree,
   wantsWorktreeCopy,
@@ -203,15 +205,9 @@ function recordTooLarge(
   options: ScanOptions,
   exclude?: string,
 ): void {
-  // In --no-repo-controls the size is only what the object store claims: it
-  // came from cat-file, and the object has not been read, so not verified.
-  const reason = options.blobOnly
-    ? `the object store claims ${(bytes / 1024 / 1024).toFixed(1)} MiB, over the ${Math.round(maxBytes / 1024 / 1024)} MiB ` +
-      'scan limit, so the file was not scanned. That size was not verified against the object, which may have ' +
-      'been replaced. Clone the repository fresh and assess the clone.'
-    : `${(bytes / 1024 / 1024).toFixed(1)} MiB: over ${Math.round(maxBytes / 1024 / 1024)} MiB, not scanned`;
+  const reason = `${(bytes / 1024 / 1024).toFixed(1)} MiB: over ${Math.round(maxBytes / 1024 / 1024)} MiB, not scanned`;
   options.unreadable?.push({
-    kind: options.blobOnly ? 'read_error' : 'too_large',
+    kind: 'too_large',
     file: displayFile,
     reason,
     ...(exclude ? { exclude } : {}),
@@ -622,6 +618,18 @@ function emitter(options: ScanOptions): (line: string) => void {
   return options.warn ?? ((line: string) => console.error(line));
 }
 
+/** One scan of a blob, kept so the other paths that name the same blob reuse it. */
+interface SharedScan {
+  /** The path the scan ran under. */
+  file: string;
+  outcome: Awaited<ReturnType<typeof scanFileContent>>;
+  hits: IgnoreDirectiveHits;
+  placeholderSkips: { count: number; lines: number[] } | undefined;
+}
+
+/** Scans in flight or done, by blob id and path profile (`--no-repo-controls`). */
+type SharedScans = Map<string, Promise<SharedScan>>;
+
 /**
  * Read a file's content through the run's content source and fold what it
  * found into the run's counters. Returns the matches, or undefined when the
@@ -638,8 +646,10 @@ async function scanOneFile(
   options: ScanOptions,
   maxSize: number,
   scanBudgetMs: number,
+  shared?: SharedScans,
 ): Promise<ScanResult | null | undefined> {
   const entry = content?.entryFor(path.resolve(file));
+  const run = async (): Promise<SharedScan> => {
   const hits: IgnoreDirectiveHits = { count: 0, lines: [] };
   const placeholderSkips = options.placeholderSkips ? { count: 0, lines: [] as number[] } : undefined;
   const outcome = await scanFileContent(scanner, file, entry, entry ? content : undefined, {
@@ -654,6 +664,34 @@ async function scanOneFile(
     ...(options.inlineDirectives !== undefined ? { inlineDirectives: options.inlineDirectives } : {}),
     ...(options.blobOnly ? { blobOnly: true } : {}),
   });
+  return { file, outcome, hits, placeholderSkips };
+  };
+  let ran: SharedScan;
+  const shareKey = shared && entry ? `${entry.oid}\0${pathScanProfile(file, pathRoot)}` : undefined;
+  const prior = shareKey !== undefined ? shared?.get(shareKey) : undefined;
+  if (prior !== undefined) {
+    // The same blob under a path with the same path-dependent inputs: its
+    // content was (or is being) scanned already, so its result is reused and
+    // reported under this path. Each reuse still finishes a reference to the
+    // blob, so the reader forgets it after the last path.
+    const first = await prior;
+    const from = copyKey(first.file, 'file');
+    const kept = new Map<string, Buffer>();
+    for (const [k, v] of first.outcome.kept) kept.set(k === from ? copyKey(file, 'file') : k, v);
+    if (entry?.oid !== undefined) content?.done(entry.repoTop, entry.oid);
+    ran = {
+      ...first,
+      file,
+      outcome: { ...first.outcome, matches: first.outcome.matches.map(m => ({ ...m })), kept },
+    };
+  } else if (shareKey !== undefined) {
+    const p = run();
+    shared?.set(shareKey, p);
+    ran = await p;
+  } else {
+    ran = await run();
+  }
+  const { outcome, hits, placeholderSkips } = ran;
   if (outcome.skippedByType) {
     recordBinarySkip(outcome.skippedByType.family, options);
     return null;
@@ -1194,7 +1232,7 @@ export async function scanFilesAsync(
 
 /**
  * Scan HEAD tree blobs and nothing else (`scan --no-repo-controls`). Every file
- * is read by the object id `git ls-tree -r -z HEAD` named, through
+ * is read by the object id the verified HEAD tree named, through
  * `cat-file`; no entry asks for its working-tree copy and none is marked
  * filtered, so no disk copy is opened and no `status` or `check-attr` runs.
  * `files` are absolute paths that are keys of `blobs`.
@@ -1216,12 +1254,14 @@ export async function scanHeadBlobsAsync(
       throw new GitError(
         `vault-guard: ${path.relative(process.cwd(), f)} has no HEAD blob in this run, and this mode reads ` +
           'blobs only, never the working tree. Nothing was scanned.',
-        'git ls-tree -r -z HEAD',
+        'git cat-file --batch',
       );
     }
     entries.set(f, { repoTop: repoRoot, mode: '100644', oid, worktreeAlso: false, filtered: false });
   }
   const content = new GitContentSource('head', fileSetGitEnv(), entries, 10, true);
+  // A blob named by many paths is scanned once per path profile, not once per path.
+  const shared: SharedScans = new Map();
   const results: ScanResult[] = [];
   const cwd = process.cwd();
   const blobOnly: ScanOptions = { ...options, blobOnly: true };
@@ -1232,7 +1272,7 @@ export async function scanHeadBlobsAsync(
       // No exclude entry is offered: this mode reads no config to put one in.
       const exclude = undefined;
       try {
-        const r = await scanOneFile(scanner, file, display, exclude, repoRoot, content, blobOnly, maxSize, scanBudgetMs);
+        const r = await scanOneFile(scanner, file, display, exclude, repoRoot, content, blobOnly, maxSize, scanBudgetMs, shared);
         if (r) results.push(r);
       } catch (error) {
         if (error instanceof ObjectMismatchError) {

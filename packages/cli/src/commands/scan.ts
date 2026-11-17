@@ -196,6 +196,9 @@ export function reportIncomplete(
   );
 }
 
+/** How many built-in skips a `--no-repo-controls` report lists; the rest are counted. */
+const BUILT_IN_SKIPS_LISTED = 200;
+
 export async function scanCommand(
   targetPath: string | string[],
   format: OutputFormat = 'text',
@@ -263,7 +266,7 @@ export async function scanCommand(
     ? { honoured: false, present: headOnly.present }
     : undefined;
   const headOnlyReport: HeadOnlyReport | undefined = headOnly
-    ? { scannedCommit: headOnly.head, notScanned: { submodules: headOnly.submodules, symlinks: headOnly.symlinks } }
+    ? { scannedCommit: headOnly.head, notScanned: { submodules: headOnly.submodules, builtInSkips: [], builtInSkipsOmitted: 0 } }
     : undefined;
 
   // Base for every path this run renders, serializes, ignore-matches and
@@ -611,6 +614,7 @@ export async function scanCommand(
       const root = headOnly.repoRoot;
       const base = canonicalPath(cwd);
       const selected = new Set<string>();
+      const builtInSkipPaths = new Map<string, 'directory' | 'file'>();
       for (const target of targetPaths) {
         const scope = pathResolve(base, target);
         const isFile = headOnly.blobs.has(scope);
@@ -624,11 +628,28 @@ export async function scanCommand(
         }
         const skipped: PullRequestSkips = { dirCount: 0, dirNames: [], typeFilteredFiles: 0 };
         for (const f of getHeadTreeFilesToScan(scope, isFile, headOnly.blobs.keys(), skipped)) selected.add(f);
+        // What a built-in name rule skipped is the repository's choice of names,
+        // so it is reported: a directory as one row, each file by its path.
+        for (const name of skipped.dirNames) builtInSkipPaths.set(relative(root, pathResolve(scope, name)), 'directory');
+        for (const f of skipped.typeFilteredPaths ?? []) builtInSkipPaths.set(relative(root, f), 'file');
         for (const n of skipped.dirNames) if (!prSkips.dirNames.includes(n)) prSkips.dirNames.push(n);
         prSkips.dirNames.sort();
         prSkips.dirCount = prSkips.dirNames.length;
         prSkips.typeFilteredFiles += skipped.typeFilteredFiles;
         prSkips.nestedVendored = [...(prSkips.nestedVendored ?? []), ...(skipped.nestedVendored ?? [])];
+      }
+      if (headOnlyReport) {
+        const rows = [...builtInSkipPaths]
+          .sort(([a, ka], [b, kb]) => (ka !== kb ? (ka === 'directory' ? -1 : 1) : a < b ? -1 : a > b ? 1 : 0))
+          .map(([p, kind]) => ({
+            path: p.split(sep).join('/'),
+            reason:
+              kind === 'directory'
+                ? 'vendored directory name, skipped by a built-in rule'
+                : 'lockfile, log, source map or minified bundle, skipped by a built-in name rule',
+          }));
+        headOnlyReport.notScanned.builtInSkips = rows.slice(0, BUILT_IN_SKIPS_LISTED);
+        headOnlyReport.notScanned.builtInSkipsOmitted = Math.max(0, rows.length - BUILT_IN_SKIPS_LISTED);
       }
       results = await scanHeadBlobsAsync([...selected], headOnly.blobs, root, scanner, {
         verbose: format === 'text',
@@ -1050,8 +1071,13 @@ export async function scanCommand(
         for (const p of headOnlyReport.notScanned.submodules) {
           console.log(chalk.yellow(`Not scanned, submodule: ${printablePath(p)}`));
         }
-        for (const p of headOnlyReport.notScanned.symlinks) {
-          console.log(chalk.yellow(`Not scanned, symlink: ${printablePath(p)}`));
+        for (const s of headOnlyReport.notScanned.builtInSkips) {
+          console.log(chalk.yellow(`Not scanned, built-in skip: ${printablePath(s.path)} (${s.reason})`));
+        }
+        if (headOnlyReport.notScanned.builtInSkipsOmitted > 0) {
+          console.log(
+            chalk.yellow(`Not scanned, built-in skip: and ${headOnlyReport.notScanned.builtInSkipsOmitted} more (list capped)`),
+          );
         }
       }
       if (repoControls.present.length === 0) {
@@ -1208,7 +1234,19 @@ export async function scanCommand(
     }
 
     if (results.length === 0) {
-      console.log(chalk.green.bold('✅ SUCCESS:'), chalk.white('No secrets found\n'));
+      const notScanned = headOnlyReport
+        ? headOnlyReport.notScanned.submodules.length +
+          headOnlyReport.notScanned.builtInSkips.length +
+          headOnlyReport.notScanned.builtInSkipsOmitted
+        : 0;
+      console.log(
+        chalk.green.bold('✅ SUCCESS:'),
+        chalk.white(
+          notScanned > 0
+            ? `No secrets found in the files scanned; ${notScanned} path${notScanned === 1 ? ' was' : 's were'} not scanned, listed above\n`
+            : 'No secrets found\n',
+        ),
+      );
       return 0;
     }
 

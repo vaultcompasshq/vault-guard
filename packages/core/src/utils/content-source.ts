@@ -851,7 +851,15 @@ async function scanTrackedCopies(
       }
       if (!isLfsPointer(head, c.size)) typeMismatch = { family: blobCand.family };
     }
-    if (c.size > max) return outcome({ failure: { kind: 'too_large', bytes: c.size }, ...mm() });
+    if (c.size > max) {
+      // A size from cat-file is only what the store claims. In blobs-only mode
+      // the oversized object is hashed without being scanned (a head read of
+      // zero bytes still streams and hashes the whole body, held nowhere), so
+      // a verified size is reported as a real over-limit file and a replaced
+      // object is a hash mismatch. A candidate's head read above already did it.
+      if (opts.blobOnly && !blobCand) await source.readHead(entry.repoTop, b.oid, 0);
+      return outcome({ failure: { kind: 'too_large', bytes: c.size }, ...mm() });
+    }
     scanBlobs.push(b);
   }
   const readDisk = entry.worktreeAlso && !entry.diskAbsent;

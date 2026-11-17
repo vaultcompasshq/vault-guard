@@ -1340,10 +1340,11 @@ decode alike, or a name listed twice in a crafted tree), a path has an
 empty, `.` or `..` segment (on Windows a backslash also separates segments),
 or a path resolves outside the repository root (on Windows `D:x` or `\x`),
 rather than let one replace the other or drop it unreported; it does not key
-by raw bytes. A symlink entry is listed under `notScanned.symlinks` (`Not
-scanned, symlink:` in text) without changing the exit code, since the target
-text a link holds is not scanned; this is a choice, because a link is not file
-content and a link to a secret file in the same tree is that file's own entry.
+by raw bytes. A symlink entry's blob, the link's target text, is verified and
+scanned like any file and reported under the link's path; the link is never
+followed, and nothing is listed under `notScanned` for it. (A checkout without
+symlink support writes that text as a regular file holding whatever it says,
+a key included.)
 
 **Enforced by:** `no-repo-controls.ts` (`loadHeadOnlyTree`, `headEntryKey`;
 core `local-git-config.test.ts`, `posix: inside the root, or null for an
@@ -1452,8 +1453,8 @@ on any mismatch:
 Modes are classified as git does, from the octal value by the file-type bits:
 a directory (`40000`, `040000`, `0040000`) is a tree and is descended into; a
 regular file (`100644`, `100664`, `100600`, `0100644`, whatever the permission
-bits) is scanned; `120000` is a symlink and `160000` a gitlink, both listed as
-not scanned. Any other mode, or text that is not octal, refuses the run, exit 2,
+bits) is scanned; `120000` is a symlink, whose target text is scanned (above);
+`160000` is a gitlink, listed as not scanned. Any other mode, or text that is not octal, refuses the run, exit 2,
 naming the entry and its mode, so nothing is skipped because of its mode. The
 object a file or symlink mode names must be a blob (`cat-file --batch-check`),
 and an entry with a tree mode must be a tree, or the run refuses. (Git itself reads any other type bits, such as `170000`, as a gitlink;
@@ -1461,20 +1462,44 @@ this mode refuses them instead of guessing, but a gitlink spelled `0160000` is
 a gitlink and is listed.)
 
 The walk is bounded, because a few small trees can name the same subtree many
-times (ten levels naming it ten times is ten billion paths). Each tree id is
-read and parsed once. The walk refuses, exit 2 with "too large to list" and the
-limits, past 5,000,000 tree rows walked (a shared tree counts once per parent
-that names it), past 512 MiB of paths (the old `ls-tree` listing's limit), or
-at depth 1000; the single `cat-file --batch` read of the commit and trees is
+times (ten levels naming it ten times is ten billion paths) and one tree can be
+very wide. Each tree id is read and parsed once, and `parseTree` spends a row
+budget while it parses, so a single tree with more rows than the limit is
+refused after the limit's worth of rows, not after all of them are built. The
+run refuses, exit 2 with "too large to list" and the limits, past 2,000,000
+tree rows parsed (all trees together) or walked (a shared tree counts once per
+parent that names it), past 512 MiB of paths (the old `ls-tree` listing's
+limit), or at depth 1000; the single `cat-file --batch` read of the commit and trees is
 bounded by the same 512 MiB. A truncated scan is never produced. The path-bytes
 limit has no test of its own: the row limit is reached first on any fixture a
 test can build quickly.
 
-A size is not a hash: the size `cat-file --batch-check` reports for a blob the
-scan has not read is only what the store claims. A blob reported over the scan
-limit is not read, so it is not verified, and the run says so ("the object
-store claims N MiB ... not verified ... Clone the repository fresh"), exit 2,
-instead of presenting the size as fact.
+A size is not a hash: the size `cat-file --batch-check` reports is only what
+the store claims. A blob over the scan limit is therefore hashed, streamed and
+not scanned (a head read of zero bytes), and only then reported. If it
+verifies it is a real file over the limit: `too_large`, exit 2 as for any
+unscanned file, with no clone-fresh advice. If it does not, the object store
+does not hold what its ids claim, with the clone-fresh remedy.
+
+A file or symlink mode that names an object the store does not have is a
+refusal, never a skip, even for a name a built-in rule would not scan.
+
+A blob that several paths name is scanned once per path profile
+(`pathScanProfile`: the text after the last dot, and the test, documentation
+and locale judgements on the root-relative path) and the result is reported
+under every path, with each path's own counters, inline-directive and
+placeholder records. Those are the only path inputs the scan reads; a new
+path-dependent rule must be added to the profile. A blob named by 700 paths
+that differ only by directory is read and scanned once, not 700 times.
+
+Built-in name rules (a vendored directory name as a direct child of the scan
+root, and lockfile, log, source-map and minified-bundle names) still skip, and
+the exit code is unchanged, but the repository chooses those names, so each
+skip is listed: `notScanned.builtInSkips` in JSON and SARIF (`path`, `reason`;
+a directory is one row), a `Not scanned, built-in skip:` line each in text,
+capped at 200 rows with the rest in `builtInSkipsOmitted`. When anything is
+under `notScanned` the text verdict reads "No secrets found in the files
+scanned; N paths were not scanned, listed above".
 
 The check is against git's hash, so it is as strong as that hash: a sha1
 collision is out of scope. It does not make a tampered repository safe to
@@ -1490,14 +1515,22 @@ commit object rewritten to name a clean tree: exit 2`, `a repository with
 packed objects (git gc) still scans and reports the key`, `a sha256 repository
 scans, and its tampered blob is refused`, `a regular file with mode %s is
 scanned and its key reported`, `a tree written with mode %s is descended
-into`, `a symlink is listed under notScanned.symlinks and does not change the
-exit code`, `a mode that is %s (%s): exit 2 naming the entry and its mode`, `a
+into`, `a symlink target holding a key is scanned and reported under the link
+path`, `an entry %s (mode %s) naming an object the store does not have: exit 2`, `a mode that is %s (%s): exit 2 naming the entry and its mode`, `a
 file mode whose object is a tree: exit 2, not skipped`, `a tree mode whose
 object is a blob: exit 2, not skipped`, `ten levels each naming one subtree ten
 times: exit 2 within seconds, too large to list`, `a tree nested deeper than
 the depth limit: exit 2, too large to list`, `a gitlink written with mode %s is
-listed as a submodule`, `a loose object replaced by a huge blob: exit 2, the
-size is called unverified`).
+listed as a submodule`, `a loose object replaced by a huge blob: exit 2, the object store does not
+hold what its ids claim`, `a real file over the scan limit: exit 2, kept as
+too_large, no clone-fresh advice`, `30 paths, one blob: read once, reported 30
+times`, `the same blob under a docs path and a source path is judged per path`,
+`a vendored directory, a minified file, a lockfile and a log holding keys: exit
+0, each listed`, `the list is capped, with the count of the rest`, `2,100,000
+rows in one tree: exit 2, too large to list, quickly`; core
+`verified-head-tree.test.ts` (`spends its row budget while parsing and stops
+there, before the rows after it`, `is equal for paths that scan alike and
+differs where path-dependent rules differ`).
 
 ## File-set git calls run with a clean git environment; `--staged` does not
 

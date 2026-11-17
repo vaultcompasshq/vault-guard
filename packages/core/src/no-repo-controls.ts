@@ -94,8 +94,6 @@ export interface HeadOnlyTree {
   present: string[];
   /** Every gitlink (submodule) path in the HEAD tree, root-relative, sorted: not descended into. */
   submodules: string[];
-  /** Every symlink path in the HEAD tree, root-relative, sorted: the link is listed, its target text is not scanned. */
-  symlinks: string[];
 }
 
 /**
@@ -109,8 +107,14 @@ export interface HeadOnlyReport {
   notScanned: {
     /** Gitlink paths: the submodule's content is another repository and was not scanned. */
     submodules: string[];
-    /** Symlink paths: the target text a link holds was not scanned. */
-    symlinks: string[];
+    /**
+     * Paths a built-in rule skipped by name (a vendored directory, a lockfile,
+     * a log, a source map, a minified bundle): the repository chooses these
+     * names, so they are listed. A directory is one row. Capped, with the
+     * count of the rest in `builtInSkipsOmitted`.
+     */
+    builtInSkips: Array<{ path: string; reason: string }>;
+    builtInSkipsOmitted: number;
   };
 }
 
@@ -192,7 +196,6 @@ export function loadHeadOnlyTree(startDir: string): HeadOnlyTree {
   const blobs = new Map<string, string>();
   const seen = new Set<string>();
   const submodules: string[] = [];
-  const symlinks: string[] = [];
   for (const e of entries) {
     // Paths are decoded as UTF-8, so two raw names that are not valid UTF-8
     // can read as one, and a crafted tree can hold one name twice. Either
@@ -210,15 +213,15 @@ export function loadHeadOnlyTree(startDir: string): HeadOnlyTree {
     }
     seen.add(key);
     if (e.type === 'commit') submodules.push(e.path);
-    else if (e.type === 'symlink') symlinks.push(e.path);
-    // Every regular file is read, whatever its permission bits: nothing is
+    // Every regular file is read, whatever its permission bits, and so is a
+    // symlink's blob: its target text, which a checkout without symlink support
+    // writes out as a regular file. The link is never followed. Nothing is
     // dropped for its mode (the verified listing refuses a mode it cannot classify).
-    else if (e.type === 'blob') blobs.set(key, e.oid);
+    else if (e.type === 'blob' || e.type === 'symlink') blobs.set(key, e.oid);
   }
   const byPath = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
   submodules.sort(byPath);
-  symlinks.sort(byPath);
-  return { repoRoot, head: head.out.trim(), blobs, present: presentRepoControls(entries), submodules, symlinks };
+  return { repoRoot, head: head.out.trim(), blobs, present: presentRepoControls(entries), submodules };
 }
 
 /**

@@ -196,3 +196,23 @@ export function applyPathAwareSeverity(
     return m;
   });
 }
+
+/**
+ * Everything about a file's PATH that can change what scanning its content
+ * reports: the text after the last dot (the inline-test finder and the Python
+ * triple-quote rule key on it), and the test, documentation and locale
+ * judgements on the root-relative path (severity downgrades and documentation
+ * suppression). Two paths with equal profiles scan identical content to
+ * identical matches, so `--no-repo-controls` scans a blob once per profile and
+ * reports it under every path. A new path-dependent rule must be added here.
+ */
+export function pathScanProfile(filePath: string, pathRoot?: string): string {
+  const ctx = contextPathFor(filePath, pathRoot);
+  const dot = filePath.lastIndexOf('.');
+  return JSON.stringify([
+    dot === -1 ? '' : filePath.slice(dot),
+    isTestFilePath(ctx),
+    isDocumentationPath(ctx),
+    isLocalePath(ctx),
+  ]);
+}

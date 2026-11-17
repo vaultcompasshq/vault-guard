@@ -107,7 +107,7 @@ export {
   MAX_SCAN_FILE_BYTES,
   FileTooLargeError,
 } from './utils/scan-file';
-export { applyPathAwareSeverity, isTestFilePath, isLocalePath } from './utils/path-severity';
+export { applyPathAwareSeverity, isTestFilePath, isLocalePath, pathScanProfile } from './utils/path-severity';
 export { findInlineTestRegions, isInsideInlineTestRegion } from './utils/inline-test-context';
 export type { InlineTestRegion, InlineTestRegionFinder } from './utils/inline-test-context';
 export {

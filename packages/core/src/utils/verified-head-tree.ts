@@ -20,9 +20,9 @@ import { fileSetGitEnv } from './git-env';
 import { HEAD_TREE_LISTING_MAX_BYTES } from '../trust-base';
 
 export interface VerifiedEntry {
-  /** The mode as written in the tree, normalized to its octal value with at least six digits. */
+  /** The mode exactly as written in the tree (octal text, any leading zeros). */
   mode: string;
-  /** `blob` is a regular file (any permission bits), `symlink` a link, `commit` a gitlink (submodule). */
+  /** `blob` is a regular file (any permission bits), `symlink` a link (its blob is the target text), `commit` a gitlink (submodule). */
   type: 'blob' | 'symlink' | 'commit';
   oid: string;
   /** Root-relative, posix separators. */
@@ -42,8 +42,8 @@ export class ObjectStoreMismatch extends Error {
  * refuses the run (exit 2), never a truncated scan. The byte limit is the one
  * the old `ls-tree` listing had (`HEAD_TREE_LISTING_MAX_BYTES`, 512 MiB).
  */
-/** Tree rows visited while walking, counting a shared tree once per parent that names it. */
-export const MAX_TREE_ROWS_WALKED = 5_000_000;
+/** Tree rows parsed (all trees together) and visited while walking, counting a shared tree once per parent that names it. */
+export const MAX_TREE_ROWS_WALKED = 2_000_000;
 /** Total bytes of the paths emitted. */
 export const MAX_TREE_PATH_BYTES = HEAD_TREE_LISTING_MAX_BYTES;
 /** Directory depth. */
@@ -138,11 +138,21 @@ export function classifyMode(mode: string): Row['kind'] | null {
   }
 }
 
-/** Parse one raw tree: `<mode> <name>\0<raw id>` repeated. */
-function parseTree(bytes: Buffer, rawLen: number, treeId: string): Row[] {
+/** What is left of the row limit, shared by every tree parsed. */
+export interface RowBudget {
+  left: number;
+}
+
+/**
+ * Parse one raw tree: `<mode> <name>\0<raw id>` repeated. Each row spends
+ * `budget`; passing the limit throws mid-parse, so one very wide tree is
+ * refused after the limit's worth of rows, not after all of them are built.
+ */
+export function parseTree(bytes: Buffer, rawLen: number, treeId: string, budget: RowBudget): Row[] {
   const rows: Row[] = [];
   let p = 0;
   while (p < bytes.length) {
+    if (--budget.left < 0) throw tooLarge(`over ${MAX_TREE_ROWS_WALKED} tree rows`);
     const sp = bytes.indexOf(0x20, p);
     const nul = sp === -1 ? -1 : bytes.indexOf(0, sp);
     if (sp === -1 || nul === -1 || bytes.length < nul + 1 + rawLen) throw lie(`tree ${treeId} is malformed`);
@@ -206,6 +216,7 @@ export function readVerifiedHeadTree(repoRoot: string, headOid: string): Verifie
 
   // Each tree id is read and parsed once, however many parents name it.
   const rowsById = new Map<string, Row[]>();
+  const parseBudget: RowBudget = { left: MAX_TREE_ROWS_WALKED };
   const want = (ids: string[]): string[] => [...new Set(ids)].filter(i => !rowsById.has(i));
   let next = want([rootId]);
   // The read is bounded as well as the walk below. A round reads one level
@@ -222,7 +233,7 @@ export function readVerifiedHeadTree(repoRoot: string, headOid: string): Verifie
       if (o.type !== 'tree') throw lie(`${o.type} ${oid} is where a tree is named`);
       bytesRead += o.bytes.length;
       if (bytesRead > MAX_BUFFER) throw tooLarge(`the trees are over ${MAX_BUFFER} bytes`);
-      const rows = parseTree(o.bytes, rawLen, oid);
+      const rows = parseTree(o.bytes, rawLen, oid, parseBudget);
       rowsRead += rows.length;
       if (rowsRead > MAX_TREE_ROWS_WALKED) throw tooLarge(`over ${MAX_TREE_ROWS_WALKED} tree rows`);
       rowsById.set(oid, rows);
@@ -272,7 +283,13 @@ export function readVerifiedHeadTree(repoRoot: string, headOid: string): Verifie
   for (const e of out) {
     if (e.type === 'commit') continue;
     const t = types.get(e.oid);
-    if (t !== undefined && t !== 'blob') {
+    if (t === undefined) {
+      throw new ObjectStoreMismatch(
+        `vault-guard: the HEAD tree names an object the store does not have: ${JSON.stringify(e.path)} (mode ${e.mode}) ` +
+          `names ${e.oid}, which is missing. ${REMEDY} Nothing was scanned.`,
+      );
+    }
+    if (t !== 'blob') {
       throw new ObjectStoreMismatch(
         `vault-guard: the HEAD tree is inconsistent: ${JSON.stringify(e.path)} has mode ${e.mode}, which is a ` +
           `${e.type === 'symlink' ? 'symlink' : 'regular file'}, but its object ${e.oid} is a ${t}. Nothing was scanned.`,

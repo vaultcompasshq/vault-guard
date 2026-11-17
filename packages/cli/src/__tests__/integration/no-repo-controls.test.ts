@@ -5,7 +5,7 @@ import * as zlib from 'zlib';
 
 import { scanCommand } from '../../commands/scan';
 import { scanHeadBlobsAsync } from '../../utils/scan-utils';
-import { GitError, SecretScanner } from '@vaultcompass/vault-guard-core';
+import { BlobBatchReader, GitError, SecretScanner } from '@vaultcompass/vault-guard-core';
 import { AWS_KEY, capture, git, gitStub, parse, runCli, stubCalls, subcommand, tmpDir, write } from './git-fixture';
 
 /**
@@ -473,14 +473,16 @@ describe('--no-repo-controls: what the report says about the tree', () => {
     expect(json.code).toBe(1);
     expect((JSON.parse(json.stdout) as { notScanned?: unknown }).notScanned).toEqual({
       submodules: ['deps/inner', 'vendor-lib'],
-      symlinks: [],
+      builtInSkips: [],
+      builtInSkipsOmitted: 0,
     });
     const sarif = JSON.parse((await scanIn(dir, { format: 'sarif' })).stdout) as {
       runs: Array<{ properties: Record<string, unknown> }>;
     };
     expect(sarif.runs[0].properties.notScanned).toEqual({
       submodules: ['deps/inner', 'vendor-lib'],
-      symlinks: [],
+      builtInSkips: [],
+      builtInSkipsOmitted: 0,
     });
     const text = await scanIn(dir, { format: 'text' });
     expect(text.log.split('\n').filter(l => l.startsWith('Not scanned, submodule: '))).toEqual([
@@ -521,7 +523,7 @@ describe('--no-repo-controls: a file with no HEAD blob is never read from disk',
     const blobs = new Map<string, string>();
     const p = scanHeadBlobsAsync([stray], blobs, dir, new SecretScanner({}), {});
     await expect(p).rejects.toBeInstanceOf(GitError);
-    await expect(p).rejects.toMatchObject({ command: 'git ls-tree -r -z HEAD' });
+    await expect(p).rejects.toMatchObject({ command: 'git cat-file --batch' });
   });
 });
 
@@ -774,6 +776,7 @@ function rawRepo(
   build: (api: {
     blob: (text: string) => string;
     tree: (rows: Array<[string, string, string]>) => string;
+    rawTree: (bytes: Buffer) => string;
   }) => string,
 ): string {
   const dir = tmpDir('vg-norc-raw-');
@@ -787,6 +790,7 @@ function rawRepo(
         ['hash-object', '-t', 'tree', '--literally', '-w', '--stdin'],
         Buffer.concat(rows.map(([mode, name, oid]) => Buffer.concat([Buffer.from(`${mode} ${name}\0`), rawOid(oid)]))),
       ),
+    rawTree: bytes => run(['hash-object', '-t', 'tree', '--literally', '-w', '--stdin'], bytes),
   });
   const commit = execFileSync('git', ['commit-tree', root, '-m', 'raw'], {
     cwd: dir,
@@ -818,15 +822,26 @@ describe('--no-repo-controls: a mode is classified the way git does, and never s
     expect(files(parse(r.stdout) as Doc)).toEqual(['d/inner.txt|aws-access']);
   });
 
-  itPosix('a symlink is listed under notScanned.symlinks and does not change the exit code', async () => {
-    const dir = rawRepo(({ blob, tree }) => tree([['120000', 'link', blob('target.txt')], ['100644', 'ok.txt', blob('fine\n')]]));
+  itPosix('a symlink target holding a key is scanned and reported under the link path', async () => {
+    const dir = rawRepo(({ blob, tree }) => tree([['120000', 'link', blob(KEY)], ['100644', 'ok.txt', blob('fine\n')]]));
     const r = await scanIn(dir);
-    expect(r.code).toBe(0);
-    const doc = parse(r.stdout) as unknown as Doc & { notScanned: { submodules: string[]; symlinks: string[] } };
-    expect(doc.notScanned).toEqual({ submodules: [], symlinks: ['link'] });
-    const text = await scanIn(dir, { format: 'text' });
-    expect(text.log).toContain('Not scanned, symlink: link');
+    expect(r.code).toBe(1);
+    expect(files(parse(r.stdout) as Doc)).toEqual(['link|aws-access']);
+    const doc = parse(r.stdout) as unknown as { notScanned: Record<string, unknown> };
+    expect(doc.notScanned).not.toHaveProperty('symlinks');
   });
+
+  itPosix.each([['link', '120000'], ['skipped.log', '100644']])(
+    'an entry %s (mode %s) naming an object the store does not have: exit 2',
+    async (name, mode) => {
+      const dir = rawRepo(({ blob, tree }) => tree([[mode, name, 'a'.repeat(40)], ['100644', 'ok.txt', blob('fine\n')]]));
+      const r = await scanIn(dir);
+      expect(r.code).toBe(2);
+      expect(r.err).toContain(`"${name}"`);
+      expect(r.err).toContain('which is missing');
+      expect(r.stdout).toBe('');
+    },
+  );
 
   itPosix.each(['160000', '0160000'])('a gitlink written with mode %s is listed as a submodule', async mode => {
     const dir = rawRepo(({ blob, tree }) => tree([[mode, 'sub', blob('x\n')], ['100644', 'ok.txt', blob('fine\n')]]));
@@ -882,7 +897,7 @@ describe('--no-repo-controls: a tree that expands without bound is refused', () 
     const r = await scanIn(dir);
     expect(r.code).toBe(2);
     expect(r.err).toContain('too large to list');
-    expect(r.err).toContain('5000000 tree rows');
+    expect(r.err).toContain('2000000 tree rows');
     expect(r.stdout).toBe('');
     expect(Date.now() - t0).toBeLessThan(60_000);
   }, 120_000);
@@ -899,16 +914,118 @@ describe('--no-repo-controls: a tree that expands without bound is refused', () 
   }, 120_000);
 });
 
-describe('--no-repo-controls: a size the object store claims is not presented as fact', () => {
-  itPosix('a loose object replaced by a huge blob: exit 2, the size is called unverified', async () => {
+describe('--no-repo-controls: an over-limit file is verified, then reported as over the limit', () => {
+  itPosix('a loose object replaced by a huge blob: exit 2, the object store does not hold what its ids claim', async () => {
     const dir = repoWithSecret({ 'ok.txt': 'fine\n' }, 'x\n');
-    const big = Buffer.alloc(40 * 1024 * 1024, 0x61);
-    overwriteObject(dir, sha(dir, 'HEAD:secret.txt'), 'blob', big);
+    overwriteObject(dir, sha(dir, 'HEAD:secret.txt'), 'blob', Buffer.alloc(40 * 1024 * 1024, 0x61));
     const r = await scanIn(dir, { format: 'text' });
     expect(r.code).toBe(2);
-    expect(r.err).toContain('the object store claims');
-    expect(r.err).toContain('was not verified');
+    expect(r.err).toContain('the object store does not hold what its ids claim');
     expect(r.err).toContain('Clone the repository fresh and assess the clone.');
     expect(r.err).not.toContain('MiB: over');
-  }, 120_000);
+  }, 180_000);
+
+  itPosix('a real file over the scan limit: exit 2, kept as too_large, no clone-fresh advice', async () => {
+    const dir = rawRepo(({ blob, tree }) => tree([['100644', 'big.dat', blob('a'.repeat(33 * 1024 * 1024))]]));
+    const r = await scanIn(dir);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('over the 32 MiB scan limit');
+    expect(r.err).not.toContain('Clone the repository fresh');
+    const doc = JSON.parse(r.stdout) as { run: { unscannable?: Array<{ kind: string }> } } & Record<string, unknown>;
+    expect(JSON.stringify(doc)).toContain('too_large');
+  }, 180_000);
+});
+
+describe('--no-repo-controls: a blob named by many paths is scanned once and reported under each', () => {
+  itPosix('30 paths, one blob: read once, reported 30 times', async () => {
+    const dir = rawRepo(({ blob, tree }) => {
+      const oid = blob(`aws = "${AWS_KEY}"\n`);
+      return tree(Array.from({ length: 30 }, (_, i): [string, string, string] => ['100644', `f${String(i).padStart(2, '0')}.txt`, oid]));
+    });
+    const spy = jest.spyOn(BlobBatchReader.prototype, 'read');
+    try {
+      const r = await scanIn(dir);
+      expect(r.code).toBe(1);
+      expect(files(parse(r.stdout) as Doc)).toHaveLength(30);
+      const oids = spy.mock.calls.map(c => c[0]);
+      expect(oids).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  itPosix('the same blob under a docs path and a source path is judged per path', async () => {
+    const dir = rawRepo(({ blob, tree }) => {
+      const oid = blob(`password = "hunter2hunter2xx"\naws = "${AWS_KEY}"\n`);
+      return tree([
+        ['40000', 'docs', tree([['100644', 'a.md', oid]])],
+        ['40000', 'src', tree([['100644', 'a.md', oid]])],
+        ['100644', 'plain.md', oid],
+      ]);
+    });
+    const shared = await scanIn(dir);
+    const each = ['docs/a.md', 'src/a.md', 'plain.md'];
+    const found = (parse(shared.stdout) as Doc).results.map(r => r.file).sort();
+    expect(found.every(f => each.includes(f))).toBe(true);
+  });
+});
+
+describe('--no-repo-controls: names the built-in rules skip are listed, not hidden', () => {
+  const KEY = `aws = "${AWS_KEY}"\n`;
+
+  itPosix('a vendored directory, a minified file, a lockfile and a log holding keys: exit 0, each listed', async () => {
+    const dir = rawRepo(({ blob, tree }) =>
+      tree([
+        ['40000', 'node_modules', tree([['100644', 'k.js', blob(KEY)]])],
+        ['100644', 'x.min.js', blob(KEY)],
+        ['100644', 'yarn.lock', blob(KEY)],
+        ['100644', 'run.log', blob(KEY)],
+        ['100644', 'ok.txt', blob('fine\n')],
+      ]),
+    );
+    const r = await scanIn(dir);
+    expect(r.code).toBe(0);
+    const doc = parse(r.stdout) as unknown as { notScanned: { builtInSkips: Array<{ path: string; reason: string }>; builtInSkipsOmitted: number } };
+    expect(doc.notScanned.builtInSkips.map(s => s.path)).toEqual(['node_modules', 'run.log', 'x.min.js', 'yarn.lock']);
+    expect(doc.notScanned.builtInSkipsOmitted).toBe(0);
+    const sarif = JSON.parse((await scanIn(dir, { format: 'sarif' })).stdout) as { runs: Array<{ properties: { notScanned: { builtInSkips: unknown[] } } }> };
+    expect(sarif.runs[0].properties.notScanned.builtInSkips).toHaveLength(4);
+    const text = await scanIn(dir, { format: 'text' });
+    expect(text.log).toContain('Not scanned, built-in skip: node_modules');
+    expect(text.log).toContain('No secrets found in the files scanned; 4 paths were not scanned, listed above');
+    expect(text.log).not.toContain('No secrets found\n');
+  });
+
+  itPosix('the list is capped, with the count of the rest', async () => {
+    const dir = rawRepo(({ blob, tree }) => {
+      const oid = blob(KEY);
+      return tree([
+        ['100644', 'ok.txt', blob('fine\n')],
+        ...Array.from({ length: 205 }, (_, i): [string, string, string] => ['100644', `a${String(i).padStart(3, '0')}.log`, oid]),
+      ]);
+    });
+    const r = await scanIn(dir);
+    expect(r.code).toBe(0);
+    const doc = parse(r.stdout) as unknown as { notScanned: { builtInSkips: unknown[]; builtInSkipsOmitted: number } };
+    expect(doc.notScanned.builtInSkips).toHaveLength(200);
+    expect(doc.notScanned.builtInSkipsOmitted).toBe(5);
+  });
+});
+
+describe('--no-repo-controls: one very wide tree is refused while it is parsed', () => {
+  itPosix('2,100,000 rows in one tree: exit 2, too large to list, quickly', async () => {
+    const dir = rawRepo(({ blob, rawTree }) => {
+      const oid = rawOid(blob('x\n'));
+      const rows = 2_100_000;
+      const parts: Buffer[] = [];
+      for (let i = 0; i < rows; i++) parts.push(Buffer.from(`100644 n${i}\0`), oid);
+      return rawTree(Buffer.concat(parts));
+    });
+    const t0 = Date.now();
+    const r = await scanIn(dir);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('too large to list');
+    expect(r.err).toContain('2000000 tree rows');
+    expect(Date.now() - t0).toBeLessThan(90_000);
+  }, 300_000);
 });

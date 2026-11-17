@@ -603,6 +603,8 @@ export interface PullRequestSkips {
    * was is now visible.
    */
   typeFilteredFiles: number;
+  /** The absolute paths of those files, for a mode that lists what it did not scan. */
+  typeFilteredPaths?: string[];
   /**
    * Files dropped by the config's `ignore` list, which in this mode is the BASE
    * ref's. A declared skip, counted so a reader sees how much the written
@@ -785,6 +787,7 @@ export function getHeadTreeFilesToScan(
   const skippedNames = new Set<string>();
   const nestedVendored: string[] = [];
   let typeFiltered = 0;
+  const typeFilteredPaths: string[] = [];
   const out: string[] = [];
   for (const file of headTreeFiles) {
     const abs = path.resolve(file);
@@ -803,6 +806,7 @@ export function getHeadTreeFilesToScan(
     }
     if (shouldIgnoreFile(abs)) {
       typeFiltered++;
+      typeFilteredPaths.push(abs);
       continue;
     }
     if (underNestedVendored) nestedVendored.push(abs);
@@ -811,6 +815,7 @@ export function getHeadTreeFilesToScan(
   skipped.dirNames = [...skippedNames].sort();
   skipped.dirCount = skipped.dirNames.length;
   skipped.typeFilteredFiles = typeFiltered;
+  skipped.typeFilteredPaths = typeFilteredPaths;
   skipped.configIgnoredFiles = 0;
   skipped.nestedVendored = nestedVendored;
   return out;
