@@ -210,6 +210,8 @@ export class GitContentSource {
     readonly env: NodeJS.ProcessEnv,
     readonly entries: Map<string, TrackedEntry> = new Map(),
     private readonly window = 10,
+    /** Hash every blob read against its id (`--no-repo-controls`). */
+    private readonly verifyObjects = false,
   ) {}
 
   /** Add (or replace) what is known about tracked files. */
@@ -280,7 +282,7 @@ export class GitContentSource {
     }
     let r = this.readers.get(repoTop);
     if (!r) {
-      r = new BlobBatchReader(repoTop, this.env, this.window);
+      r = new BlobBatchReader(repoTop, this.env, this.window, this.verifyObjects);
       this.readers.set(repoTop, r);
     }
     return r.read(oid);
@@ -298,7 +300,7 @@ export class GitContentSource {
     }
     let r = this.readers.get(repoTop);
     if (!r) {
-      r = new BlobBatchReader(repoTop, this.env, this.window);
+      r = new BlobBatchReader(repoTop, this.env, this.window, this.verifyObjects);
       this.readers.set(repoTop, r);
     }
     return r.readHead(oid, n);

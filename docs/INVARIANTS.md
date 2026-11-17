@@ -1312,9 +1312,11 @@ but a directory`).
 
 ## `--no-repo-controls` judges the HEAD tree from blobs only
 
-The file set is `git ls-tree -r -z HEAD` and every byte scanned comes from
-`git cat-file`. The run's git calls are, in order, `config --local --list`,
-`rev-parse`, `ls-tree` and `cat-file`, and nothing else: never `status`,
+The file set is parsed from the HEAD commit's raw, hash-verified trees (see
+the object-store section below) and every byte scanned comes from `git
+cat-file`. The run's git calls are, in order, `config --local --list`,
+`rev-parse`, `ls-tree -r -t -z HEAD` (a hint of tree ids only) and `cat-file`,
+and nothing else: never `status`,
 `ls-files`, `check-attr` or `hash-object`, so a repository-configured clean
 filter or fsmonitor hook has no command to ride on, and no working-tree copy
 is opened. A file edited on disk and not committed is judged by its HEAD
@@ -1385,7 +1387,8 @@ regular file (a link to another store's `objects`, `objects/pack`,
 `objects/info` or a loose-object directory); or, asked with the stripped
 environment after the config check, `git rev-parse --git-common-dir` and
 `--git-path objects` do not resolve to `<root>/.git` and `<root>/.git/objects`.
-Any of these that cannot be examined also refuses. Refs (`refs/`,
+Any of these that cannot be examined also refuses. A path in the message is capped at 200 characters plus its length
+(`a lstat-walk refusal prints a capped path for a deep nest`). Refs (`refs/`,
 `packed-refs`, `HEAD`) are not checked: whatever a ref names must be a commit
 in this object store, and the report names the commit judged. A symlinked `HEAD`, `refs/` or `packed-refs` pointing at another
 repository therefore ends in a HEAD that does not resolve here, exit 2, which
@@ -1415,6 +1418,44 @@ object directory linked to another store: exit 2`, `a symlinked HEAD, refs/ or
 packed-refs naming another repository's commit: exit 2, the other tree is not
 judged`, `a plain git clone of a repository passes the object-store check`); `no-repo-controls.ts`
 (`assertOwnObjectStore`, `assertNoLinkIn`).
+
+## `--no-repo-controls` checks that objects hash to their ids
+
+An object store an attacker controls can hold a file under one id whose bytes
+are another's: a loose object overwritten with a clean blob, a tree rewritten
+to point a path at a clean blob, a commit naming a clean tree. `git fsck`
+reports it as a hash-path mismatch; a scan that only reads objects would
+report the commit as clean. So this mode hashes what it reads, with git's own
+hash chosen by id length (40 hex is sha1, 64 is sha256), as
+`"<type> <len>\0" + bytes`, and refuses, exit 2 with the clone-fresh remedy,
+on any mismatch:
+
+- the HEAD commit, and its first header line must be a `tree` line, which
+  names the root tree;
+- every tree reachable from that root, read as raw bytes through `cat-file
+  --batch`, one batch for the ids `ls-tree -r -t -z HEAD` hinted and further
+  rounds for any it left out. The file list (mode, id, path) is parsed from
+  these verified raw trees, not from `ls-tree` output: `ls-tree` runs on the
+  same store and is only a hint, since an id it invents is never followed and
+  only ids named by verified bytes are read;
+- every blob the scan reads, hashed as it streams from `cat-file --batch`,
+  including a blob read only for its head and then skipped as binary. A
+  blob skipped without a read (too large, or filtered by name) is not hashed.
+  The message names a path that holds the bad blob.
+
+The check is against git's hash, so it is as strong as that hash: a sha1
+collision is out of scope. It does not make a tampered repository safe to
+open; it makes the report not claim a clean commit it did not read.
+
+**Enforced by:** `utils/verified-head-tree.ts` (`readVerifiedHeadTree`);
+`utils/blob-reader.ts` (`BlobBatchReader` with `verify`, `ObjectMismatchError`,
+`gitObjectId`); `utils/scan-utils.ts` (`scanHeadBlobsAsync`); CLI
+`no-repo-controls.test.ts` (`a loose blob rewritten to clean content: exit 2
+naming the path`, `a blob read and then skipped as binary is still checked`,
+`a tree object rewritten to point secret.txt at a clean blob: exit 2`, `a
+commit object rewritten to name a clean tree: exit 2`, `a repository with
+packed objects (git gc) still scans and reports the key`, `a sha256 repository
+scans, and its tampered blob is refused`).
 
 ## File-set git calls run with a clean git environment; `--staged` does not
 

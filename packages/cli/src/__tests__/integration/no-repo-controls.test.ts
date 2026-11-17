@@ -1,6 +1,7 @@
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as zlib from 'zlib';
 
 import { scanCommand } from '../../commands/scan';
 import { scanHeadBlobsAsync } from '../../utils/scan-utils';
@@ -289,6 +290,9 @@ describe('--no-repo-controls: the tree is judged as at HEAD, from blobs only', (
     expect(subs[0]).toBe('config');
     expect(stubCalls(log)[0].args).toEqual(['config', '--local', '--list', '--name-only', '-z']);
     expect([...new Set(subs)].sort()).toEqual(['cat-file', 'config', 'ls-tree', 'rev-parse']);
+    // ls-tree is a hint for tree ids only: the file list comes from verified raw trees.
+    const ls = stubCalls(log).find(c => subcommand(c.args) === 'ls-tree');
+    expect(ls?.args.slice(ls.args.indexOf('ls-tree'))).toEqual(['ls-tree', '-r', '-t', '-z', 'HEAD']);
   });
 
   itPosix(
@@ -650,5 +654,113 @@ describe('--no-repo-controls: a git directory that borrows another store is refu
     git(clone, ['clone', '-q', src, 'c']);
     const r = await scanIn(path.join(clone, 'c'));
     expect(r.code).toBe(1);
+  });
+});
+
+/**
+ * Overwrite an object's loose file with `body` as an object of `type`, so the
+ * file holds bytes that do not hash to the id it is stored under.
+ */
+function overwriteObject(dir: string, oid: string, type: string, body: Buffer): void {
+  const file = path.join(dir, '.git', 'objects', oid.slice(0, 2), oid.slice(2));
+  fs.chmodSync(file, 0o644);
+  fs.writeFileSync(file, zlib.deflateSync(Buffer.concat([Buffer.from(`${type} ${body.length}\0`), body])));
+}
+
+const rawOid = (oid: string): Buffer => Buffer.from(oid, 'hex');
+
+describe('--no-repo-controls: the object store must hold what its ids claim', () => {
+  const NOT_HELD = 'the object store does not hold what its ids claim';
+
+  function expectRefused(r: { code: number; err: string; stdout: string; log: string }): void {
+    expect(r.code).toBe(2);
+    expect(r.err).toContain(NOT_HELD);
+    expect(r.err).toContain('Clone the repository fresh and assess the clone.');
+    expect(r.stdout).toBe('');
+    expect(r.log).not.toContain('No secrets found');
+  }
+
+  itPosix('a loose blob rewritten to clean content: exit 2 naming the path', async () => {
+    const dir = repoWithSecret({ 'ok.txt': 'fine\n' });
+    overwriteObject(dir, sha(dir, 'HEAD:secret.txt'), 'blob', Buffer.from('clean\n'));
+    const r = await scanIn(dir);
+    expectRefused(r);
+    expect(r.err).toContain('"secret.txt"');
+  });
+
+  itPosix('a blob read and then skipped as binary is still checked', async () => {
+    const dir = tmpDir('vg-norc-bin-');
+    initClean(dir);
+    write(dir, 'pic.png', 'not really a png\n');
+    commitClean(dir, 'png');
+    overwriteObject(dir, sha(dir, 'HEAD:pic.png'), 'blob', Buffer.from('other\n'));
+    expectRefused(await scanIn(dir));
+  });
+
+  itPosix('a tree object rewritten to point secret.txt at a clean blob: exit 2', async () => {
+    const dir = repoWithSecret({ 'ok.txt': 'fine\n' });
+    const clean = sha(dir, 'HEAD:ok.txt');
+    const body = Buffer.concat([
+      Buffer.from('100644 ok.txt\0'),
+      rawOid(clean),
+      Buffer.from('100644 secret.txt\0'),
+      rawOid(clean),
+    ]);
+    overwriteObject(dir, sha(dir, 'HEAD^{tree}'), 'tree', body);
+    expectRefused(await scanIn(dir));
+  });
+
+  itPosix('a commit object rewritten to name a clean tree: exit 2', async () => {
+    const dir = tmpDir('vg-norc-commit-');
+    initClean(dir);
+    write(dir, 'secret.txt', 'clean\n');
+    commitClean(dir, 'clean first');
+    const cleanTree = sha(dir, 'HEAD^{tree}');
+    write(dir, 'secret.txt', `aws = "${AWS_KEY}"\n`);
+    commitClean(dir, 'key second');
+    const raw = execFileSync('git', ['cat-file', 'commit', 'HEAD'], { cwd: dir }).toString();
+    const forged = raw.replace(/^tree [0-9a-f]+/, `tree ${cleanTree}`);
+    expect(forged).not.toBe(raw);
+    overwriteObject(dir, sha(dir), 'commit', Buffer.from(forged));
+    // The untampered repository judges the key; the forged one must not pass as clean.
+    expectRefused(await scanIn(dir));
+  });
+
+  itPosix('a repository with packed objects (git gc) still scans and reports the key', async () => {
+    const dir = repoWithSecret({ 'sub/a.txt': 'one\n', 'sub/deep/b.txt': 'two\n' });
+    git(dir, ['gc', '-q']);
+    expect(fs.existsSync(path.join(dir, '.git', 'objects', sha(dir).slice(0, 2), sha(dir).slice(2)))).toBe(false);
+    const r = await scanIn(dir);
+    expect(r.code).toBe(1);
+    expect(files(parse(r.stdout) as Doc)).toEqual(['secret.txt|aws-access']);
+  });
+
+  itPosix('a sha256 repository scans, and its tampered blob is refused', async () => {
+    const dir = tmpDir('vg-norc-sha256-');
+    try {
+      git(dir, ['init', '-q', '-b', 'main', '--object-format=sha256']);
+    } catch {
+      return; // This git cannot make a sha256 repository.
+    }
+    write(dir, 'secret.txt', `aws = "${AWS_KEY}"\n`);
+    write(dir, 'sub/ok.txt', 'fine\n');
+    commitClean(dir, 'sha256');
+    expect(sha(dir)).toHaveLength(64);
+    const ok = await scanIn(dir);
+    expect(ok.code).toBe(1);
+    overwriteObject(dir, sha(dir, 'HEAD:secret.txt'), 'blob', Buffer.from('clean\n'));
+    expectRefused(await scanIn(dir));
+  });
+
+  itPosix('a lstat-walk refusal prints a capped path for a deep nest', async () => {
+    const dir = repoWithSecret();
+    let deep = path.join(dir, '.git', 'objects');
+    for (let i = 0; i < 60; i++) deep = path.join(deep, 'dddddddddd');
+    fs.mkdirSync(deep, { recursive: true });
+    fs.symlinkSync('/nonexistent', path.join(deep, 'link'));
+    const r = await scanIn(dir);
+    expect(r.code).toBe(2);
+    expect(r.err).toMatch(/\.\.\. \(\d+ characters\)/);
+    expect(r.err.length).toBeLessThan(1200);
   });
 });

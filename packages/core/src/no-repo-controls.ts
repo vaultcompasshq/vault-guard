@@ -26,10 +26,17 @@
  *    refuses the run. That check is what stops a `core.fsmonitor` or a filter
  *    driver named in a handed-over `.git/config`.
  *
- * Every git call here is in this order, and nothing else: `config --local
- * --list`, `rev-parse --show-toplevel`, `rev-parse --verify HEAD^{commit}`,
- * `ls-tree -r -z HEAD`; the scan then reads blobs with `cat-file --batch-check`
- * and `cat-file --batch`.
+ *  - The object store is not trusted to hold what its ids claim. The HEAD
+ *    commit, every tree, and every blob the scan reads are hashed (git's own
+ *    sha1 or sha256, by id length) and compared with the id they were asked
+ *    for; a mismatch refuses the run. The file list comes from the verified
+ *    raw trees (`utils/verified-head-tree.ts`), not from `ls-tree` output.
+ *
+ * The git calls are `config --local --list`, `rev-parse --show-toplevel`,
+ * `rev-parse --git-common-dir` and `--git-path objects`, `rev-parse --verify
+ * HEAD`, `ls-tree -r -t -z HEAD` (a hint of tree ids only), and
+ * `cat-file --batch` (commit and trees, then the blobs) with
+ * `cat-file --batch-check`.
  */
 
 import { spawnSync } from 'child_process';
@@ -37,9 +44,10 @@ import fs from 'fs';
 import path from 'path';
 
 import { BASELINE_FILENAME } from './baseline';
-import { listHeadTreeEntries, type HeadTreeEntry } from './trust-base';
+import type { HeadTreeEntry } from './trust-base';
 import { climbsOut } from './utils/dot-dot';
 import { fileSetGitEnv } from './utils/git-env';
+import { readVerifiedHeadTree } from './utils/verified-head-tree';
 import { checkLocalGitConfig, localGitConfigRefusal } from './utils/local-git-config';
 
 /** The basenames, matched case-insensitively at any depth, that are this gate's control files. */
@@ -161,7 +169,7 @@ export function loadHeadOnlyTree(startDir: string): HeadOnlyTree {
   }
   assertOwnObjectStore(repoRoot);
 
-  const head = git(repoRoot, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
+  const head = git(repoRoot, ['rev-parse', '--verify', '--quiet', 'HEAD']);
   if (!head.ok || head.out.trim() === '') {
     throw new NoRepoControlsError(
       'vault-guard: --no-repo-controls judges the tree as at HEAD, and HEAD does not resolve to a ' +
@@ -171,7 +179,9 @@ export function loadHeadOnlyTree(startDir: string): HeadOnlyTree {
 
   let entries: HeadTreeEntry[];
   try {
-    entries = listHeadTreeEntries(repoRoot);
+    // From the raw commit and trees, each hashed against its id: nothing the
+    // object store says about the tree is taken on trust.
+    entries = readVerifiedHeadTree(repoRoot, head.out.trim());
   } catch (e) {
     throw new NoRepoControlsError(e instanceof Error ? e.message : String(e));
   }
@@ -309,6 +319,11 @@ function assertOwnObjectStore(repoRoot: string): void {
   }
 }
 
+/** A path for a message: the first 200 characters and the full length, so a deep nest stays one line. */
+function shown(p: string): string {
+  return p.length <= 200 ? p : `${p.slice(0, 200)}... (${p.length} characters)`;
+}
+
 /**
  * Walk `dir` with lstat and refuse on anything that is not a real directory
  * or a regular file, the directory itself included. A fresh clone's object
@@ -325,15 +340,15 @@ function assertNoLinkIn(dir: string, label: string): void {
     try {
       names = fs.readdirSync(abs);
     } catch (e) {
-      throw notOwnStore(`${rel} cannot be read (${(e as NodeJS.ErrnoException | undefined)?.code ?? 'error'})`);
+      throw notOwnStore(`${shown(rel)} cannot be read (${(e as NodeJS.ErrnoException | undefined)?.code ?? 'error'})`);
     }
     for (const name of names) {
       const childAbs = path.join(abs, name);
       const childRel = `${rel}/${name}`;
       const c = lstatOrCode(childAbs);
-      if (typeof c === 'string') throw notOwnStore(`${childRel} cannot be examined (${c})`);
+      if (typeof c === 'string') throw notOwnStore(`${shown(childRel)} cannot be examined (${c})`);
       if (c.isDirectory()) stack.push({ abs: childAbs, rel: childRel });
-      else if (!c.isFile()) throw notOwnStore(`${childRel} is a link or a special file, not a regular file`);
+      else if (!c.isFile()) throw notOwnStore(`${shown(childRel)} is a link or a special file, not a regular file`);
     }
   }
 }

@@ -15,6 +15,7 @@ import {
   newPlainFileSetInfo,
   GitContentSource,
   GitError,
+  ObjectMismatchError,
   scanFileContent,
   listNamedTrackedFiles,
   inspectWorktree,
@@ -1214,7 +1215,7 @@ export async function scanHeadBlobsAsync(
     }
     entries.set(f, { repoTop: repoRoot, mode: '100644', oid, worktreeAlso: false, filtered: false });
   }
-  const content = new GitContentSource('head', fileSetGitEnv(), entries);
+  const content = new GitContentSource('head', fileSetGitEnv(), entries, 10, true);
   const results: ScanResult[] = [];
   const cwd = process.cwd();
   const blobOnly: ScanOptions = { ...options, blobOnly: true };
@@ -1228,6 +1229,18 @@ export async function scanHeadBlobsAsync(
         const r = await scanOneFile(scanner, file, display, exclude, repoRoot, content, blobOnly, maxSize, scanBudgetMs);
         if (r) results.push(r);
       } catch (error) {
+        if (error instanceof ObjectMismatchError) {
+          // Name a path that holds the bad object, not the file whose read
+          // happened to be failed by it.
+          const paths = files.filter(f => blobs.get(f) === error.oid).map(f => path.relative(cwd, f)).sort();
+          throw new GitError(
+            `vault-guard: the object store does not hold what its ids claim: the blob for ${JSON.stringify(paths[0] ?? error.oid)}` +
+              `${paths.length > 1 ? ` (and ${paths.length - 1} more path${paths.length > 2 ? 's' : ''} with the same id)` : ''} ` +
+              `is not the content ${error.oid} names. Clone the repository fresh and assess the clone. Nothing was scanned.`,
+            error.command,
+            error,
+          );
+        }
         if (error instanceof GitError) throw error;
         options.unreadable?.push({ kind: 'read_error', file: display, reason: String(error) });
         options.bus?.add({ code: 'file.read_error', severity: 'error', ctx: { file: display, detail: String(error) } });

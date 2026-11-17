@@ -43,7 +43,7 @@ export { climbsOut } from './utils/dot-dot';
 export * from './utils/local-git-config';
 export * from './no-repo-controls';
 export * from './utils/read-no-follow';
-export { BlobBatchReader, batchCheckBlobs, type BlobCheck } from './utils/blob-reader';
+export { BlobBatchReader, ObjectMismatchError, batchCheckBlobs, type BlobCheck } from './utils/blob-reader';
 export { decodeTextBuffer, decodeDiskCopy, mappedWorktreeEncodings, type DecodedDiskCopy } from './utils/text-decode';
 export * from './config';
 export * from './config-validate';

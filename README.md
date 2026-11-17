@@ -186,11 +186,19 @@ over. Nothing in the repository decides what is reported:
   read, and inline `vault-guard: ignore-line` directives are not honoured: a
   finding one covers is reported and marked `inline_directive_not_honoured`.
   `--fail-on` on the command line still applies.
-- The tree is judged as at HEAD, from git blobs only (`git ls-tree -r HEAD` and
-  `git cat-file`). No working-tree file is read, and `status`, `ls-files`,
+- The tree is judged as at HEAD, from git objects only (`git cat-file`). No working-tree file is read, and `status`, `ls-files`,
   `check-attr` and `hash-object` are never run. Untracked and uncommitted files
   are not judged; the report names the commit that was (`Scanned commit:` in
   text, `scannedCommit` in JSON and in the SARIF run properties).
+- The object store is not trusted to hold what its ids claim. The HEAD commit,
+  every tree under it and every blob the scan reads are hashed with git's own
+  hash (sha1, or sha256 for a sha256 repository) and compared with the id they
+  were asked for; the file list is parsed from those verified raw trees, with
+  the commit's `tree` line naming the root tree checked. A mismatch (an object
+  file rewritten in place, say) refuses the run, exit 2, naming the path for a
+  blob, with the clone-fresh remedy. A blob the scan skips without reading is
+  not hashed. The check is as strong as git's hash: sha1 collisions are out of
+  scope.
 - Every control file present in the HEAD tree is named: one `Present, not
   honoured:` line per file in text, and `repoControls: { honoured: false,
   present: [...] }` at the top level of JSON and in `runs[0].properties` in SARIF.
