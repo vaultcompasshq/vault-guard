@@ -141,10 +141,14 @@ export function isPasswordHash(value: string): boolean {
  *
  * UI code and documentation carry the header on its own as a label or an
  * input placeholder (`const privateKeyBeginsWith = '-----BEGIN RSA PRIVATE
- * KEY-----'`). A header with no body leaks nothing. Real PEM files wrap their
- * base64 at 64 characters per line, so requiring a single long base64 run
- * right after the header separates the two cleanly, and still works when the
- * key is embedded in JSON with escaped newlines.
+ * KEY-----'`). A header with no body leaks nothing. A body is base64 and
+ * nothing else, however the author folded it: one long line, the usual 64 or
+ * 76 columns, or any narrower fold (`openssl` reads a key refolded at 16 or 32
+ * columns just the same). So a body is either a single base64 token of 40 or
+ * more characters, or a run of single-token base64 lines of one width (the last
+ * may be shorter) whose joined text is long and mixed enough not to be prose.
+ * Indentation, CRLF, comment leaders and the JSON `\n` escape are peeled off
+ * first.
  */
 export function isPemHeaderWithoutBody(content: string, headerEndOffset: number): boolean {
   // Judge the text between this header and the END marker that closes it (or
@@ -163,6 +167,22 @@ export function isPemHeaderWithoutBody(content: string, headerEndOffset: number)
   // in JSON, YAML or a string literal.
   const lines = region.split(/\r?\n|\\r\\n|\\n|\\r/);
 
+  // Single-token base64 lines in a row: a candidate narrow-folded body.
+  let run: string[] = [];
+  const runIsBody = (): boolean => {
+    if (run.length < 2) return false;
+    // The fold width is the longest line but the last. Peeling a token's
+    // trailing `+` (list syntax, in `cleanPemToken`) can shorten a base64 line
+    // by a character or two, so a line within two of the width is the same width.
+    let width = 0;
+    for (let i = 0; i < run.length - 1; i++) width = Math.max(width, run[i].length);
+    if (width < 14) return false;
+    for (let i = 0; i < run.length - 1; i++) if (run[i].length < width - 2) return false;
+    if (run[run.length - 1].length > width) return false;
+    const joined = run.join('');
+    return joined.length >= 40 && /[a-z]/.test(joined) && /[A-Z]/.test(joined) && /[0-9+/]/.test(joined);
+  };
+
   for (const line of lines) {
     const tokens: string[] = [];
     for (const raw of line.split(/\s+/)) {
@@ -171,12 +191,16 @@ export function isPemHeaderWithoutBody(content: string, headerEndOffset: number)
     }
     if (tokens.length === 0) continue;
 
-    // A PEM body wraps base64 at 64 characters, so a body line is base64 and
-    // nothing else, after comment markers and string syntax are peeled off.
-    // Requiring EVERY token on the line to be base64 is what separates it from
-    // surrounding code and prose: `ssh-rsa AAAA... user@host` and
-    // `const x = someLongIdentifier;` each carry a token that is not.
-    if (!tokens.every(t => /^[A-Za-z0-9+/]+={0,2}$/.test(t))) continue;
+    // A body line is base64 and nothing else, after comment markers and string
+    // syntax are peeled off. Requiring EVERY token on the line to be base64 is
+    // what separates it from surrounding code and prose: `ssh-rsa AAAA...
+    // user@host` and `const x = someLongIdentifier;` each carry a token that is
+    // not.
+    if (!tokens.every(t => /^[A-Za-z0-9+/]+={0,2}$/.test(t))) {
+      if (runIsBody()) return false;
+      run = [];
+      continue;
+    }
 
     // Length and character mix separate a body from English: at least 40
     // characters, mixed case, and a digit or + or /. A 64-character random
@@ -194,9 +218,16 @@ export function isPemHeaderWithoutBody(content: string, headerEndOffset: number)
       }
     }
     if (bodyChars > 0 && bodyChars / allChars >= 0.85) return false;
+
+    if (tokens.length === 1) {
+      run.push(tokens[0]);
+    } else {
+      if (runIsBody()) return false;
+      run = [];
+    }
   }
 
-  return true;
+  return !runIsBody();
 }
 
 /** How far past a PEM header the body check looks when no END marker bounds it. */
