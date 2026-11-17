@@ -12,7 +12,7 @@ import {
 } from '../utils/data-shape';
 import { VaultGuardConfig } from '../config';
 import { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from '../utils/entropy';
-import { isPlaceholderSecret, connectionStringDeclines, passwordLooksPlaceholder, urlPasswordCandidates, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, isShortDockerPatExample } from '../utils/placeholder';
+import { isPlaceholderSecret, connectionStringDeclines, passwordLooksPlaceholder, urlPasswordCandidates, urlQueryCredentials, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, isShortDockerPatExample } from '../utils/placeholder';
 import { applyPathAwareSeverity } from '../utils/path-severity';
 import { contextPathFor, isPythonPath } from '../utils/path-parts';
 import { decodeTextBuffer } from '../utils/text-decode';
@@ -355,6 +355,8 @@ export interface PlaceholderSkipHits {
   lines: number[];
   /** The rule id of each skip, parallel to {@link lines}. */
   rules?: string[];
+  /** The 0-based column of each skip, parallel to {@link lines}: two declines on one line stay two. */
+  columns?: number[];
 }
 
 /**
@@ -624,7 +626,7 @@ export class SecretScanner {
     const suppressedByDirective: SecretMatch[] | null = opts?.ignoreHits ? [] : null;
     // Placeholder declines, deduped by match offset at the end so two rules
     // on one value count once. Recorded only when the caller asked.
-    const placeholderRaw: Array<{ line: number; offset: number; rule: string }> | null = opts?.placeholderSkips ? [] : null;
+    const placeholderRaw: Array<{ line: number; offset: number; rule: string; column: number }> | null = opts?.placeholderSkips ? [] : null;
 
     // Fresh `RegExp` per invocation so concurrent or interleaved `scanContent`
     // calls (e.g. across `await` in a worker pool) never share `lastIndex`.
@@ -661,10 +663,16 @@ export class SecretScanner {
         const urlParts = wholeMatchRule && connectionString === true ? urlPasswordCandidates(fullMatch) : undefined;
         // The secret parts to judge, every plausible one. When none can be isolated
         // the match is kept whole: no value filter may drop what it could not read.
+        // A driver also reads a password from the query (`?password=`), so those
+        // values are secret parts too: the match is declined as a placeholder only
+        // if every candidate, userinfo and query, looks like one.
+        const queryCreds = wholeMatchRule && connectionString === true ? urlQueryCredentials(fullMatch) : [];
         const secretParts: string[] | undefined = !wholeMatchRule
           ? [rawValue]
           : connectionString === true
-            ? urlParts?.passwords
+            ? urlParts === undefined
+              ? undefined
+              : [...urlParts.passwords, ...queryCreds]
             : azureAccountKey(fullMatch);
         const failClosed = wholeMatchRule && secretParts === undefined;
         const judgedAll = secretParts ?? [rawValue];
@@ -740,9 +748,12 @@ export class SecretScanner {
         if (connectionString === true) {
           const declined = connectionStringDeclines(fullMatch);
           // In the mode the password declines only if every plausible password does.
-          const passwordDeclined = keepFiltered
-            ? urlParts !== undefined && urlParts.passwords.every(p => passwordLooksPlaceholder(urlParts.user, p))
-            : declined.password;
+          const userinfoPlaceholder =
+            urlParts !== undefined && urlParts.passwords.every(p => passwordLooksPlaceholder(urlParts.user, p));
+          const queryReal = urlParts !== undefined && queryCreds.some(q => !passwordLooksPlaceholder(urlParts.user, q));
+          const passwordDeclined = keepFiltered ? userinfoPlaceholder && !queryReal : declined.password;
+          // A placeholder in the userinfo, a real credential in the query.
+          if (keepFiltered && userinfoPlaceholder && queryReal) ctxFilter = 'url-context';
           if (passwordDeclined || (declined.host && !keepFiltered)) {
             this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index, type);
             continue;
@@ -866,6 +877,7 @@ export class SecretScanner {
         opts.placeholderSkips.count += 1;
         opts.placeholderSkips.lines.push(hit.line);
         (opts.placeholderSkips.rules ??= []).push(hit.rule);
+        (opts.placeholderSkips.columns ??= []).push(hit.column);
       }
     }
 
@@ -1028,13 +1040,14 @@ export class SecretScanner {
    * Index position 0 = start of line 1.
    */
   private notePlaceholderSkip(
-    into: Array<{ line: number; offset: number; rule: string }> | null,
+    into: Array<{ line: number; offset: number; rule: string; column: number }> | null,
     lineIndex: number[],
     index: number,
     rule: string,
   ): void {
     if (into === null) return;
-    into.push({ line: this.lineFromIndex(lineIndex, index), offset: index, rule });
+    const line = this.lineFromIndex(lineIndex, index);
+    into.push({ line, offset: index, rule, column: index - (lineIndex[line - 1] ?? 0) });
   }
 
   private buildLineIndex(content: string): number[] {

@@ -115,7 +115,7 @@ export interface HeadOnlyReport {
    * password. Capped like `notScanned.builtInSkips`, the rest counted.
    */
   placeholderSkips: {
-    skips: Array<{ file: string; line: number; rule: string }>;
+    skips: Array<{ file: string; line: number; column: number; rule: string }>;
     omitted: number;
   };
   notScanned: {

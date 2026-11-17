@@ -640,18 +640,26 @@ function freshSkips(): PlaceholderSkipHits {
 }
 
 function foldSkips(into: PlaceholderSkipHits, blob: PlaceholderSkipHits, disk: PlaceholderSkipHits): void {
-  into.count += blob.count + Math.max(0, disk.count - blob.count);
+  // One row per decline, keyed by line, rule and column: two declines on one line
+  // stay two rows, and the count is the number of rows when columns are known.
+  const located = (h: PlaceholderSkipHits): boolean => h.columns !== undefined && h.columns.length === h.lines.length;
+  const byRows = (located(blob) || blob.lines.length === 0) && (located(disk) || disk.lines.length === 0);
   const seen = new Set<string>();
+  let added = 0;
   for (const hits of [blob, disk]) {
     hits.lines.forEach((line, i) => {
       const rule = hits.rules?.[i];
-      const key = `${line}\0${rule ?? ''}`;
+      const column = hits.columns?.[i];
+      const key = `${line}\0${rule ?? ''}\0${column ?? ''}`;
       if (seen.has(key)) return;
       seen.add(key);
+      added++;
       into.lines.push(line);
       if (rule !== undefined) (into.rules ??= []).push(rule);
+      if (column !== undefined) (into.columns ??= []).push(column);
     });
   }
+  into.count += byRows ? added : blob.count + Math.max(0, disk.count - blob.count);
 }
 
 /**

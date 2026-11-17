@@ -628,3 +628,40 @@ export function isPlaceholderSecret(
 
   return false;
 }
+
+/**
+ * Credential-bearing query parameters a driver reads from a connection URL, by
+ * lowercased name: libpq and the PostgreSQL JDBC driver take `password` and
+ * `sslpassword` (the passphrase of the client key); MySQL Connector/J takes
+ * `password` and the key store passwords `trustcertificatekeystorepassword` and
+ * `clientcertificatekeystorepassword`. Not exhaustive; these are the ones I can
+ * name from the drivers' documentation. MongoDB and Redis matches stop before
+ * any query, so nothing is read there.
+ */
+const QUERY_CREDENTIAL_KEYS = new Set([
+  'password',
+  'sslpassword',
+  'trustcertificatekeystorepassword',
+  'clientcertificatekeystorepassword',
+]);
+
+/** The values of the credential-bearing query parameters of a URL (empty values skipped). */
+export function urlQueryCredentials(url: string): string[] {
+  const q = url.indexOf('?');
+  if (q < 0) return [];
+  const query = url.slice(q + 1).split('#')[0];
+  const out: string[] = [];
+  for (const pair of query.split('&')) {
+    const eq = pair.indexOf('=');
+    if (eq <= 0) continue;
+    if (!QUERY_CREDENTIAL_KEYS.has(pair.slice(0, eq).toLowerCase())) continue;
+    let value = pair.slice(eq + 1);
+    try {
+      value = decodeURIComponent(value);
+    } catch {
+      // Keep the raw text.
+    }
+    if (value !== '') out.push(value);
+  }
+  return out;
+}

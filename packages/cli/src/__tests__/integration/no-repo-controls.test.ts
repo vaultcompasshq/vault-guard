@@ -1718,7 +1718,7 @@ describe('--no-repo-controls: the secret part alone is judged, and every placeho
     const r = await scanIn(dir);
     expect(r.code).toBe(0);
     const doc = parse(r.stdout) as unknown as { placeholderSkips: { skips: Array<{ file: string; line: number; rule: string }>; omitted: number } };
-    expect(doc.placeholderSkips).toEqual({ skips: [{ file: 'c.env', line: 2, rule: 'postgresql-url' }], omitted: 0 });
+    expect(doc.placeholderSkips).toEqual({ skips: [{ file: 'c.env', line: 2, column: 13, rule: 'postgresql-url' }], omitted: 0 });
     expect(r.stdout).not.toContain('changeme');
     const sarif = JSON.parse((await scanIn(dir, { format: 'sarif' })).stdout) as { runs: Array<{ properties: Record<string, unknown> }> };
     expect(sarif.runs[0].properties.placeholderSkips).toEqual(doc.placeholderSkips);
@@ -1731,5 +1731,48 @@ describe('--no-repo-controls: the secret part alone is judged, and every placeho
     const dir = rawRepo(({ blob, tree }) => tree([['100644', 'a.env', blob(`DATABASE_URL=postgres://app:${PW}@db/main\n`)]]));
     const text = await scanIn(dir, { format: 'text' });
     expect(text.log).toContain("Context filters not honoured: 1 finding(s) the repository's path or surrounding text would have dropped are reported");
+  });
+});
+
+describe('--no-repo-controls: credentials in the query, and one row per placeholder decline', () => {
+  itPosix('two placeholder declines on one line are two rows and a count of two', async () => {
+    const dir = rawRepo(({ blob, tree }) =>
+      tree([
+        ['100644', 'two.env', blob('A=postgres://a:changeme@db/x B=postgres://b:changeme@db/y\n')],
+        ['100644', 'ok.txt', blob('fine\n')],
+      ]),
+    );
+    const r = await scanIn(dir);
+    const doc = parse(r.stdout) as unknown as {
+      run: { placeholder_skips: number };
+      placeholderSkips: { skips: Array<{ file: string; line: number; column: number; rule: string }>; omitted: number };
+    };
+    expect(doc.run.placeholder_skips).toBe(2);
+    expect(doc.placeholderSkips.skips.map(x => [x.file, x.line, x.column, x.rule])).toEqual([
+      ['two.env', 1, 2, 'postgresql-url'],
+      ['two.env', 1, 31, 'postgresql-url'],
+    ]);
+    expect(doc.placeholderSkips.omitted).toBe(0);
+    const sarif = JSON.parse((await scanIn(dir, { format: 'sarif' })).stdout) as { runs: Array<{ properties: Record<string, unknown> }> };
+    expect((sarif.runs[0].properties.placeholderSkips as { skips: unknown[] }).skips).toHaveLength(2);
+  });
+
+  itPosix('a placeholder in the userinfo and a real password in the query: kept, marked url-context', async () => {
+    const dir = rawRepo(({ blob, tree }) =>
+      tree([['100644', 'q.env', blob('DB=postgres://app:placeholder@db.corp-prod.io/main?password=Vq7hR2mX9kLp4TzB\n')]]),
+    );
+    const r = await scanIn(dir);
+    expect(r.code).toBe(1);
+    const m = (parse(r.stdout) as unknown as { results: Array<{ matches: Array<{ context_filter_not_honoured?: string }> }> }).results[0].matches;
+    expect(m.map(x => x.context_filter_not_honoured)).toEqual(['url-context']);
+  });
+
+  itPosix('a placeholder in the userinfo and a placeholder in the query: still a counted decline', async () => {
+    const dir = rawRepo(({ blob, tree }) =>
+      tree([['100644', 'q.env', blob('DB=postgres://app:placeholder@db.corp-prod.io/main?password=changeme\n')], ['100644', 'ok.txt', blob('x\n')]]),
+    );
+    const r = await scanIn(dir);
+    expect(r.code).toBe(0);
+    expect((parse(r.stdout) as unknown as { run: { placeholder_skips: number } }).run.placeholder_skips).toBe(1);
   });
 });

@@ -578,7 +578,7 @@ export async function scanCommand(
   // `ignore-next-line` directives across every file. Reported even at zero so
   // the run always states whether the scanner was silenced inline.
   const inlineSuppressed = { count: 0, criticalVendorAnchored: 0 };
-  const placeholderSkips: { count: number; locations: Array<{ file: string; line: number; rule?: string }> } = {
+  const placeholderSkips: { count: number; locations: Array<{ file: string; line: number; rule?: string; column?: number }> } = {
     count: 0,
     locations: [],
   };
@@ -741,8 +741,10 @@ export async function scanCommand(
         fillBuiltInSkips(headOnlyReport, builtInSkipPaths, binarySkipped, root);
         // Every placeholder decline, by file, line and rule (never the value).
         const rows = placeholderSkips.locations
-          .map(l => ({ file: l.file.split(sep).join('/'), line: l.line, rule: l.rule ?? 'unknown' }))
-          .sort((a, b) => (a.file !== b.file ? (a.file < b.file ? -1 : 1) : a.line - b.line || (a.rule < b.rule ? -1 : 1)));
+          .map(l => ({ file: l.file.split(sep).join('/'), line: l.line, column: l.column ?? 0, rule: l.rule ?? 'unknown' }))
+          .sort((a, b) =>
+            a.file !== b.file ? (a.file < b.file ? -1 : 1) : a.line - b.line || a.column - b.column || (a.rule < b.rule ? -1 : 1),
+          );
         headOnlyReport.placeholderSkips.skips = rows.slice(0, BUILT_IN_SKIPS_CEILING);
         headOnlyReport.placeholderSkips.omitted = Math.max(0, rows.length - BUILT_IN_SKIPS_CEILING);
       }

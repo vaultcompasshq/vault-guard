@@ -152,3 +152,31 @@ describe('mark mode: every plausible split of a URL is judged, and what cannot b
     }
   });
 });
+
+describe('mark mode: a credential in the query is a secret part too', () => {
+  const scanner = new SecretScanner({});
+  const real = 'Vq7hR2mX9kLp4TzB';
+  const run = (text: string): { kinds: Array<string | undefined>; declines: number } => {
+    const ph = { count: 0, lines: [] as number[] };
+    const m = scanner.scanContent(`${text}\n`, { inlineDirectives: 'mark', placeholderSkips: ph });
+    return { kinds: m.map(x => x.contextFilterNotHonoured), declines: ph.count };
+  };
+
+  it.each([
+    ['postgres password', `postgres://app:placeholder@db.corp-prod.io/main?password=${real}`],
+    ['postgres sslpassword', `postgres://app:placeholder@db.corp-prod.io/main?sslpassword=${real}`],
+    ['mysql password', `mysql://app:placeholder@db.corp-prod.io/main?password=${real}`],
+    ['mysql key store password', `mysql://app:placeholder@db.corp-prod.io/main?clientCertificateKeyStorePassword=${real}`],
+    ['a percent-encoded value after another parameter', `postgres://app:placeholder@db.corp-prod.io/main?sslmode=require&password=Vq7h%2FR2mX9kLp4TzB`],
+  ])('%s: a placeholder userinfo does not clear it', (_name, url) => {
+    expect(run(url)).toEqual({ kinds: ['url-context'], declines: 0 });
+  });
+
+  it('a placeholder in both places is still one counted decline', () => {
+    expect(run('postgres://app:placeholder@db.corp-prod.io/main?password=changeme')).toEqual({ kinds: [], declines: 1 });
+  });
+
+  it('a query parameter that is not a credential changes nothing', () => {
+    expect(run('postgres://app:placeholder@db.corp-prod.io/main?application_name=Vq7hR2mX9kLp4TzB')).toEqual({ kinds: [], declines: 1 });
+  });
+});

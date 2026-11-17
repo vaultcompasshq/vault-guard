@@ -1574,14 +1574,21 @@ and, because the host class admits `@`, a literal `@`), so every plausible split
 is judged and a value filter drops the match only if it would drop every one of
 them; a match whose secret part cannot be isolated (a URL with no `@` to split
 on, an Azure string whose `AccountKey=` is not there exactly once) is kept whole,
-marked `url-context`, and no value filter may drop it. A marker in the user, host,
+marked `url-context`, and no value filter may drop it. A driver also reads a password from the query, so in the postgres and mysql
+rules (whose match includes the query) the values of `password`, `sslpassword`
+(libpq and pgjdbc) and `trustCertificateKeyStorePassword` and
+`clientCertificateKeyStorePassword` (MySQL Connector/J) are secret parts too: a
+URL is declined as a placeholder only if the userinfo and every such query value
+look like one, otherwise it is kept and marked `url-context`; the list is not
+exhaustive and the mongodb and redis matches stop before any query. A marker in
+the user, host,
 database, query or fragment (or the account name) cannot clear it: the finding is
 kept and marked `url-context`. The six rules with no capture group and free text
 in the match are those five and `gcp-service-account` (a fixed string, no value
 to judge); no rule with a capture group has free text inside its group. Elsewhere
 a marker anywhere in the URL still declines it (docs/RULES.md). Every placeholder
 decline in this mode is listed, by file, line and rule id and never the value,
-as `placeholderSkips` in JSON and the SARIF run properties (the notScanned
+as `placeholderSkips` (one row per decline, keyed by file, line, column and rule, so two on one line are two rows and the count is the number of rows) in JSON and the SARIF run properties (the notScanned
 ceiling, the rest counted), because the filter can drop a plausible real
 password; the text verdict says "N value(s) skipped as placeholders (listed in
 the JSON report)" and a run with no findings does not read as an unqualified
