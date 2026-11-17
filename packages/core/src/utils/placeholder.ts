@@ -540,7 +540,7 @@ export function isSampleJwt(token: string): boolean {
 }
 
 export function isNonSecretConnectionString(url: string): boolean {
-  const m = /^[a-z][a-z0-9+.-]*:\/\/([^:@/\s]+):([^@/\s]+)@([^:/?\s]+)/i.exec(url);
+  const m = /^[a-z][a-z0-9+.-]*:\/\/([^:@/\s]*):([^@/\s]+)@([^:/?\s]+)/i.exec(url);
   if (!m) return false;
 
   const user = m[1];
