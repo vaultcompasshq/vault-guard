@@ -1575,7 +1575,10 @@ password, taken whole, is exactly a known placeholder (`password`, `passwd`,
 `placeholder`, `redacted`, `your_password`, `yourpassword`, `mypassword`, three
 or more `x`, any run of `*`) or entirely a template (`${VAR}`, `$VAR`, `<VAR>`,
 `{VAR}`, `{{VAR}}`, `$(cmd)`; `%VAR%` and `#{VAR}` cannot pass the first
-condition). For Azure the one `AccountKey=` value must be exactly such a form.
+condition) whose inside is name-shaped (`isNameShaped`: at most 64 characters, a
+letter or underscore first, then letters, digits, `_`, `.`, `-` or single
+spaces, and with the separators removed one case of letters only plus at most
+three digits in all, so `{Kq8vZ3pXw9Lm2Tn}` and `<yourPassword>` are kept). For Azure the one `AccountKey=` value must be exactly such a form.
 Anything else is kept; a kept match the old substring logic would have declined
 says so (`url-context`). A URL with userinfo that no URL rule matched (a user
 holding `@` or `'`, the Azure single-server `user@server:password@host` form) is

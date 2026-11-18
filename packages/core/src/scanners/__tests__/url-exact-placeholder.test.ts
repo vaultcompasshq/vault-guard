@@ -1,3 +1,4 @@
+import { isNameShaped } from '../../utils/placeholder';
 import { SecretScanner } from '../secret-scanner';
 
 const scanner = new SecretScanner({});
@@ -60,6 +61,39 @@ describe('mark mode: a URL is a counted decline only when its password is exactl
     ['an exact placeholder with a query at all', 'postgres://app:placeholder@db.prod.acme.io/main?sslmode=require'],
   ])('a placeholder password never clears a token a driver reads differently: %s', (_name, url) => {
     expect(mark(url)).toEqual({ findings: 1, kinds: ['url-context'], declines: 0 });
+  });
+
+  it.each([
+    ['braces around a real password', `postgres://app:{${R}}@db.prod.acme.io/main`],
+    ['angle brackets around a real password', `postgres://app:<${R}>@db.prod.acme.io/main`],
+    ['a dollar and braces around a real password', `postgres://app:$` + `{${R}}@db.prod.acme.io/main`],
+    ['a dollar before a real password', `postgres://app:$${R}@db.prod.acme.io/main`],
+    ['double braces around a real password', `postgres://app:{{${R}}}@db.prod.acme.io/main`],
+    ['a command substitution around a real password', `postgres://app:$(${R})@db.prod.acme.io/main`],
+    ['a name with a digit run of four', 'postgres://app:<password1234>@db.prod.acme.io/main'],
+    ['a camelCase name', 'postgres://app:<yourPassword>@db.prod.acme.io/main'],
+    ['a name longer than 64 characters', `postgres://app:<${'a'.repeat(65)}>@db.prod.acme.io/main`],
+  ])('a template whose inside is not name-shaped is kept: %s', (_name, url) => {
+    expect(mark(url)).toEqual({ findings: 1, kinds: ['url-context'], declines: 0 });
+  });
+
+  it.each([
+    ['DB_PASSWORD', 'postgres://app:$' + '{DB_PASSWORD}@db.prod.acme.io/main'],
+    ['a dotted name', 'postgres://app:<db.password>@db.prod.acme.io/main'],
+    ['a hyphenated name', 'postgres://app:{your-password}@db.prod.acme.io/main'],
+    ['a name with a digit', 'postgres://app:$(pg_pw_1)@db.prod.acme.io/main'],
+    ['a $VAR with a digit', 'redis://:$REDIS_PW2@cache.acme.io:6379'],
+  ])('a name-shaped template is a counted decline: %s', (_name, url) => {
+    expect(mark(url)).toEqual({ findings: 0, kinds: [], declines: 1 });
+  });
+
+  it('isNameShaped: what counts as a name', () => {
+    for (const ok of ['DB_PASSWORD', 'db.password', 'your-password', 'password 1', 'a', '_x', 'PW1', 'a'.repeat(64)]) {
+      expect([ok, isNameShaped(ok)]).toEqual([ok, true]);
+    }
+    for (const bad of ['', '1abc', 'yourPassword', 'Kq8vZ3pXw9Lm2Tn', 'password1234', 'a'.repeat(65), 'two  spaces', 'a$b', 'pass1_2_3_4']) {
+      expect([bad, isNameShaped(bad)]).toEqual([bad, false]);
+    }
   });
 
   it('elsewhere a marker anywhere in the URL still declines it (unchanged)', () => {

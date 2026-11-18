@@ -631,17 +631,42 @@ const EXACT_PLACEHOLDER_WORDS = new Set([
   'mypassword',
 ]);
 
-/** A password that is exactly a placeholder word, a run of x or *, or entirely a template form. */
+/**
+ * Whether the inside of a template form reads as a NAME (`DB_PASSWORD`,
+ * `db.password`, `your-password`, `password 1`) and not as a secret wrapped in
+ * brackets: at most 64 characters; a letter or underscore first; then letters,
+ * digits, `_`, `.`, `-` or single spaces; and, with the separators removed, one
+ * case of letters only (so no camelCase, no mixed-case random text) plus at
+ * most three digits in all (so no digit run of four or more).
+ */
+export function isNameShaped(inside: string): boolean {
+  if (inside.length === 0 || inside.length > 64) return false;
+  if (!/^[A-Za-z_][A-Za-z0-9_.\- ]*$/.test(inside) || / {2}/.test(inside)) return false;
+  const core = inside.replace(/[_.\- ]/g, '');
+  const digits = core.replace(/[^0-9]/g, '').length;
+  const letters = core.replace(/[0-9]/g, '');
+  const oneCase = letters === letters.toLowerCase() || letters === letters.toUpperCase();
+  return digits <= 3 && oneCase;
+}
+
+/** The inside of a `${X}`, `$X`, `<X>`, `{X}`, `{{X}}` or `$(X)` template, or undefined. */
+function templateInside(pass: string): string | undefined {
+  return (
+    /^\$\{([^{}]*)\}$/.exec(pass)?.[1] ??
+    /^\$([A-Za-z_][A-Za-z0-9_]*)$/.exec(pass)?.[1] ??
+    /^<([^<>]*)>$/.exec(pass)?.[1] ??
+    /^\{\{ ?([^{}]*?) ?\}\}$/.exec(pass)?.[1] ??
+    /^\{([^{}]*)\}$/.exec(pass)?.[1] ??
+    /^\$\(([^()]*)\)$/.exec(pass)?.[1]
+  );
+}
+
+/** A password that is exactly a placeholder word, a run of x or *, or entirely a name-shaped template. */
 export function isExactPlaceholderPassword(pass: string): boolean {
   if (EXACT_PLACEHOLDER_WORDS.has(pass.toLowerCase())) return true;
   if (/^x{3,}$/i.test(pass) || /^\*+$/.test(pass)) return true;
-  return (
-    /^\$\{[^}]*\}$/.test(pass) || // ${VAR}
-    /^\$[A-Za-z_][A-Za-z0-9_]*$/.test(pass) || // $VAR
-    /^<[^>]*>$/.test(pass) || // <password>
-    /^\{[^]*\}$/.test(pass) || // {VAR} and {{VAR}}
-    /^\$\([^)]*\)$/.test(pass) // $(cmd)
-  );
+  const inside = templateInside(pass);
+  return inside !== undefined && isNameShaped(inside);
 }
 
 /**
