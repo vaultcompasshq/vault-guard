@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from 'crypto';
 import { SecretScanner } from '../secret-scanner';
-import { isPemHeaderWithoutBody } from '../../utils/placeholder';
+import { cleanPemToken, declinedBy1134, isPemHeaderWithoutBody } from '../../utils/placeholder';
 import { randomBody } from './pem-test-bodies';
 
 const scanner = new SecretScanner({});
@@ -31,7 +31,6 @@ const DOC_PEM: Array<[string, string]> = [
   ['a header as a label before an enum', "export const PEM_HEADER = '-----BEGIN RSA PRIVATE KEY-----';\nexport enum Algo {\n  RsaPrivateKey2048,\n  RsaPrivateKey4096,\n  EcPrivateKeyP256,\n  EcPrivateKeyP384,\n  Ed25519PrivateKey,\n}\n"],
   ['a header as a label before a Python list', "PEM_HEADER = '-----BEGIN RSA PRIVATE KEY-----'\nKEY_TYPES = [\n    'Ed25519PrivateKey',\n    'RsaPrivateKey2048',\n    'EcPrivateKeyP256',\n    'EcPrivateKeyP384',\n]\n"],
   ['a header in a JSON object before an ids array', '{"header": "-----BEGIN RSA PRIVATE KEY-----",\n "ids": [\n  "a1b2c3d4e5f60718293a4b5c6d7e8f90",\n  "b1c2d3e4f5a60718293a4b5c6d7e8f91",\n  "c1d2e3f4a5b60718293a4b5c6d7e8f92"\n ]}\n'],
-  ['a header ending a sentence, then vectors', 'Test vectors for the parser, see -----BEGIN RSA PRIVATE KEY----- in the spec:\n\nVGhpcyBpcyBhIHRlc3QgdmVjdG9yIG51bWJlciBvbmU=\nVGhpcyBpcyBhIHRlc3QgdmVjdG9yIG51bWJlciB0d28=\n'],
   ['a header in a markdown sentence, then commit ids', 'The key starts with the line `-----BEGIN RSA PRIVATE KEY-----`. Recent commits:\n\n- 3f2a9c81d7e04b6a\n- 9b1e44c2a8f03d57\n- c07d5e19b3a2f684\n'],
   ['the base64 alphabet over two lines', wrap(['ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef', 'ghijklmnopqrstuvwxyz0123456789+/'])],
   ['the base64 alphabet over three lines', wrap(['ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef', 'ghijklmnopqrstuvwxyz0123456789+/', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef'])],
@@ -42,6 +41,21 @@ const DOC_PEM: Array<[string, string]> = [
   ['a spaced ". . ." ellipsis', wrap(['MIIEpAIBAAKCAQEA3Tz2mr7SZiAMfQyuvBjM', '. . .', 'Kq8vZ3pXw9Lm2Tn+abcdEFGH1234abcdEFGH'])],
   ['".. (truncated)"', wrap(['MIIEpAIBAAKCAQEA3Tz2mr7SZiAMfQyuvBjM', '.. (truncated)', 'Kq8vZ3pXw9Lm2Tn+abcdEFGH1234abcdEFGH'])],
   ['"etc." between two pieces', wrap(['MIIEpAIBAAKCAQEA3Tz2mr7SZiAMfQyuvBjM', 'etc.', 'Kq8vZ3pXw9Lm2Tn+abcdEFGH1234abcdEFGH'])],
+  ['no footer: two 32-character blocks apart (an empty line between) are not one 64-character run', [HDR, ...fold(randomBody(32, 51), 16), '', ...fold(randomBody(32, 52), 16)].join('\n') + '\n'],
+  ['no footer: pieces around an ellipsis are not one run', [HDR, ...fold(randomBody(48, 53), 16), '...', ...fold(randomBody(48, 54), 16)].join('\n') + '\n'],
+  ['no footer: 96 characters then an ellipsis then 16', [HDR, ...fold(randomBody(96, 55), 16), '...', randomBody(16, 56)].join('\n') + '\n'],
+  ['an "omitted" line between two pieces', wrap([randomBody(36, 57), 'omitted', randomBody(36, 58)])],
+  ['a "TRUNCATED" line between two pieces', wrap([randomBody(36, 57), 'TRUNCATED', randomBody(36, 58)])],
+  ['a "cut" line between two pieces', wrap([randomBody(36, 57), 'cut', randomBody(36, 58)])],
+  ['a "snipped" line between two pieces', wrap([randomBody(36, 57), 'snipped', randomBody(36, 58)])],
+  ['an "[elided]" line between two pieces', wrap([randomBody(36, 57), '[elided]', randomBody(36, 58)])],
+  ['an "(omitted)" line between two pieces', wrap([randomBody(36, 57), '(omitted)', randomBody(36, 58)])],
+  ['no footer: an "omitted" line between two pieces', [HDR, randomBody(36, 57), 'omitted', randomBody(36, 58)].join('\n') + '\n'],
+  ['two lines of 32 whose second is camelCase words (under 48 characters)', wrap(['MIIEvQIBADANBgkqhkiG9w0BAQEFAASC', 'ReplaceThisPrivateMaterialHere12'])],
+  ['an OpenSSH preamble over a repeated phrase', ['-----BEGIN OPENSSH PRIVATE KEY-----', ...fold('b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAA' + 'Zm9vYmFy'.repeat(24), 16), '-----END OPENSSH PRIVATE KEY-----'].join('\n') + '\n'],
+  ['an OpenSSH preamble and nothing else', ['-----BEGIN OPENSSH PRIVATE KEY-----', ...fold('b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQyNTUxOQAAACD', 16), '-----END OPENSSH PRIVATE KEY-----'].join('\n') + '\n'],
+  ['a "// comment:" line is not an RFC 1421 header', [HDR, '// comment: see the docs', ...fold(randomBody(160, 59), 16)].join('\n') + '\n'],
+  ['every-second-letter alphabets', wrap(['MIIEvQIBADANBgkqhkiG9w0BAQEFAASC', 'acegikmoqsuwyACEGIKMOQSUWY13579', 'bdfhjlnprtvxzBDFHJLNPRTVXZ24680'])],
 ];
 
 const R = 'Kq8vZ3pXw9Lm2Tn';
@@ -49,7 +63,7 @@ const DOC_URLS: Array<[string, string]> = [
   ['an x password', 'REDIS_URL=redis://:xxx@cache.acme.io:6379'],
   ['a dot password', 'REDIS_URL=redis://:...@cache.acme.io:6379'],
   ['a percent-encoded star mask', 'REDIS_URL=redis://:%2A%2A%2A@cache.acme.io:6379'],
-  ['a Python format field', 'DB=postgres://app:%(db_pw)s@db.acme.io/main'],
+  ['a Python format field', 'REDIS_URL=redis://:%(db_pw)s@cache.acme.io:6379'],
   ['the default Redis port typed as a password', 'REDIS_URL=redis://:6379@cache.acme.io'],
   ['the default Postgres port typed as a password', 'DB=postgres://:5432@db.acme.io/main'],
   ['a printf %s', 'REDIS_URL=redis://:%s@cache.acme.io:6379'],
@@ -62,11 +76,17 @@ const DOC_URLS: Array<[string, string]> = [
   ['bullets', 'REDIS_URL=redis://:\u2022\u2022\u2022\u2022@cache.acme.io:6379'],
   ['black circles', 'REDIS_URL=redis://:\u25CF\u25CF\u25CF\u25CF@cache.acme.io:6379'],
   ['Ruby interpolation', "REDIS_URL=redis://:#{ENV['X']}@cache.acme.io:6379"],
+  ['a concatenation with a quoted key', "url = 'redis://:'+os.environ['PW']+'@cache.acme-prod.net'"],
+  ['a concatenation with spaces', "url = 'redis://:' + os.environ['PW'] + '@cache.acme-prod.net'"],
 ];
 const REAL_URLS: Array<[string, string]> = [
   ['an empty user with a real password', `REDIS_URL=redis://:${R}@cache.acme.io:6379`],
   ['a numeric password that is not the default port', 'REDIS_URL=redis://:48151623@cache.acme.io:6379'],
   ['a Postgres URL', `DB=postgres://app:${R}@db.acme.io/main`],
+  ['a user with the password none (1.13.4 reported it)', 'DB=postgres://app:none@db.acme-prod.net/app'],
+  ['a user with the password null', 'DB=postgres://app:null@db.acme-prod.net/app'],
+  ['a user with the password -', 'DB=postgres://app:-@db.acme-prod.net/app'],
+  ['a user with the password %s', 'DB=postgres://app:%s@db.acme-prod.net/app'],
   ['a default port as the password for another scheme', 'DB=postgres://:6379@db.acme.io/main'],
   ['a password that merely starts with null', 'REDIS_URL=redis://:nullable9Kq8vZ3p@cache.acme.io:6379'],
 ];
@@ -151,8 +171,8 @@ describe('without a footer the run starts on the line after the header', () => {
     expect(reported(keyFrom(['const vectors = [', ...fold(randomBody(600, 4), 16)]), PEM_RULE)).toBe(false);
   });
 
-  it('text after the header on its own line means the header is a label', () => {
-    expect(reported(`${HDR} then paste your key\n${body.join('\n')}\n`, PEM_RULE)).toBe(false);
+  it('text after the header does not hide a 64-column body that 1.13.4 reported', () => {
+    expect(reported(`${HDR} then paste your key\n${body.join('\n')}\n`, PEM_RULE)).toBe(true);
   });
 
   it('a run that is interrupted is judged only up to the interruption', () => {
@@ -259,5 +279,112 @@ describe('long runs of syntax characters are judged in linear time', () => {
     const t0 = Date.now();
     reported(text, PEM_RULE);
     expect(Date.now() - t0).toBeLessThan(8000);
+  });
+});
+
+describe('reviewer shapes that 1.13.4 reported are still reported', () => {
+  const body64 = fold(randomBody(9300, 61), 64);
+  it.each([
+    ['PGP Version and Hash headers, a 9.3k body, no footer in range', ['-----BEGIN RSA PRIVATE KEY-----', 'Version: GnuPG v1', 'Hash: SHA256', '', ...body64].join('\n') + '\n'],
+    ['an OpenPGP.js Version header', ['-----BEGIN RSA PRIVATE KEY-----', 'Version: OpenPGP.js v4.10.10', 'Comment: https://openpgpjs.org', '', ...body64.slice(0, 20)].join('\n') + '\n'],
+    ['an SSH2 Subject header', ['-----BEGIN RSA PRIVATE KEY-----', 'Subject: ops', '', ...body64.slice(0, 20)].join('\n') + '\n'],
+    ['an X-Note header', ['-----BEGIN RSA PRIVATE KEY-----', 'X-Note: staging', ...body64.slice(0, 20)].join('\n') + '\n'],
+    ['a trailing comment on the header line, no footer', ['-----BEGIN RSA PRIVATE KEY-----  # staging only', ...body64.slice(0, 20)].join('\n') + '\n'],
+    ['a space-joined body whose last token ends in +', `${HDR} MC4CAQAwBQYDK2VwBCIEIGk+ArNScJ/a3hrNdt83QmFfDXSoHsoeR z63DrThWq++ ${FTR}\n`],
+  ])('%s', (_name, text) => {
+    expect(reported(text, PEM_RULE)).toBe(true);
+  });
+});
+
+describe('the superset rule: a key 1.13.4 reported is reported', () => {
+  function presentations(body: string, i: number): string[] {
+    const widths = [8, 12, 16, 24, 32, 40, 64, 76];
+    const out: string[] = [];
+    for (const w of widths) {
+      const ls = fold(body, w);
+      out.push(wrap(ls), [HDR, ...ls].join('\n'), wrap(ls).replace(/\n/g, '\r\n'));
+      out.push(JSON.stringify(wrap(ls)).slice(1, -1), ls.map(l => `# ${l}`).join('\n').replace(/^/, `${HDR}\n`) + `\n${FTR}\n`);
+      out.push(`${HDR}  # staging only\n${ls.join('\n')}`, `${HDR}\nVersion: GnuPG v1\nHash: SHA256\n\n${ls.join('\n')}\n`, `KEY=${HDR}${body}`, `${HDR} ${ls.join(' ')} ${FTR}`);
+      out.push(`${HDR}\n${ls.map(l => `    "${l}\\n" +`).join('\n')}\n`, wrap(ls.map(l => `${l}+`)), wrap([...ls.slice(0, 2), '...', ...ls.slice(2)]));
+    }
+    return out.map(t => (i % 2 === 0 ? t : `prefix text\n${t}`));
+  }
+  it('holds for generated keys in many presentations', () => {
+    let checked = 0;
+    let reportedBy1134 = 0;
+    for (let i = 0; i < 40; i++) {
+      for (const text of presentations(randomBody(64 + ((i * 37) % 1700), 1000 + i), i)) {
+        const off = text.indexOf('PRIVATE KEY-----') + 'PRIVATE KEY-----'.length;
+        const old = declinedBy1134(text, off);
+        if (!old) reportedBy1134++;
+        if (!old) expect(isPemHeaderWithoutBody(text, off)).toBe(false);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(1500);
+    expect(reportedBy1134).toBeGreaterThan(300);
+  });
+  it('holds for random region text', () => {
+    const atoms = ['AbCd1+/Ef', 'GhIj2kLmNoPqRsTuVwXyZ0123456789abcdefgh', '\n', '\n', ' ', '"', "'", '+', '...', '#', '-----END ', '-----BEGIN ', 'Version: x', '\\n', '=', '\t', 'xxxxxxxx', '//', ',', ';'];
+    let x = 12345;
+    const next = (n: number): number => {
+      x = (x * 1103515245 + 12345) & 0x7fffffff;
+      return (x >> 8) % n;
+    };
+    let kept = 0;
+    for (let i = 0; i < 4000; i++) {
+      let t = `${HDR}`;
+      const n = 3 + next(40);
+      for (let k = 0; k < n; k++) t += atoms[next(atoms.length)];
+      if (!declinedBy1134(t, HDR.length)) {
+        kept++;
+        expect(isPemHeaderWithoutBody(t, HDR.length)).toBe(false);
+      }
+    }
+    expect(kept).toBeGreaterThan(100);
+  });
+});
+
+describe('cleanPemToken keeps its 1.13.4 output with a linear trailing strip', () => {
+  // The expression on origin/main, quadratic on a long run.
+  function original(raw: string): string {
+    let t = raw;
+    for (let i = 0; i < 4; i++) {
+      const before = t;
+      t = t
+        .replace(/^(?:[#>;%|*]+|\/{2,}|-{2,})/, '')
+        .replace(/^[bBrRuUfF]{1,2}(?=["'`])/, '')
+        .replace(/^["'`[({\\]+/, '');
+      if (t === before) break;
+    }
+    t = t.replace(/[\s"'`\])},;+\\.&|]+$/, '');
+    return /^[-.&|+_]+$/.test(t) ? '' : t;
+  }
+  it('matches for 100,000 random strings, long punctuation runs and unicode spaces included', () => {
+    const atoms = ['a', 'Z', '9', '+', '/', '=', '"', "'", '`', ']', ')', '}', ',', ';', '\\', '.', '&', '|', '#', '>', '*', '-', '_', '%', '(', '[', '{', 'b', 'r', ' ', ' ', ' ', '﻿', '\t', 'xyz'];
+    let x = 987654;
+    const next = (n: number): number => {
+      x = (x * 1103515245 + 12345) & 0x7fffffff;
+      return (x >> 8) % n;
+    };
+    for (let i = 0; i < 100000; i++) {
+      let t = '';
+      const n = next(12);
+      for (let k = 0; k < n; k++) {
+        const a = atoms[next(atoms.length)];
+        t += next(5) === 0 ? a.repeat(1 + next(40)) : a;
+      }
+      expect(cleanPemToken(t)).toBe(original(t));
+    }
+  });
+});
+
+describe('narrow folds cost about what 1.13.4 cost', () => {
+  it('1000 headers at 24 columns are judged in well under a second each thousand', () => {
+    const texts = Array.from({ length: 1000 }, (_, i) => wrap(fold(randomBody(1200, 7000 + i), 24)));
+    const t0 = Date.now();
+    for (const t of texts) isPemHeaderWithoutBody(t, HDR.length);
+    // About 0.1 ms each unloaded (1.13.4: about 0.07 ms); the bound is for a loaded CI machine.
+    expect(Date.now() - t0).toBeLessThan(3000);
   });
 });
