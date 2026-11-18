@@ -1,5 +1,6 @@
 import { generateKeyPairSync } from 'crypto';
 import { SecretScanner } from '../secret-scanner';
+import { isPemHeaderWithoutBody } from '../../utils/placeholder';
 import { randomBody } from './pem-test-bodies';
 
 const scanner = new SecretScanner({});
@@ -32,6 +33,15 @@ const DOC_PEM: Array<[string, string]> = [
   ['a header in a JSON object before an ids array', '{"header": "-----BEGIN RSA PRIVATE KEY-----",\n "ids": [\n  "a1b2c3d4e5f60718293a4b5c6d7e8f90",\n  "b1c2d3e4f5a60718293a4b5c6d7e8f91",\n  "c1d2e3f4a5b60718293a4b5c6d7e8f92"\n ]}\n'],
   ['a header ending a sentence, then vectors', 'Test vectors for the parser, see -----BEGIN RSA PRIVATE KEY----- in the spec:\n\nVGhpcyBpcyBhIHRlc3QgdmVjdG9yIG51bWJlciBvbmU=\nVGhpcyBpcyBhIHRlc3QgdmVjdG9yIG51bWJlciB0d28=\n'],
   ['a header in a markdown sentence, then commit ids', 'The key starts with the line `-----BEGIN RSA PRIVATE KEY-----`. Recent commits:\n\n- 3f2a9c81d7e04b6a\n- 9b1e44c2a8f03d57\n- c07d5e19b3a2f684\n'],
+  ['the base64 alphabet over two lines', wrap(['ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef', 'ghijklmnopqrstuvwxyz0123456789+/'])],
+  ['the base64 alphabet over three lines', wrap(['ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef', 'ghijklmnopqrstuvwxyz0123456789+/', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef'])],
+  ['a "Word: text" line then digests (not an RFC 1421 header)', `Key format: ${HDR}\nNote: digests of the test keys\n- ${randomBody(32, 41)}\n- ${randomBody(32, 42)}\n- ${randomBody(32, 43)}\n`],
+  ['a YAML algorithm line then list items', `key:\n  header: ${HDR}\n  algorithm: rsa\n  ids:\n    - ${randomBody(32, 44)}\n    - ${randomBody(32, 45)}\n    - ${randomBody(32, 46)}\n`],
+  ['every line ending in three dots', wrap(['MIIEpAIBAAKCAQEA3Tz2mr7SZiAMfQ...', 'yuvBjM9Oi8Kq8vZ3pXw9Lm2Tn+abcdE...', 'FGH1234qRsT5uVwXyZ0aBcDeFgHiJkL...'])],
+  ['every line ending in the ellipsis character', wrap(['MIIEpAIBAAKCAQEA3Tz2mr7SZiAMfQ…', 'yuvBjM9Oi8Kq8vZ3pXw9Lm2Tn+abcdE…', 'FGH1234qRsT5uVwXyZ0aBcDeFgHiJkL…'])],
+  ['a spaced ". . ." ellipsis', wrap(['MIIEpAIBAAKCAQEA3Tz2mr7SZiAMfQyuvBjM', '. . .', 'Kq8vZ3pXw9Lm2Tn+abcdEFGH1234abcdEFGH'])],
+  ['".. (truncated)"', wrap(['MIIEpAIBAAKCAQEA3Tz2mr7SZiAMfQyuvBjM', '.. (truncated)', 'Kq8vZ3pXw9Lm2Tn+abcdEFGH1234abcdEFGH'])],
+  ['"etc." between two pieces', wrap(['MIIEpAIBAAKCAQEA3Tz2mr7SZiAMfQyuvBjM', 'etc.', 'Kq8vZ3pXw9Lm2Tn+abcdEFGH1234abcdEFGH'])],
 ];
 
 const R = 'Kq8vZ3pXw9Lm2Tn';
@@ -42,12 +52,23 @@ const DOC_URLS: Array<[string, string]> = [
   ['a Python format field', 'DB=postgres://app:%(db_pw)s@db.acme.io/main'],
   ['the default Redis port typed as a password', 'REDIS_URL=redis://:6379@cache.acme.io'],
   ['the default Postgres port typed as a password', 'DB=postgres://:5432@db.acme.io/main'],
+  ['a printf %s', 'REDIS_URL=redis://:%s@cache.acme.io:6379'],
+  ['a Go %v', 'REDIS_URL=redis://:%v@cache.acme.io:6379'],
+  ['null', 'REDIS_URL=redis://:null@cache.acme.io:6379'],
+  ['undefined', 'REDIS_URL=redis://:undefined@cache.acme.io:6379'],
+  ['none', 'REDIS_URL=redis://:none@cache.acme.io:6379'],
+  ['a dash', 'REDIS_URL=redis://:-@cache.acme.io:6379'],
+  ['a question mark', 'REDIS_URL=redis://:?@cache.acme.io:6379'],
+  ['bullets', 'REDIS_URL=redis://:\u2022\u2022\u2022\u2022@cache.acme.io:6379'],
+  ['black circles', 'REDIS_URL=redis://:\u25CF\u25CF\u25CF\u25CF@cache.acme.io:6379'],
+  ['Ruby interpolation', "REDIS_URL=redis://:#{ENV['X']}@cache.acme.io:6379"],
 ];
 const REAL_URLS: Array<[string, string]> = [
   ['an empty user with a real password', `REDIS_URL=redis://:${R}@cache.acme.io:6379`],
   ['a numeric password that is not the default port', 'REDIS_URL=redis://:48151623@cache.acme.io:6379'],
   ['a Postgres URL', `DB=postgres://app:${R}@db.acme.io/main`],
   ['a default port as the password for another scheme', 'DB=postgres://:6379@db.acme.io/main'],
+  ['a password that merely starts with null', 'REDIS_URL=redis://:nullable9Kq8vZ3p@cache.acme.io:6379'],
 ];
 
 function realKeys(): Array<[string, string]> {
@@ -147,5 +168,96 @@ describe('with a footer, a run of 40 joined characters is not enough', () => {
   });
   it('64 characters in two lines under a footer are', () => {
     expect(reported(wrap([randomBody(32, 1), randomBody(32, 2)]), PEM_RULE)).toBe(true);
+  });
+});
+
+describe('a body on the header line, with no footer, is a body by the 40-character rule', () => {
+  const rsa = randomBody(1600, 77);
+  const ed = randomBody(64, 78);
+  it.each([
+    ['an env assignment', `KEY=${HDR}${rsa}\n`],
+    ['an env assignment, truncated with dots', `KEY=${HDR}${rsa.slice(0, 60)}...\n`],
+    ['an Ed25519-length body', `KEY=${HDR}${ed}\n`],
+    ['the body folded into space-joined chunks', `${HDR} ${fold(rsa, 64).join(' ')}\n`],
+    ['an END footer more than 8192 characters away', `${HDR}${rsa}\n${'x'.repeat(9000)}\n${FTR}\n`],
+    ['another BEGIN directly after the body', `${HDR}${rsa}${HDR}\n`],
+  ])('is reported: %s', (_name, text) => {
+    expect(reported(text, PEM_RULE)).toBe(true);
+  });
+  it('prose after the header on its own line is still a label', () => {
+    expect(reported(`${HDR} then paste a key of at least forty characters here\n`, PEM_RULE)).toBe(false);
+  });
+});
+
+describe('legacy encrypted keys written as string concatenations', () => {
+  const body = fold(randomBody(1190, 21), 16);
+  const dek = 'DEK-Info: AES-128-CBC,0123456789ABCDEF0123456789ABCDEF';
+  it('a JavaScript concatenation, with the headers quoted, is reported at width 16', () => {
+    const js = ['const k = "-----BEGIN RSA PRIVATE KEY-----\\n" +', '  "Proc-Type: 4,ENCRYPTED\\n" +', `  "${dek}\\n" +`, '  "\\n" +', ...body.map(l => `  "${l}\\n" +`), '  "";'].join('\n');
+    expect(reported(`${js}\n`, PEM_RULE)).toBe(true);
+  });
+  it('a Python concatenation is reported at width 16', () => {
+    const py = ['k = ("-----BEGIN RSA PRIVATE KEY-----\\n"', '     "Proc-Type: 4,ENCRYPTED\\n"', `     "${dek}\\n"`, '     "\\n"', ...body.map(l => `     "${l}\\n"`), '     )'].join('\n');
+    expect(reported(`${py}\n`, PEM_RULE)).toBe(true);
+  });
+  it('plain RFC 1421 headers and a Comment header, with a footer', () => {
+    const pem = ['-----BEGIN RSA PRIVATE KEY-----', 'Proc-Type: 4,ENCRYPTED', dek, 'Comment: made by hand', '', ...body, '-----END RSA PRIVATE KEY-----'].join('\n');
+    expect(reported(`${pem}\n`, PEM_RULE)).toBe(true);
+  });
+});
+
+describe('characters at the end of a fold are base64, not syntax', () => {
+  it('a body of 64 characters whose last character is "+" and sits alone on a 21-column fold', () => {
+    const b = `${randomBody(63, 31)}+`;
+    expect(fold(b, 21)).toHaveLength(4);
+    expect(reported(wrap(fold(b, 21)), PEM_RULE)).toBe(true);
+    expect(reported([HDR, ...fold(b, 21)].join('\n') + '\n', PEM_RULE)).toBe(true);
+  });
+  it('a last line of "++" or "//"', () => {
+    expect(reported(wrap([`${randomBody(31, 32)}`, `${randomBody(31, 33)}`, '++']), PEM_RULE)).toBe(true);
+    expect(reported(wrap([`${randomBody(31, 32)}`, `${randomBody(31, 33)}`, '//']), PEM_RULE)).toBe(true);
+  });
+});
+
+describe('an unencrypted OpenSSH Ed25519 key is reported at every fold width', () => {
+  function opensshBody(seed: number): string {
+    const str = (b: Buffer): Buffer => Buffer.concat([Buffer.from([0, 0, 0, b.length]), b]);
+    const pub = Buffer.from(randomBody(43, seed), 'base64').subarray(0, 32);
+    const sec = Buffer.from(randomBody(86, seed + 1), 'base64').subarray(0, 32);
+    const check = Buffer.from([1, 2, 3, 4]);
+    const inner = Buffer.concat([check, check, str(Buffer.from('ssh-ed25519')), str(pub), str(Buffer.concat([sec, pub])), str(Buffer.from('user@host'))]);
+    const pad = Buffer.from(Array.from({ length: (8 - (inner.length % 8)) % 8 }, (_, i) => i + 1));
+    const blob = Buffer.concat([Buffer.from('openssh-key-v1\0'), str(Buffer.from('none')), str(Buffer.from('none')), str(Buffer.alloc(0)), Buffer.from([0, 0, 0, 1]), str(Buffer.concat([str(Buffer.from('ssh-ed25519')), str(pub)])), str(Buffer.concat([inner, pad]))]);
+    return blob.toString('base64');
+  }
+  it.each([8, 12, 16, 32, 64, 70])('width %i', w => {
+    const body = opensshBody(5);
+    expect(body.startsWith('b3BlbnNzaC1rZXktdjE')).toBe(true);
+    const text = ['-----BEGIN OPENSSH PRIVATE KEY-----', ...fold(body, w), '-----END OPENSSH PRIVATE KEY-----'].join('\n') + '\n';
+    expect(reported(text, PEM_RULE)).toBe(true);
+  });
+});
+
+describe('long runs of syntax characters are judged in linear time', () => {
+  it.each([
+    ['plus signs', '+'],
+    ['plus and quote', '+"'],
+    ['comma and semicolon', ',;'],
+    ['dots and spaces', '. '],
+    ['quotes', '"'],
+    ['closing brackets', ')]'],
+  ])('a header followed by 8000 characters of %s, 40 times', (_name, unit) => {
+    const text = `${HDR}\n${unit.repeat(Math.ceil(8000 / unit.length))}x\n`;
+    const t0 = Date.now();
+    for (let i = 0; i < 40; i++) isPemHeaderWithoutBody(text, HDR.length);
+    // With the quadratic expressions one call took 30 to 800 ms; linear, 40 calls take a few.
+    expect(Date.now() - t0).toBeLessThan(1500);
+  });
+
+  it('1 MB of headers each followed by 8000 plus-and-quote characters is scanned in seconds, not 30', () => {
+    const text = `${HDR}\n${'+"'.repeat(4000)}x\n`.repeat(120);
+    const t0 = Date.now();
+    reported(text, PEM_RULE);
+    expect(Date.now() - t0).toBeLessThan(8000);
   });
 });
