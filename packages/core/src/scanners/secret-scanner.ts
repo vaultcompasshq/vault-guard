@@ -12,7 +12,7 @@ import {
 } from '../utils/data-shape';
 import { VaultGuardConfig } from '../config';
 import { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from '../utils/entropy';
-import { isPlaceholderSecret, connectionStringDeclines, passwordLooksPlaceholder, urlPasswordCandidates, urlQueryCredentials, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, isShortDockerPatExample } from '../utils/placeholder';
+import { isPlaceholderSecret, isNonSecretConnectionString, connectionStringDeclines, isExactPlaceholderUrl, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, isShortDockerPatExample } from '../utils/placeholder';
 import { applyPathAwareSeverity } from '../utils/path-severity';
 import { contextPathFor, isPythonPath } from '../utils/path-parts';
 import { decodeTextBuffer } from '../utils/text-decode';
@@ -355,19 +355,10 @@ export interface PlaceholderSkipHits {
   lines: number[];
   /** The rule id of each skip, parallel to {@link lines}. */
   rules?: string[];
-  /** The 0-based column of each skip, parallel to {@link lines}: two declines on one line stay two. */
+  /** The 1-based column of each skip (UTF-16 code units, as SARIF counts), parallel to {@link lines}: two declines on one line stay two. */
   columns?: number[];
 }
 
-/**
- * The Azure storage key of a connection string, as the one element of the
- * result; undefined when it is not there exactly once (the account name is
- * free text and may itself spell `AccountKey=`), so the caller keeps the match.
- */
-function azureAccountKey(fullMatch: string): string[] | undefined {
-  const keys = [...fullMatch.matchAll(/AccountKey=([A-Za-z0-9+/=]+)/g)].map(m => m[1]);
-  return keys.length === 1 ? keys : undefined;
-}
 
 export interface IgnoreDirectiveHits {
   /** Findings suppressed by an inline ignore directive (post-dedupe). */
@@ -638,6 +629,10 @@ export class SecretScanner {
       });
     }
 
+    // Where each URL rule matched, so a URL it did not match can be told apart
+    // (see the shape check after the loop).
+    const urlCoverage: Array<[number, number]> = [];
+
     for (const [type, entry] of patternsForRun) {
       const { regex, severity, minEntropy, aggressivePlaceholder, connectionString, valueBearing } =
         entry;
@@ -647,76 +642,69 @@ export class SecretScanner {
       while ((match = regex.exec(content)) !== null) {
         const rawValue = match[1] ?? match[0];
         const fullMatch = match[0];
+        if (connectionString === true) urlCoverage.push([match.index, match.index + fullMatch.length]);
 
         // In a run that honours nothing the repository supplies (`mark`), a filter
         // keyed on the repository's own path or surrounding text keeps the match
         // and names itself on it instead of dropping it.
         const keepFiltered = opts?.inlineDirectives === 'mark';
         let ctxFilter: ContextFilterKind | undefined;
-        // A rule with no capture group has the whole match as its "value": a
-        // connection string carries a user, host, database and query beside the
-        // password, an Azure connection string an account name beside the key.
-        // Where the repository's text is not trusted, the value filters judge the
-        // secret part alone, so a marker in the host or database name cannot
-        // clear a real password.
-        const wholeMatchRule = keepFiltered && (connectionString === true || type === 'azure-storage');
-        const urlParts = wholeMatchRule && connectionString === true ? urlPasswordCandidates(fullMatch) : undefined;
-        // The secret parts to judge, every plausible one. When none can be isolated
-        // the match is kept whole: no value filter may drop what it could not read.
-        // A driver also reads a password from the query (`?password=`), so those
-        // values are secret parts too: the match is declined as a placeholder only
-        // if every candidate, userinfo and query, looks like one.
-        const queryCreds = wholeMatchRule && connectionString === true ? urlQueryCredentials(fullMatch) : [];
-        const secretParts: string[] | undefined = !wholeMatchRule
-          ? [rawValue]
-          : connectionString === true
-            ? urlParts === undefined
-              ? undefined
-              : [...urlParts.passwords, ...queryCreds]
-            : azureAccountKey(fullMatch);
-        const failClosed = wholeMatchRule && secretParts === undefined;
-        const judgedAll = secretParts ?? [rawValue];
-        // A filter drops the match only if it would drop every plausible secret part.
-        const allDrop = (pred: (v: string) => boolean): boolean => !failClosed && judgedAll.every(pred);
-        if (failClosed) ctxFilter = 'url-context';
+        // The URL rules and the Azure rule have no capture group: the whole match is
+        // text the repository wrote (user, host, database, query, account name)
+        // around the secret. Where that text is not trusted, none of the value
+        // filters (substring markers, user equals password, host rules, alphabet
+        // runs) is applied to them: a match is a counted placeholder decline only
+        // when its password is EXACTLY a known placeholder or template and nothing
+        // in its token can make a driver read something else (see
+        // `isExactPlaceholderUrl`). Everything else is kept, and one the old
+        // substring logic would have declined says so (`url-context`).
+        const urlRule = keepFiltered && (connectionString === true || type === 'azure-storage');
+        if (urlRule) {
+          const end = Math.max(match.index + fullMatch.length, match.index + (/[\s"'`]/.exec(content.slice(match.index))?.index ?? 0));
+          if (isExactPlaceholderUrl(type, content.slice(match.index, end))) {
+            this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index, type);
+            continue;
+          }
+          const d = connectionString === true ? connectionStringDeclines(fullMatch) : { host: false, password: false };
+          if (
+            isPlaceholderSecret(rawValue, { aggressive: aggressivePlaceholder === true }) ||
+            isRedactedTemplateValue(rawValue) ||
+            d.host ||
+            d.password
+          ) {
+            ctxFilter = 'url-context';
+          }
+        } else {
+          // Ahead of the entropy gate on purpose. Shannon entropy ignores
+          // character order, so a hand-typed alphabet run scores near the maximum
+          // for its length and sails through. This runs for vendor-anchored rules
+          // too. They have no entropy gate at all, and that is exactly where the
+          // alphabet-run fixtures produced criticals. Safe there because a real
+          // provider key is generated randomly and cannot be the alphabet.
+          //
+          // That safety argument does not hold for rules whose value a person
+          // types, where a run is a weak password rather than a fake one, so
+          // those rules are exempt. See HUMAN_CHOSEN_VALUE_IDS.
+          if (!HUMAN_CHOSEN_VALUE_IDS.has(type) && isSequentialRunPlaceholder(rawValue)) {
+            continue;
+          }
 
-        // Ahead of the entropy gate on purpose. Shannon entropy ignores
-        // character order, so a hand-typed alphabet run scores near the maximum
-        // for its length and sails through. This runs for vendor-anchored rules
-        // too. They have no entropy gate at all, and that is exactly where the
-        // alphabet-run fixtures produced criticals. Safe there because a real
-        // provider key is generated randomly and cannot be the alphabet.
-        //
-        // That safety argument does not hold for rules whose value a person
-        // types, where a run is a weak password rather than a fake one, so
-        // those rules are exempt. See HUMAN_CHOSEN_VALUE_IDS.
-        if (!HUMAN_CHOSEN_VALUE_IDS.has(type) && allDrop(isSequentialRunPlaceholder)) {
-          continue;
-        }
+          const threshold = minEntropy ?? (minEntropy === 0 ? 0 : undefined);
+          if (threshold !== undefined && shannonEntropy(rawValue) < threshold) {
+            continue;
+          }
 
-        const threshold = minEntropy ?? (minEntropy === 0 ? 0 : undefined);
-        if (threshold !== undefined && allDrop(v => shannonEntropy(v) < threshold)) {
-          continue;
-        }
+          // Suppress documentation samples / test fixtures (e.g. AWS's
+          // `AKIAIOSFODNN7EXAMPLE`, `password: 'testPass1234'`). The aggressive
+          // tier only applies to the low-precision generic patterns.
+          if (isPlaceholderSecret(rawValue, { aggressive: aggressivePlaceholder === true })) {
+            this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index, type);
+            continue;
+          }
 
-        // Suppress documentation samples / test fixtures (e.g. AWS's
-        // `AKIAIOSFODNN7EXAMPLE`, `password: 'testPass1234'`). The aggressive
-        // tier only applies to the low-precision generic patterns.
-        if (allDrop(v => isPlaceholderSecret(v, { aggressive: aggressivePlaceholder === true }))) {
-          this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index, type);
-          continue;
-        }
-
-        if (allDrop(isRedactedTemplateValue)) {
-          continue;
-        }
-
-        // The secret parts are clean; the marker sits elsewhere in the text.
-        if (
-          wholeMatchRule &&
-          (isPlaceholderSecret(rawValue, { aggressive: aggressivePlaceholder === true }) || isRedactedTemplateValue(rawValue))
-        ) {
-          ctxFilter = 'url-context';
+          if (isRedactedTemplateValue(rawValue)) {
+            continue;
+          }
         }
 
         if (GENERIC_ASSIGNMENT_IDS.has(type) && isEnvVarNameToken(rawValue)) {
@@ -744,22 +732,11 @@ export class SecretScanner {
 
         // Suppress local/dev/example/placeholder connection strings -- the
         // dominant FP source on real repos (docker-compose, `.env.example`,
-        // test fixtures all carry `postgres://user:pass@localhost/db`).
-        if (connectionString === true) {
-          const declined = connectionStringDeclines(fullMatch);
-          // In the mode the password declines only if every plausible password does.
-          const userinfoPlaceholder =
-            urlParts !== undefined && urlParts.passwords.every(p => passwordLooksPlaceholder(urlParts.user, p));
-          const queryReal = urlParts !== undefined && queryCreds.some(q => !passwordLooksPlaceholder(urlParts.user, q));
-          const passwordDeclined = keepFiltered ? userinfoPlaceholder && !queryReal : declined.password;
-          // A placeholder in the userinfo, a real credential in the query.
-          if (keepFiltered && userinfoPlaceholder && queryReal) ctxFilter = 'url-context';
-          if (passwordDeclined || (declined.host && !keepFiltered)) {
-            this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index, type);
-            continue;
-          }
-          // The host is text the repository chose: kept, and named on the match.
-          if (declined.host) ctxFilter = 'local-host';
+        // test fixtures all carry `postgres://user:pass@localhost/db`). Not under
+        // `mark`: there the exact-placeholder rule above decides.
+        if (connectionString === true && !urlRule && isNonSecretConnectionString(fullMatch)) {
+          this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index, type);
+          continue;
         }
 
         // Suppress the ubiquitous jwt.io sample token (John Doe / sub 1234567890)
@@ -865,6 +842,57 @@ export class SecretScanner {
             : {}),
           ...(directiveCovers ? { inlineDirectiveNotHonoured: true as const } : {}),
           ...(ctxFilter !== undefined ? { contextFilterNotHonoured: ctxFilter } : {}),
+        });
+      }
+    }
+
+    // Fail closed on shape. A URL with userinfo that no URL rule matched (a user
+    // holding `@` or `'`, the Azure single-server `user@server:pw@host` form,
+    // anything else the rules' character classes reject) must not read as clean,
+    // so under `mark` it is kept as a finding for its scheme's rule, `url-context`.
+    if (opts?.inlineDirectives === 'mark') {
+      const shape = /\b(postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?):\/\/([^\s"`]*)/gi;
+      let sm: RegExpExecArray | null;
+      while ((sm = shape.exec(content)) !== null) {
+        // The token ends at whitespace, a double quote or backtick, or a single
+        // quote that closes a literal (followed by , ; ) ] } > or the end).
+        let rest = sm[2];
+        const closing = /'(?=[,;)\]}>]|$)/.exec(rest);
+        if (closing) rest = rest.slice(0, closing.index);
+        const authority = rest.split(/[/?#]/, 1)[0];
+        const colon = authority.indexOf(':');
+        const at = colon < 0 ? -1 : authority.indexOf('@', colon + 1);
+        if (at < 0 || at === colon + 1) continue; // no userinfo password to speak of (`:@`, a bare host:port)
+        const start = sm.index;
+        const end = sm.index + sm[1].length + 3 + rest.length;
+        if (urlCoverage.some(([a, b]) => a < end && start < b)) continue;
+        const scheme = sm[1].toLowerCase();
+        const rule = scheme.startsWith('postgres')
+          ? 'postgresql-url'
+          : scheme === 'mysql'
+            ? 'mysql-url'
+            : scheme.startsWith('mongodb')
+              ? 'mongodb-url'
+              : 'redis-url';
+        const entry = patternsForRun.get(rule);
+        if (entry === undefined) continue;
+        const token = content.slice(start, end);
+        if (isExactPlaceholderUrl(rule, token)) {
+          this.notePlaceholderSkip(placeholderRaw, lineIndex, start, rule);
+          continue;
+        }
+        const line = this.lineFromIndex(lineIndex, start);
+        raw.push({
+          type: rule,
+          value: this.maskValue(token),
+          line,
+          column: start - (lineIndex[line - 1] ?? 0),
+          offset: start,
+          matchLength: token.length,
+          severity: entry.severity,
+          valueDigest: createHash('sha256').update(token, 'utf8').digest('hex'),
+          ...(ignoredLines.has(line) ? { inlineDirectiveNotHonoured: true as const } : {}),
+          contextFilterNotHonoured: 'url-context' as const,
         });
       }
     }
@@ -1047,7 +1075,7 @@ export class SecretScanner {
   ): void {
     if (into === null) return;
     const line = this.lineFromIndex(lineIndex, index);
-    into.push({ line, offset: index, rule, column: index - (lineIndex[line - 1] ?? 0) });
+    into.push({ line, offset: index, rule, column: index - (lineIndex[line - 1] ?? 0) + 1 });
   }
 
   private buildLineIndex(content: string): number[] {

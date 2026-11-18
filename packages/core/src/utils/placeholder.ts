@@ -587,26 +587,6 @@ export function passwordLooksPlaceholder(user: string, pass: string): boolean {
 }
 
 /**
- * Every plausible password of a URL with credentials. The rules' own classes
- * let a password hold `/`, `:` (not `://`), `'`, and a literal `@` shifts the
- * host (the host class admits `@`), so which `@` ends the password is
- * ambiguous: each of the first few `@` after `scheme://user:` gives a
- * candidate. The user may be empty. Undefined when there is no `@` to split on.
- * A caller that wants to drop a value as a placeholder must see every candidate
- * drop; one that survives keeps the finding.
- */
-export function urlPasswordCandidates(url: string): { user: string; passwords: string[] } | undefined {
-  const m = /^[a-z][a-z0-9+.-]*:\/\/([^:@\s/"'`]*):([^\s]*)$/i.exec(url);
-  if (!m) return undefined;
-  const rest = m[2];
-  const passwords: string[] = [];
-  for (let i = rest.indexOf('@'); i >= 0 && passwords.length < 8; i = rest.indexOf('@', i + 1)) {
-    if (i > 0) passwords.push(rest.slice(0, i));
-  }
-  return passwords.length > 0 ? { user: m[1], passwords } : undefined;
-}
-
-/**
  * @returns `true` when `value` looks like a placeholder / example / test
  * credential and should be suppressed.
  */
@@ -632,39 +612,56 @@ export function isPlaceholderSecret(
   return false;
 }
 
-/**
- * Credential-bearing query parameters a driver reads from a connection URL, by
- * lowercased name: libpq and the PostgreSQL JDBC driver take `password` and
- * `sslpassword` (the passphrase of the client key); MySQL Connector/J takes
- * `password` and the key store passwords `trustcertificatekeystorepassword` and
- * `clientcertificatekeystorepassword`. Not exhaustive; these are the ones I can
- * name from the drivers' documentation. MongoDB and Redis matches stop before
- * any query, so nothing is read there.
- */
-const QUERY_CREDENTIAL_KEYS = new Set([
+/** The passwords a `--no-repo-controls` run accepts as placeholders, whole and case-insensitive. */
+const EXACT_PLACEHOLDER_WORDS = new Set([
   'password',
-  'sslpassword',
-  'trustcertificatekeystorepassword',
-  'clientcertificatekeystorepassword',
+  'passwd',
+  'pass',
+  'pw',
+  'secret',
+  'changeme',
+  'change_me',
+  'example',
+  'test',
+  'dummy',
+  'placeholder',
+  'redacted',
+  'your_password',
+  'yourpassword',
+  'mypassword',
 ]);
 
-/** The values of the credential-bearing query parameters of a URL (empty values skipped). */
-export function urlQueryCredentials(url: string): string[] {
-  const q = url.indexOf('?');
-  if (q < 0) return [];
-  const query = url.slice(q + 1).split('#')[0];
-  const out: string[] = [];
-  for (const pair of query.split('&')) {
-    const eq = pair.indexOf('=');
-    if (eq <= 0) continue;
-    if (!QUERY_CREDENTIAL_KEYS.has(pair.slice(0, eq).toLowerCase())) continue;
-    let value = pair.slice(eq + 1);
-    try {
-      value = decodeURIComponent(value);
-    } catch {
-      // Keep the raw text.
-    }
-    if (value !== '') out.push(value);
+/** A password that is exactly a placeholder word, a run of x or *, or entirely a template form. */
+export function isExactPlaceholderPassword(pass: string): boolean {
+  if (EXACT_PLACEHOLDER_WORDS.has(pass.toLowerCase())) return true;
+  if (/^x{3,}$/i.test(pass) || /^\*+$/.test(pass)) return true;
+  return (
+    /^\$\{[^}]*\}$/.test(pass) || // ${VAR}
+    /^\$[A-Za-z_][A-Za-z0-9_]*$/.test(pass) || // $VAR
+    /^<[^>]*>$/.test(pass) || // <password>
+    /^\{[^]*\}$/.test(pass) || // {VAR} and {{VAR}}
+    /^\$\([^)]*\)$/.test(pass) // $(cmd)
+  );
+}
+
+/**
+ * Whether a whole URL token (from the scheme to the next whitespace or quote) is
+ * a counted placeholder in a run that does not trust the repository's text. All
+ * of: the token has no `%` (an encoded character the driver decodes), no `?` and
+ * no `#` (a query or fragment a driver reads a password from) and exactly one
+ * `@` (so the end of the userinfo is not a guess); and the password, taken
+ * whole, is exactly a placeholder word or template. No substring marker, no
+ * "user equals password", no host rule: all of those are text the repository
+ * chooses. For the Azure rule: the one `AccountKey=` value is exactly a
+ * placeholder form. Anything else is kept.
+ */
+export function isExactPlaceholderUrl(type: string, token: string): boolean {
+  if (type === 'azure-storage') {
+    const keys = [...token.matchAll(/AccountKey=([^;\s"']*)/g)].map(m => m[1]);
+    return keys.length === 1 && isExactPlaceholderPassword(keys[0]);
   }
-  return out;
+  if (/[%?#]/.test(token)) return false;
+  if (token.split('@').length !== 2) return false;
+  const m = /^[a-z][a-z0-9+.-]*:\/\/[^:@/]*:([^@]*)@/i.exec(token);
+  return m !== null && isExactPlaceholderPassword(m[1]);
 }

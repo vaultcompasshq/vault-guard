@@ -72,7 +72,6 @@ export type ContextFilterKind =
   | 'call-follows'
   | 'identifier-reference'
   | 'pem-no-body'
-  | 'local-host'
   | 'url-context';
 
 /** Why a match was demoted. See {@link SecretMatch.demotion}. */

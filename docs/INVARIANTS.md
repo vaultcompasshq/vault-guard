@@ -1557,38 +1557,35 @@ finding in this mode. The scanner (`inlineDirectives: 'mark'`) keeps a match the
 documentation-context rule (`doc-context`), the Python triple-quote rule
 (`python-triple-quoted`), the following-`(` rule (`call-follows`), the
 bare-identifier rule (`identifier-reference`), the PEM-header-without-body rule
-(`pem-no-body`) or a connection-string host decline (`local-host`: `db`,
-`localhost`, `*.local`, `*.test`) would drop, and sets `contextFilterNotHonoured`.
-The inputs each filter reads, checked one by one: the alphabet-run, entropy,
-placeholder (`isPlaceholderSecret`, counted), redacted-template, env-var-name,
+(`pem-no-body`) would drop, and sets `contextFilterNotHonoured`. The inputs the
+value-only filters read: the alphabet-run, entropy, placeholder
+(`isPlaceholderSecret`, counted), redacted-template, env-var-name,
 short-Docker-token, password-hash, sample-JWT and identifier-shape filters take
-the captured value (or the whole match for the JWT) and nothing else; their
-rule choice (the key name) comes from which pattern matched. The connection
-string's placeholder PASSWORD is the credential itself and stays a counted
-decline; its HOST is repository-chosen text and is kept. The rules with no capture group
-take the whole match as their value, so in this mode the value filters
-(placeholder, redacted template, sequential run, entropy) judge the secret part
-alone: the password of `postgresql-url`, `mysql-url`, `mongodb-url` and
-`redis-url`, and the `AccountKey` of `azure-storage`. Which `@` ends a password is ambiguous (the rules let a password hold `/`, `'`
-and, because the host class admits `@`, a literal `@`), so every plausible split
-is judged and a value filter drops the match only if it would drop every one of
-them; a match whose secret part cannot be isolated (a URL with no `@` to split
-on, an Azure string whose `AccountKey=` is not there exactly once) is kept whole,
-marked `url-context`, and no value filter may drop it. A driver also reads a password from the query, so in the postgres and mysql
-rules (whose match includes the query) the values of `password`, `sslpassword`
-(libpq and pgjdbc) and `trustCertificateKeyStorePassword` and
-`clientCertificateKeyStorePassword` (MySQL Connector/J) are secret parts too: a
-URL is declined as a placeholder only if the userinfo and every such query value
-look like one, otherwise it is kept and marked `url-context`; the list is not
-exhaustive and the mongodb and redis matches stop before any query. A marker in
-the user, host,
-database, query or fragment (or the account name) cannot clear it: the finding is
-kept and marked `url-context`. The six rules with no capture group and free text
-in the match are those five and `gcp-service-account` (a fixed string, no value
-to judge); no rule with a capture group has free text inside its group. Elsewhere
-a marker anywhere in the URL still declines it (docs/RULES.md). Every placeholder
+the captured value (or the whole match for the JWT) and nothing else.
+
+The four URL rules and the Azure rule have no capture group, so the whole match,
+text the repository wrote around the secret, would be their "value". In this
+mode none of the substring, user-equals-password, host or alphabet-run filters is
+applied to them. A match is a counted placeholder decline (`isExactPlaceholderUrl`)
+only when ALL hold: its token (scheme to the next whitespace or quote) contains no
+`%`, no `?`, no `#` and exactly one `@` (no encoded character, query or fragment a
+driver reads differently, no guess about where the userinfo ends), and its
+password, taken whole, is exactly a known placeholder (`password`, `passwd`,
+`pass`, `pw`, `secret`, `changeme`, `change_me`, `example`, `test`, `dummy`,
+`placeholder`, `redacted`, `your_password`, `yourpassword`, `mypassword`, three
+or more `x`, any run of `*`) or entirely a template (`${VAR}`, `$VAR`, `<VAR>`,
+`{VAR}`, `{{VAR}}`, `$(cmd)`; `%VAR%` and `#{VAR}` cannot pass the first
+condition). For Azure the one `AccountKey=` value must be exactly such a form.
+Anything else is kept; a kept match the old substring logic would have declined
+says so (`url-context`). A URL with userinfo that no URL rule matched (a user
+holding `@` or `'`, the Azure single-server `user@server:password@host` form) is
+not allowed to read as clean: after the rules run, a scheme followed in its
+authority by `:`, at least one character and `@`, with no URL-rule match over it,
+is emitted as a finding for its scheme's rule, `url-context`. Elsewhere all of
+this is unchanged (a marker anywhere in the URL still declines it,
+docs/RULES.md). Every placeholder
 decline in this mode is listed, by file, line and rule id and never the value,
-as `placeholderSkips` (one row per decline, keyed by file, line, column and rule, so two on one line are two rows and the count is the number of rows) in JSON and the SARIF run properties (the notScanned
+as `placeholderSkips` (one row per decline, keyed by file, line, column and rule, so two on one line are two rows and the count is the number of rows; `column` is 1-based in UTF-16 code units, as SARIF `startColumn` is) in JSON and the SARIF run properties (the notScanned
 ceiling, the rest counted), because the filter can drop a plausible real
 password; the text verdict says "N value(s) skipped as placeholders (listed in
 the JSON report)" and a run with no findings does not read as an unqualified
