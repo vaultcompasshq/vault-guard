@@ -670,6 +670,48 @@ export function isExactPlaceholderPassword(pass: string): boolean {
 }
 
 /**
+ * Where the token that starts at `start` ends: at whitespace, a double quote, a
+ * backtick, or a single quote that closes a literal (followed by `,` `;` `)` `]`
+ * `}` `>`, whitespace or the end). A single quote inside userinfo (`o'neil`)
+ * does not end it. With no terminator the token runs to the end of the content.
+ * The one boundary the exact-placeholder test and the shape check share.
+ */
+export function urlTokenEnd(content: string, start: number): number {
+  for (let i = start; i < content.length; i++) {
+    const c = content[i];
+    if (/\s/.test(c) || c === '"' || c === '`') return i;
+    if (c === "'") {
+      const next = content[i + 1];
+      if (next === undefined || /[\s,;)\]}>]/.test(next)) return i;
+    }
+  }
+  return content.length;
+}
+
+/**
+ * Whether a URL token that no rule matched, or matched only in part, has
+ * userinfo whose end is unclear or whose password the rules did not read, so it
+ * has to be kept: after `scheme://` there is a `:` and, at least one character
+ * later, an `@`. If the part before the first `/`, `?` or `#` holds no `@`, the
+ * only `@` is after a `/`, `?` or `#`: that is a password containing `/` or a
+ * credential-less URL with an `@` in its path or query, and they cannot be told
+ * apart except by the port: a non-numeric text between the first `:` and that
+ * `/`, `?` or `#` (`user:pa/ss@host`) is kept, a numeric one (`host:6379/0?x=a@b`)
+ * is a port and is not. A password of digits only before a `/` is the gap.
+ */
+export function urlUserinfoUnclear(afterScheme: string): boolean {
+  const colon = afterScheme.indexOf(':');
+  if (colon < 0) return false;
+  const at = afterScheme.indexOf('@', colon + 1);
+  if (at < 0 || at === colon + 1) return false;
+  const cut = afterScheme.search(/[/?#]/);
+  const authority = cut < 0 ? afterScheme : afterScheme.slice(0, cut);
+  if (authority.includes('@')) return true;
+  const portOrPassword = afterScheme.slice(colon + 1, cut < 0 ? afterScheme.length : cut);
+  return !/^\d*$/.test(portOrPassword);
+}
+
+/**
  * Whether a whole URL token (from the scheme to the next whitespace or quote) is
  * a counted placeholder in a run that does not trust the repository's text. All
  * of: the token has no `%` (an encoded character the driver decodes), no `?` and
@@ -682,8 +724,16 @@ export function isExactPlaceholderPassword(pass: string): boolean {
  */
 export function isExactPlaceholderUrl(type: string, token: string): boolean {
   if (type === 'azure-storage') {
-    const keys = [...token.matchAll(/AccountKey=([^;\s"']*)/g)].map(m => m[1]);
-    return keys.length === 1 && isExactPlaceholderPassword(keys[0]);
+    // `;`-separated `name=value` pairs, names compared in any case: the key
+    // appearing more than once in any casing cannot be told apart, so it is kept.
+    const keys: string[] = [];
+    for (const pair of token.split(';')) {
+      const eq = pair.indexOf('=');
+      if (eq > 0 && pair.slice(0, eq).trim().toLowerCase() === 'accountkey') keys.push(pair.slice(eq + 1));
+    }
+    // Also kept: `accountkey=` spelled anywhere else in the token, as text inside another value.
+    const spelled = (token.match(/accountkey=/gi) ?? []).length;
+    return keys.length === 1 && spelled === 1 && isExactPlaceholderPassword(keys[0]);
   }
   if (/[%?#]/.test(token)) return false;
   if (token.split('@').length !== 2) return false;

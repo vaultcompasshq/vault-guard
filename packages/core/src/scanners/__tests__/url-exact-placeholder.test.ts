@@ -1,4 +1,4 @@
-import { isNameShaped } from '../../utils/placeholder';
+import { isExactPlaceholderUrl, isNameShaped, urlTokenEnd, urlUserinfoUnclear } from '../../utils/placeholder';
 import { SecretScanner } from '../secret-scanner';
 
 const scanner = new SecretScanner({});
@@ -157,5 +157,74 @@ describe('mark mode: what cannot be read is kept whole', () => {
     } finally {
       entry.regex = original;
     }
+  });
+});
+
+const markRaw = (text: string): Outcome => {
+  const ph = { count: 0, lines: [] as number[] };
+  const m = scanner.scanContent(text, { inlineDirectives: 'mark', placeholderSkips: ph });
+  return { findings: m.length, kinds: m.map(x => x.contextFilterNotHonoured), declines: ph.count };
+};
+
+describe('mark mode: the token boundary', () => {
+  it('urlTokenEnd: whitespace, double quote, backtick, a closing single quote; the end of the content otherwise', () => {
+    expect(urlTokenEnd('postgres://a:b@h/d rest', 0)).toBe('postgres://a:b@h/d'.length);
+    expect(urlTokenEnd('x="postgres://a:b@h/d"', 3)).toBe('x="postgres://a:b@h/d'.length);
+    expect(urlTokenEnd("['redis://a:b@h','z']", 2)).toBe("['redis://a:b@h".length);
+    expect(urlTokenEnd("mysql://o'neil:pw@host/db", 0)).toBe("mysql://o'neil:pw@host/db".length);
+    expect(urlTokenEnd('redis://:p@h:6379/0?password=REAL', 0)).toBe('redis://:p@h:6379/0?password=REAL'.length);
+  });
+
+  it('a URL that is the last thing in the content is judged with the text after the rule match', () => {
+    // Redis and mongodb matches stop at host:port; nothing follows to end the token, so the
+    // query used to be invisible and the placeholder userinfo declined it.
+    const url = `redis://:placeholder@cache.acme.io:6379/0?password=${R}`;
+    expect(markRaw(url)).toEqual({ findings: 1, kinds: ['url-context'], declines: 0 });
+    expect(markRaw(`${url}\n`)).toEqual({ findings: 1, kinds: ['url-context'], declines: 0 });
+  });
+});
+
+describe('mark mode: userinfo whose end is unclear is kept', () => {
+  it.each([
+    ['a user holding @ and a password holding a slash', `postgres://my@admin:Kq8v/Z3pXw9Lm2Tn@db.acme.io/main`],
+    ['a slash password after an apostrophe user', `mysql://o'neil:Kq8v/Z3pXw9Lm2Tn@db.acme.io/main`],
+  ])('%s: a finding, url-context', (_name, url) => {
+    expect(mark(url).kinds).toContain('url-context');
+    expect(mark(url).findings).toBe(1);
+  });
+
+  it('urlUserinfoUnclear: what it keeps and what it does not', () => {
+    for (const unclear of ['my@admin:Kq8v/Z3pX@db.acme.io/main', 'my@admin:12345/Z3pXw9@db.acme.io/main', "o'neil:pw@host/db", 'u:pa/ss@host', 'a@b:cd@ef']) {
+      expect([unclear, urlUserinfoUnclear(unclear)]).toEqual([unclear, true]);
+    }
+    for (const clear of ['host:6379/0?x=a@b', 'host:5432/db?email=a@b.c', ':@host', 'host:6379', 'host/db', 'my@admin:5432/db', '']) {
+      expect([clear, urlUserinfoUnclear(clear)]).toEqual([clear, false]);
+    }
+  });
+
+  it('a credential-less URL with an @ in its query is not a userinfo finding', () => {
+    expect(mark('postgres://host:5432/db?email=a@b.c').findings).toBe(0);
+    expect(mark('redis://host:6379/0').findings).toBe(0);
+  });
+});
+
+describe('mark mode: the Azure account key in any casing', () => {
+  const k = (v: string): string => `AccountKey=${v}`;
+  const base = 'DefaultEndpointsProtocol=https;AccountName=acct';
+  const real = `${'Vq7hR2mX9kLp4TzB'.repeat(5)}==`;
+
+  it('a placeholder key followed by a lower-case real key is kept', () => {
+    expect(mark(`${base};${k('x'.repeat(30))};accountkey=${real}`).findings).toBe(1);
+  });
+  it('a real key followed by a lower-case placeholder is kept', () => {
+    expect(mark(`${base};${k(real)};ACCOUNTKEY=${'x'.repeat(30)}`).findings).toBe(1);
+  });
+  it('isExactPlaceholderUrl: one key in any casing is judged, two in any casing are kept', () => {
+    const x = 'x'.repeat(30);
+    expect(isExactPlaceholderUrl('azure-storage', `${base};${k(x)}`)).toBe(true);
+    expect(isExactPlaceholderUrl('azure-storage', `${base};${k(x)};accountkey=${x}`)).toBe(false);
+    expect(isExactPlaceholderUrl('azure-storage', `${base};${k(x)};AccountName=${k('y')}`)).toBe(false);
+    expect(isExactPlaceholderUrl('azure-storage', `${base};accountkey=${x}`)).toBe(true);
+    expect(isExactPlaceholderUrl('azure-storage', base)).toBe(false);
   });
 });

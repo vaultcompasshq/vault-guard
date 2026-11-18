@@ -1579,12 +1579,21 @@ condition) whose inside is name-shaped (`isNameShaped`: at most 64 characters, a
 letter or underscore first, then letters, digits, `_`, `.`, `-` or single
 spaces, and with the separators removed one case of letters only plus at most
 three digits in all, so `{Kq8vZ3pXw9Lm2Tn}` and `<yourPassword>` are kept). For Azure the one `AccountKey=` value must be exactly such a form.
-Anything else is kept; a kept match the old substring logic would have declined
-says so (`url-context`). A URL with userinfo that no URL rule matched (a user
+The token ends at whitespace, a double quote, a backtick or a single quote that
+closes a literal, and at the end of the content when nothing does
+(`urlTokenEnd`, the one boundary the decline test and the shape check share). The
+Azure key names are compared in any case and a key spelled more than once, in any
+casing, is kept. Anything else is kept; a kept match the old substring logic would
+have declined says so (`url-context`). A URL with userinfo that no URL rule matched (a user
 holding `@` or `'`, the Azure single-server `user@server:password@host` form) is
 not allowed to read as clean: after the rules run, a scheme followed in its
 authority by `:`, at least one character and `@`, with no URL-rule match over it,
-is emitted as a finding for its scheme's rule, `url-context`. Elsewhere all of
+is emitted as a finding for its scheme's rule, `url-context`. Where the userinfo
+ends is unclear, and the URL is kept (`urlUserinfoUnclear`), when the part before
+the first `/`, `?` or `#` holds an `@`, or when the only `@` is after one of them
+and the text between the first `:` and that character is not a port (digits); a
+credential-less `host:6379/0?x=a@b` is not kept, and a password of digits only
+before a `/` is the gap. Elsewhere all of
 this is unchanged (a marker anywhere in the URL still declines it,
 docs/RULES.md). Every placeholder
 decline in this mode is listed, by file, line and rule id and never the value,

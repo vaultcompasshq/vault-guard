@@ -12,7 +12,7 @@ import {
 } from '../utils/data-shape';
 import { VaultGuardConfig } from '../config';
 import { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from '../utils/entropy';
-import { isPlaceholderSecret, isNonSecretConnectionString, connectionStringDeclines, isExactPlaceholderUrl, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, isShortDockerPatExample } from '../utils/placeholder';
+import { isPlaceholderSecret, isNonSecretConnectionString, connectionStringDeclines, isExactPlaceholderUrl, urlTokenEnd, urlUserinfoUnclear, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, isShortDockerPatExample } from '../utils/placeholder';
 import { applyPathAwareSeverity } from '../utils/path-severity';
 import { contextPathFor, isPythonPath } from '../utils/path-parts';
 import { decodeTextBuffer } from '../utils/text-decode';
@@ -660,7 +660,7 @@ export class SecretScanner {
         // substring logic would have declined says so (`url-context`).
         const urlRule = keepFiltered && (connectionString === true || type === 'azure-storage');
         if (urlRule) {
-          const end = Math.max(match.index + fullMatch.length, match.index + (/[\s"'`]/.exec(content.slice(match.index))?.index ?? 0));
+          const end = Math.max(match.index + fullMatch.length, urlTokenEnd(content, match.index));
           if (isExactPlaceholderUrl(type, content.slice(match.index, end))) {
             this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index, type);
             continue;
@@ -851,20 +851,13 @@ export class SecretScanner {
     // anything else the rules' character classes reject) must not read as clean,
     // so under `mark` it is kept as a finding for its scheme's rule, `url-context`.
     if (opts?.inlineDirectives === 'mark') {
-      const shape = /\b(postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?):\/\/([^\s"`]*)/gi;
+      const shape = /\b(postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?):\/\//gi;
       let sm: RegExpExecArray | null;
       while ((sm = shape.exec(content)) !== null) {
-        // The token ends at whitespace, a double quote or backtick, or a single
-        // quote that closes a literal (followed by , ; ) ] } > or the end).
-        let rest = sm[2];
-        const closing = /'(?=[,;)\]}>]|$)/.exec(rest);
-        if (closing) rest = rest.slice(0, closing.index);
-        const authority = rest.split(/[/?#]/, 1)[0];
-        const colon = authority.indexOf(':');
-        const at = colon < 0 ? -1 : authority.indexOf('@', colon + 1);
-        if (at < 0 || at === colon + 1) continue; // no userinfo password to speak of (`:@`, a bare host:port)
+        // The same token boundary the exact-placeholder test uses.
         const start = sm.index;
-        const end = sm.index + sm[1].length + 3 + rest.length;
+        const end = urlTokenEnd(content, start);
+        if (!urlUserinfoUnclear(content.slice(start + sm[1].length + 3, end))) continue;
         if (urlCoverage.some(([a, b]) => a < end && start < b)) continue;
         const scheme = sm[1].toLowerCase();
         const rule = scheme.startsWith('postgres')
