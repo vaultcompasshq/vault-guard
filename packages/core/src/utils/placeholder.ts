@@ -560,6 +560,9 @@ export function isNonSecretConnectionString(url: string): boolean {
   if (user.toLowerCase() === p) return true;            // root:root, prisma:prisma
   if (/^[A-Z][A-Z0-9_]*$/.test(pass)) return true;      // USER:PASSWORD, DBPASS
   if (pass.startsWith('$') || pass.startsWith('<') || pass.startsWith('{')) return true; // ${DB_PASS}, <pw>
+  if (/^\*+$/.test(pass)) return true;                  // masked by Celery and Kombu: redis://:**@host
+  if (/^%[A-Za-z_][A-Za-z0-9_]*%$/.test(pass)) return true; // %REDIS_PW% (Windows environment variable)
+  if (/^["'`][+.&][\w.$[\]()]+[+.&]["'`]$/.test(pass)) return true; // '+pw+' (a string concatenation, no spaces)
   if (isPlaceholderSecret(pass, { aggressive: true })) return true;
 
   return false;
