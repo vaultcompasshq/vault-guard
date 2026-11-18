@@ -1,0 +1,96 @@
+/**
+ * Resolve `git` to an absolute path for `scan --no-repo-controls`.
+ *
+ * Every other mode spawns a bare `git`. On Windows libuv looks in the child's
+ * working directory before PATH for a bare name, and this mode runs git with
+ * the untrusted repository as its working directory, so a tracked `git.exe` at
+ * the root would run as vault-guard's git. Here PATH is walked once, by this
+ * code: empty and relative entries are skipped (they mean "here"), on Windows
+ * only `.exe` and `.com` from PATHEXT count (a `.cmd` or `.bat` is a script),
+ * and the first regular file found is returned as an absolute path that is
+ * spawned everywhere in the run. The caller refuses a binary that sits inside
+ * the repository or the working directory.
+ */
+
+import fs from 'fs';
+import path from 'path';
+
+import { climbsOut } from './dot-dot';
+
+/** What the resolver needs from the world; injectable so every platform is tested on any host. */
+export interface GitResolveEnv {
+  env: NodeJS.ProcessEnv;
+  platform: NodeJS.Platform;
+  isFile: (p: string) => boolean;
+  /** POSIX only: whether the file may be executed. A shell skips a `git` that may not. Absent means yes. */
+  isExecutable?: (p: string) => boolean;
+}
+
+export class GitBinaryError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GitBinaryError';
+  }
+}
+
+const realWorld = (): GitResolveEnv => ({
+  env: process.env,
+  platform: process.platform,
+  isFile: p => {
+    try {
+      return fs.statSync(p).isFile();
+    } catch {
+      return false;
+    }
+  },
+  isExecutable: p => {
+    try {
+      fs.accessSync(p, fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+});
+
+/** A Windows PATH entry that names one place: a drive letter or a UNC prefix. `\\Tools\\Git` is rooted but drive-relative. */
+function isFullyQualifiedWin(dir: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(dir) || /^[\\/]{2}[^\\/]/.test(dir);
+}
+
+/** The absolute path of the first `git` on PATH, or throws {@link GitBinaryError}. */
+export function resolveGitBinary(world: GitResolveEnv = realWorld()): string {
+  const win = world.platform === 'win32';
+  const impl = win ? path.win32 : path.posix;
+  // Windows environment names are case-insensitive.
+  const pathKey = win ? (Object.keys(world.env).find(k => k.toLowerCase() === 'path') ?? 'PATH') : 'PATH';
+  const raw = world.env[pathKey] ?? '';
+  const names = win
+    ? (world.env.PATHEXT ?? world.env.Pathext ?? '.COM;.EXE;.BAT;.CMD')
+        .split(';')
+        .map(e => e.trim().toLowerCase())
+        .filter(e => e === '.exe' || e === '.com')
+    : [''];
+  if (win && names.length === 0) names.push('.exe', '.com');
+  for (const entry of raw.split(win ? ';' : ':')) {
+    const dir = entry.trim().replace(/^"(.*)"$/, '$1');
+    if (dir === '' || !impl.isAbsolute(dir)) continue;
+    if (win && !isFullyQualifiedWin(dir)) continue;
+    for (const ext of names) {
+      const candidate = impl.join(dir, `git${ext}`);
+      if (!world.isFile(candidate)) continue;
+      if (!win && world.isExecutable && !world.isExecutable(candidate)) continue;
+      return candidate;
+    }
+  }
+  throw new GitBinaryError(
+    'vault-guard: --no-repo-controls could not find git on PATH (absolute, non-empty entries only). ' +
+      'It runs git by absolute path and never from the directory being assessed. Nothing was scanned.',
+  );
+}
+
+/** True when `file` is `dir` or lies inside it (lexically, on the given path implementation). */
+export function isInsideDir(file: string, dir: string, impl: typeof path = path): boolean {
+  const rel = impl.relative(impl.resolve(dir), impl.resolve(file));
+  return rel === '' || (!climbsOut(rel, impl) && !impl.isAbsolute(rel));
+}

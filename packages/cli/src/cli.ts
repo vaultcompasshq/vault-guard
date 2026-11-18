@@ -64,7 +64,9 @@ export function buildCli(): Command {
   program
     .command('scan')
     .description('Scan files for secrets')
-    .argument('[path]', 'Path to scan', '.')
+    // One path. Declared variadic only so that a second one can be refused: commander
+    // otherwise drops it silently, and `scan docs tests` would scan `docs` alone.
+    .argument('[path...]', 'Path to scan (one)', ['.'])
     .option('-f, --format <format>', 'Output format: text | json | sarif', 'text')
     .option('--staged', 'Scan git staged files only (uses index vs HEAD)', false)
     .option(
@@ -76,11 +78,30 @@ export function buildCli(): Command {
       'Pull-request mode: read .vault-guard.json, .vault-guard.local.json and the baseline from <ref> and scan the head tree. Exits 2 if <ref> cannot be read. Do not pass this from a pre-commit hook.',
     )
     .option('--verbose', 'List the file and line of each placeholder skip. The value is not printed.', false)
+    .option(
+      '--no-repo-controls',
+      'For assessing a repository you do not trust: built-in defaults only (no .vault-guard.json, local overlay, baseline, inline ignore directives, .gitignore or .gitattributes), the HEAD tree read from git blobs only, and every control file present listed as not honoured. Refuses (exit 2) when the local git config holds a key a fresh clone would not write. Not with --trust-base or --staged.',
+    )
     .action(
       async (
-        path: string,
-        options: { format: string; staged?: boolean; failOn?: string; trustBase?: string; verbose?: boolean },
+        paths: string[],
+        options: {
+          format: string;
+          staged?: boolean;
+          failOn?: string;
+          trustBase?: string;
+          verbose?: boolean;
+          repoControls?: boolean;
+        },
       ) => {
+        if (paths.length > 1) {
+          console.error(
+            `error: scan takes one path, got ${paths.length} (${paths.join(' ')}). Run it once per path. Nothing was scanned.`,
+          );
+          setExitCode(2);
+          return;
+        }
+        const path = paths[0] ?? '.';
         const format = options.format as OutputFormat;
         if (!(SCAN_FORMATS as readonly string[]).includes(format)) {
           console.error(
@@ -96,6 +117,9 @@ export function buildCli(): Command {
           options.failOn,
           options.trustBase,
           Boolean(options.verbose),
+          // Commander turns `--no-repo-controls` into `repoControls: false`
+          // and defaults it to true.
+          options.repoControls === false,
         );
         setExitCode(exitCode);
       },

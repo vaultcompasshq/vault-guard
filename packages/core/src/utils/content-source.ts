@@ -194,6 +194,15 @@ export function copyKey(file: string, source: MatchSource | undefined, stage?: 2
  * over every object id the run will read (sizes and missing objects are known
  * before any content moves), and one streaming `cat-file --batch`.
  */
+/**
+ * The most bytes of over-limit blobs one `--no-repo-controls` run hashes
+ * without scanning (2 GiB, counted by the size git reports). A blob that
+ * compresses to almost nothing can cost seconds to stream, so without a
+ * ceiling a crafted store could hold a run for hours; past it the blob is
+ * reported as over the limit and not verified (exit 2).
+ */
+export const MAX_VERIFY_ONLY_BYTES = 2 * 1024 * 1024 * 1024;
+
 export class GitContentSource {
   private readonly readers = new Map<string, BlobBatchReader>();
   private readonly checks = new Map<string, Map<string, BlobCheck>>();
@@ -210,7 +219,24 @@ export class GitContentSource {
     readonly env: NodeJS.ProcessEnv,
     readonly entries: Map<string, TrackedEntry> = new Map(),
     private readonly window = 10,
+    /** Hash every blob read against its id (`--no-repo-controls`). */
+    private readonly verifyObjects = false,
+    /** Bytes of over-limit blobs this run may hash without scanning them. */
+    private verifyOnlyBudget = MAX_VERIFY_ONLY_BYTES,
+    /** The git to run; a bare `git` unless the caller resolved an absolute path. */
+    private readonly gitBinary = 'git',
   ) {}
+
+  /**
+   * Spend `bytes` of the run's budget for hashing over-limit blobs, which are
+   * streamed through git to be verified but never scanned. False when the
+   * budget cannot cover it: the blob is then reported as not verified.
+   */
+  takeVerifyBudget(bytes: number): boolean {
+    if (bytes > this.verifyOnlyBudget) return false;
+    this.verifyOnlyBudget -= bytes;
+    return true;
+  }
 
   /** Add (or replace) what is known about tracked files. */
   add(entries: Map<string, TrackedEntry>): void {
@@ -244,7 +270,7 @@ export class GitContentSource {
     }
     for (const [repoTop, oids] of byRepo) {
       this.batchChecks++;
-      const answers = batchCheckBlobs(repoTop, oids, this.env);
+      const answers = batchCheckBlobs(repoTop, oids, this.env, this.gitBinary);
       const known = this.checks.get(repoTop) ?? new Map<string, BlobCheck>();
       for (const [oid, c] of answers) known.set(oid, c);
       this.checks.set(repoTop, known);
@@ -255,7 +281,7 @@ export class GitContentSource {
     let c = this.checks.get(repoTop)?.get(oid);
     if (c === undefined) {
       this.batchChecks++;
-      c = batchCheckBlobs(repoTop, [oid], this.env).get(oid);
+      c = batchCheckBlobs(repoTop, [oid], this.env, this.gitBinary).get(oid);
       if (c === undefined) {
         throw new GitError(`vault-guard: git cat-file gave no answer for ${oid}`, 'git cat-file --batch-check');
       }
@@ -280,7 +306,7 @@ export class GitContentSource {
     }
     let r = this.readers.get(repoTop);
     if (!r) {
-      r = new BlobBatchReader(repoTop, this.env, this.window);
+      r = new BlobBatchReader(repoTop, this.env, this.window, this.verifyObjects, this.gitBinary);
       this.readers.set(repoTop, r);
     }
     return r.read(oid);
@@ -298,7 +324,7 @@ export class GitContentSource {
     }
     let r = this.readers.get(repoTop);
     if (!r) {
-      r = new BlobBatchReader(repoTop, this.env, this.window);
+      r = new BlobBatchReader(repoTop, this.env, this.window, this.verifyObjects, this.gitBinary);
       this.readers.set(repoTop, r);
     }
     return r.readHead(oid, n);
@@ -446,6 +472,13 @@ export interface ScanFileContentOptions {
   budgetMs?: number;
   /** The clock seam; defaults to {@link defaultScanClock}. */
   clock?: ScanClock;
+  /** Passed to {@link SecretScanner.scanContent}: `mark` keeps a directive-covered finding. */
+  inlineDirectives?: 'honour' | 'mark';
+  /**
+   * Blobs only (`scan --no-repo-controls`): a file with no tracked entry is a
+   * GitError, never a read of the disk copy.
+   */
+  blobOnly?: boolean;
 }
 
 const MISSING_BLOB_REASON =
@@ -494,9 +527,18 @@ function scanText(
   const clock = opts.clock ?? defaultScanClock();
   const pass = (h: IgnoreDirectiveHits | undefined, p: PlaceholderSkipHits | undefined): SecretMatch[] =>
     applyPathAwareSeverity(
-      scanner.scanContent(text, { filePath: file, ignoreHits: h, placeholderSkips: p, pathRoot: opts.pathRoot }),
+      scanner.scanContent(text, {
+        filePath: file,
+        ignoreHits: h,
+        placeholderSkips: p,
+        pathRoot: opts.pathRoot,
+        ...(opts.blobOnly ? { lexicalPaths: true } : {}),
+        ...(opts.inlineDirectives !== undefined ? { inlineDirectives: opts.inlineDirectives } : {}),
+      }),
       file,
       opts.pathRoot,
+      opts.blobOnly === true,
+      opts.blobOnly === true,
     );
   const first = timeSpan(clock, () => pass(hits, placeholderSkips));
   const budget = opts.budgetMs;
@@ -598,8 +640,26 @@ function freshSkips(): PlaceholderSkipHits {
 }
 
 function foldSkips(into: PlaceholderSkipHits, blob: PlaceholderSkipHits, disk: PlaceholderSkipHits): void {
-  into.count += blob.count + Math.max(0, disk.count - blob.count);
-  into.lines.push(...new Set([...blob.lines, ...disk.lines]));
+  // One row per decline, keyed by line, rule and column: two declines on one line
+  // stay two rows, and the count is the number of rows when columns are known.
+  const located = (h: PlaceholderSkipHits): boolean => h.columns !== undefined && h.columns.length === h.lines.length;
+  const byRows = (located(blob) || blob.lines.length === 0) && (located(disk) || disk.lines.length === 0);
+  const seen = new Set<string>();
+  let added = 0;
+  for (const hits of [blob, disk]) {
+    hits.lines.forEach((line, i) => {
+      const rule = hits.rules?.[i];
+      const column = hits.columns?.[i];
+      const key = `${line}\0${rule ?? ''}\0${column ?? ''}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      added++;
+      into.lines.push(line);
+      if (rule !== undefined) (into.rules ??= []).push(rule);
+      if (column !== undefined) (into.columns ??= []).push(column);
+    });
+  }
+  into.count += byRows ? added : blob.count + Math.max(0, disk.count - blob.count);
 }
 
 /**
@@ -728,6 +788,13 @@ export async function scanFileContent(
   });
 
   if (!entry || !source) {
+    if (opts.blobOnly) {
+      throw new GitError(
+        `vault-guard: ${file} has no HEAD blob in this run, and this mode reads blobs only, never the ` +
+          'working tree. Nothing was scanned.',
+        'git cat-file --batch',
+      );
+    }
     const cand = opts.classify ? binaryCandidate(file) : undefined;
     let bytes: Buffer;
     let typeMismatch: { family: BinaryFamily } | undefined;
@@ -820,6 +887,18 @@ async function scanTrackedCopies(
         'git cat-file --batch-check',
       );
     }
+    if (opts.blobOnly && c.size > max && !source.takeVerifyBudget(c.size)) {
+      return outcome({
+        failure: {
+          kind: 'read_error',
+          reason:
+            `${(c.size / 1024 / 1024).toFixed(1)} MiB: over the ${Math.round(max / 1024 / 1024)} MiB scan limit and not ` +
+            `verified (this run's ${Math.round(MAX_VERIFY_ONLY_BYTES / 1024 / 1024 / 1024)} GiB budget for hashing ` +
+            'over-limit files is spent), so it was not scanned',
+        },
+        ...mm(),
+      });
+    }
     if (blobCand) {
       // Head first: a confirmed binary is skipped at any size (4.7).
       const head = await source.readHead(entry.repoTop, b.oid, SNIFF_BYTES);
@@ -829,7 +908,16 @@ async function scanTrackedCopies(
       }
       if (!isLfsPointer(head, c.size)) typeMismatch = { family: blobCand.family };
     }
-    if (c.size > max) return outcome({ failure: { kind: 'too_large', bytes: c.size }, ...mm() });
+    if (c.size > max) {
+      // A size from cat-file is only what the store claims. In blobs-only mode
+      // the oversized object is hashed without being scanned (a head read of
+      // zero bytes still streams and hashes the whole body, held nowhere), so
+      // a verified size is reported as a real over-limit file and a replaced
+      // object is a hash mismatch. A candidate's head read above already did it.
+      // (Its size was charged to the verification budget above.)
+      if (opts.blobOnly && !blobCand) await source.readHead(entry.repoTop, b.oid, 0);
+      return outcome({ failure: { kind: 'too_large', bytes: c.size }, ...mm() });
+    }
     scanBlobs.push(b);
   }
   const readDisk = entry.worktreeAlso && !entry.diskAbsent;

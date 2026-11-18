@@ -172,6 +172,148 @@ vault-guard scan . --format sarif
 vault-guard scan . --format json
 ```
 
+**Assessing a repository you do not trust: `--no-repo-controls`.**
+
+```bash
+vault-guard scan . --no-repo-controls
+```
+
+For a repository someone else controls, such as a directory a client handed
+over. Nothing in the repository decides what is reported:
+
+- Built-in defaults only. `.vault-guard.json`, `.vault-guard.local.json` (at any
+  level), `.vault-guard.baseline.json`, `.gitignore` and `.gitattributes` are not
+  read, and inline `vault-guard: ignore-line` directives are not honoured: a
+  finding one covers is reported and marked `inline_directive_not_honoured`.
+  `--fail-on` on the command line still applies.
+- The tree is judged as at HEAD, from git objects only (`git cat-file`). No working-tree file is read, and `status`, `ls-files`,
+  `check-attr` and `hash-object` are never run. Untracked and uncommitted files
+  are not judged; the report names the commit that was (`Scanned commit:` in
+  text, `scannedCommit` in JSON and in the SARIF run properties).
+- The object store is not trusted to hold what its ids claim. The HEAD commit,
+  every tree under it and every blob the scan reads are hashed with git's own
+  hash (sha1, or sha256 for a sha256 repository) and compared with the id they
+  were asked for; the file list is parsed from those verified raw trees, with
+  the commit's `tree` line naming the root tree checked. A mismatch (an object
+  file rewritten in place, say) refuses the run, exit 2, naming the path for a
+  blob, with the clone-fresh remedy. A blob the scan skips without reading is
+  not hashed. The check is as strong as git's hash: sha1 collisions are out of
+  scope.
+- Every control file present in the HEAD tree is named: one `Present, not
+  honoured:` line per file in text, and `repoControls: { honoured: false,
+  present: [...] }` at the top level of JSON and in `runs[0].properties` in SARIF.
+- Before any other git call it reads the repository's local git config
+  (`git config --local --list`) and refuses, exit 2, on any key a fresh clone
+  would not write (`core.fsmonitor`, a `filter.*` or `diff.*` driver,
+  `include.path`, `core.worktree`, partial-clone keys, and anything else not on
+  the short list). A key like that can make git run a program the repository's
+  owner chose. The message names the key: clone the repository fresh and assess
+  the clone.
+- It also refuses, exit 2 with the same remedy, when git could read the
+  repository from somewhere else: `.git` at the repository root is a file or a
+  link (a worktree, a submodule checkout or a `gitdir:` pointer);
+  `.git/commondir` exists; `.git/objects/info/alternates` or `http-alternates`
+  exists (a `--shared` or `--reference` clone); `.git/objects`, or anything
+  under it such as `objects/pack` or `objects/info`, is a link rather than a
+  real directory or file; or git's own answer for its common directory and
+  object directory is not `<root>/.git` and `<root>/.git/objects`. It refuses a
+  HEAD tree with entries it cannot tell apart (two names that are not valid
+  UTF-8 and read alike, a name listed twice, a `.` or `..` segment, or on
+  Windows a name such as `..\x` or `D:x` that resolves outside the repository),
+  rather than judge one in place of another or drop it.
+- Exit 2 as a usage error with `--trust-base` or `--staged`, and exit 2 when
+  HEAD is not a commit.
+
+What it does not cover: only vault-guard's own reads. It does not make any other
+tool safe to run on that repository, it does not stop git hooks you run yourself
+(no command vault-guard runs fires a hook), and it does not check the git config
+outside the repository (your global and system config, and `GIT_CONFIG_*`
+variables, are yours). Built-in skips still apply, and because the repository
+chooses its own file names they are listed, not only counted: a vendored
+directory name as a direct child of the scan root (`node_modules`, `vendor`,
+`.git` and the like, one row per directory), and lockfiles, logs, source maps
+and minified bundles by name (one row per file), as `Not scanned, built-in
+skip:` in text and `notScanned.builtInSkips` in JSON and SARIF. JSON and SARIF list every row up to a
+ceiling of 100,000; the text shows a share per reason and says how many are not
+shown. A binary file whose extension and first bytes agree is listed too (a key
+placed after a PNG header is not scanned, and the report says so). The working
+tree never changes the result: every path judgement here is lexical, with no
+filesystem call, so a `src` that is a link to `test/` on disk does not turn
+`src/app.js` into a test file. A key committed as
+`node_modules/k.js`, `x.min.js` or `app.log` is therefore not found, exit 0,
+and the report says so: when anything is under "not scanned" the text verdict
+reads "No secrets found in the files scanned; N paths were not scanned, listed
+above", not an unqualified pass. Submodule contents are not scanned: each
+gitlink is listed as `Not scanned, submodule:` in text and in
+`notScanned.submodules` in JSON and SARIF, and the run does not exit 2 over
+it; clone and assess the submodule's repository on its own.
+
+A symlink's blob, the link's target text, is verified and scanned like any file
+and reported under the link's path; the link is never followed. (On a checkout
+without symlink support git writes that text out as a regular file.) A blob
+that several paths name is scanned once per distinct path profile (its
+binary-by-name decision, extension rules, and test, documentation and locale
+context, each decided by the functions the scan itself uses) and reported under
+every path. Modes are read the way git reads them, as octal by file type:
+a regular file is scanned whatever its permission bits (`100664`, `100600`,
+`0100644`), and a tree written as `0040000` is descended into. A mode that is
+none of directory, regular file, symlink or gitlink, or is not octal, refuses
+the run (exit 2) naming the entry and the mode, as does an entry whose object is
+not what its mode says (a file mode on a tree). Nothing is skipped silently
+because of its mode. The listing is bounded: more than 2,000,000 tree rows
+parsed or walked (a tree that names the same subtree many times counts once per
+parent; a single very wide tree is refused while it is parsed),
+more than 512 MiB of paths, or a depth over 1000 directories is exit 2, "too
+large to list", never a truncated scan. A file over the 32 MiB scan limit is
+hashed without being scanned: if it verifies, it is reported as over the limit
+(`too_large`, exit 2, not scanned); only a hash mismatch says the object store
+does not hold what its ids claim.
+
+Which repository, and how it is run:
+
+- Run it from the root of the repository being assessed, and name a
+  subdirectory or file as the target. The current directory must be the top
+  level git reports for it (after symlinks are resolved), or the run exits 2
+  naming both paths. It also exits 2 when the repository sits inside any other
+  work tree: every ancestor directory is checked for a `.git` entry of any kind
+  (directory, file or link), without running a program, so an untracked `.git`
+  planted in a subdirectory of an outer repository cannot make that subdirectory
+  look like a clean repository of its own. An unrelated outer work tree is
+  refused too; that is the price of not running git there. Assess a fresh clone
+  placed outside any repository. The report names the repository
+  root it judged: `Scanned repository root:` in text, `scannedRoot` in JSON and
+  in the SARIF run properties, so a wrapper can check it.
+- git is found once on PATH (absolute, non-empty entries only; on Windows `.exe`
+  and `.com`) and run by that absolute path everywhere in the run. A git inside
+  the repository or the current directory is refused. Do not invoke vault-guard
+  through `npx` or `pnpm exec` from inside the untrusted checkout: that runs the
+  checkout's own package and puts its `node_modules/.bin` on PATH. Install it
+  elsewhere and run it by absolute path or from PATH. The `git` on PATH must be
+  a real binary, not a version-manager shim that reads files from the current
+  directory. `scan` takes one path; a second one is refused with exit 2 in every
+  mode, not silently dropped.
+- Filters keyed on what the repository chooses do not drop a finding here. A
+  documentation path (`docs`, `website`, any `.md`) with an `appid` or `algolia`
+  comment, a Python triple-quoted string, a following `(`, a bare identifier
+  value, a private-key header whose following text reads as a label, and a
+  connection string with `example`, `dummy`, `placeholder` or a local host in it,
+  would each drop a match elsewhere; here the finding is kept and marked (`context_filter_not_honoured` in JSON and SARIF, a marker and
+  a count line in text).
+- Every value skipped as a placeholder is listed (file, line and rule, never the
+  value; `column` is 1-based) as `placeholderSkips` in the JSON report and the SARIF run properties,
+  and the text verdict counts them, because the placeholder filter can drop a
+  plausible real password (`Contest2024!Qz` contains "test"). For connection
+  strings (postgres, mysql, mongodb, redis, Azure storage) the filter is stricter
+  here: a URL is a counted placeholder only when its password is exactly a known
+  placeholder or a `${VAR}`-style template and the URL has no `%`, `?` or `#` and
+  one `@`; any other URL is kept. A URL with a password that the rules do not
+  match (a user holding `@` or `'`) is reported rather than read as clean.
+- Path rules (test, docs, locale and website directories, and a Rust test
+  block) still lower a severity, as a noise control, but never silently: the
+  finding carries `severity_before_path_rules`, the text marks it, and the
+  below-gate verdict says how many findings were lowered. `--fail-on low` makes
+  every finding block.
+
 ### What fails the build
 
 Findings at or above the **`--fail-on` threshold** produce exit code 1, and

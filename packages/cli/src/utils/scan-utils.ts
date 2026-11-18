@@ -15,7 +15,9 @@ import {
   newPlainFileSetInfo,
   GitContentSource,
   GitError,
+  ObjectMismatchError,
   scanFileContent,
+  pathScanProfile,
   listNamedTrackedFiles,
   inspectWorktree,
   wantsWorktreeCopy,
@@ -39,6 +41,8 @@ import {
   type BudgetUntrusted,
   type ScanClock,
   type TrackedEntry,
+  type RepoControlsReport,
+  type HeadOnlyReport,
   type JsonOutput,
   type JsonRunMetadata,
   type TrustBaseReport,
@@ -79,6 +83,10 @@ export interface ScanFormatOptions {
   contentRoot?: string;
   /** Pull-request mode's report, when the run was given `--trust-base`. */
   trustBase?: TrustBaseReport;
+  /** The `--no-repo-controls` statement: no control file honoured, and which are present. */
+  repoControls?: RepoControlsReport;
+  /** The `--no-repo-controls` commit and not-scanned paths. */
+  headOnly?: HeadOnlyReport;
 }
 
 export function formatJson(results: ScanResult[], opts: ScanFormatOptions = {}): string {
@@ -89,6 +97,9 @@ export function formatJson(results: ScanResult[], opts: ScanFormatOptions = {}):
     diagnostics: opts.diagnostics,
     run: opts.run,
     trustBase: opts.trustBase,
+    ...(opts.repoControls ? { repoControls: opts.repoControls } : {}),
+    // A `--no-repo-controls` report keys every path lexically: no filesystem call.
+    ...(opts.headOnly ? { headOnly: opts.headOnly, lexicalPaths: true } : {}),
   });
 }
 export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {}): string {
@@ -99,6 +110,9 @@ export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {})
     diagnostics: opts.diagnostics,
     run: opts.run,
     trustBase: opts.trustBase,
+    ...(opts.repoControls ? { repoControls: opts.repoControls } : {}),
+    // A `--no-repo-controls` report keys every path lexically: no filesystem call.
+    ...(opts.headOnly ? { headOnly: opts.headOnly, lexicalPaths: true } : {}),
   });
 }
 
@@ -112,7 +126,12 @@ export function formatSarif(results: ScanResult[], opts: ScanFormatOptions = {})
  * the cwd in that case keeps the pre-existing behaviour, where anything
  * outside the cwd simply stays absolute.
  */
-export function resolveScanRoot(targetPaths: string[], cwd = process.cwd()): string {
+export function resolveScanRoot(
+  targetPaths: string[],
+  cwd = process.cwd(),
+  /** `--no-repo-controls`: whether `abs` is a file of the HEAD tree. When given, nothing is stat-ed. */
+  isTreeFile?: (abs: string) => boolean,
+): string {
   // The `scan` CLI command's positional is non-variadic, so it never passes
   // more than one path here; this branch exists for programmatic callers of
   // this function that scan several targets at once.
@@ -126,6 +145,8 @@ export function resolveScanRoot(targetPaths: string[], cwd = process.cwd()): str
   // root would end up naming a different file.
   const rel = path.relative(cwd, abs);
   if (rel === '' || (!climbsOut(rel) && !path.isAbsolute(rel))) return cwd;
+
+  if (isTreeFile) return isTreeFile(abs) ? path.dirname(abs) : abs;
 
   try {
     return fs.statSync(abs).isDirectory() ? abs : path.dirname(abs);
@@ -496,7 +517,7 @@ export interface ScanOptions {
    * Placeholder values the scanner declined. Not a user suppression.
    * Locations name the file and line and never the value.
    */
-  placeholderSkips?: { count: number; locations: Array<{ file: string; line: number }> };
+  placeholderSkips?: { count: number; locations: Array<{ file: string; line: number; rule?: string; column?: number }> };
   /**
    * Pull-request mode's file set. When present, a directory target's file list
    * is the tracked files intersected with the walk's own filtering, rather than
@@ -535,6 +556,18 @@ export interface ScanOptions {
   contentSource?: GitContentSource;
   /** Filled with where content came from and what the run must say about it. */
   content?: ContentReport;
+  /** `mark` keeps a finding an inline ignore directive covers (`--no-repo-controls`). */
+  inlineDirectives?: 'honour' | 'mark';
+  /** Never read a disk copy: a file with no blob is a GitError (`--no-repo-controls`). */
+  blobOnly?: boolean;
+  /** With `blobOnly`: false scans every path of a shared blob on its own (default true). For tests. */
+  shareBlobs?: boolean;
+  /** With `blobOnly`: bytes of over-limit blobs the run may hash without scanning (default {@link MAX_VERIFY_ONLY_BYTES}). For tests. */
+  verifyOnlyBudgetBytes?: number;
+  /** With `blobOnly`: the absolute path of the git to run (`--no-repo-controls`). */
+  gitBinary?: string;
+  /** With `blobOnly`: filled with each file skipped as binary (its extension and bytes agree), by absolute path and family. */
+  binarySkipped?: Array<{ file: string; family: string }>;
 }
 
 /**
@@ -601,6 +634,24 @@ function emitter(options: ScanOptions): (line: string) => void {
   return options.warn ?? ((line: string) => console.error(line));
 }
 
+/** One scan of a blob, kept so the other paths that name the same blob reuse it. */
+interface SharedScan {
+  /** The path the scan ran under. */
+  file: string;
+  outcome: Awaited<ReturnType<typeof scanFileContent>>;
+  hits: IgnoreDirectiveHits;
+  placeholderSkips: { count: number; lines: number[]; rules?: string[]; columns?: number[] } | undefined;
+}
+
+/** Scans in flight or done, by blob id and path profile (`--no-repo-controls`). */
+interface SharedScans {
+  scans: Map<string, Promise<SharedScan>>;
+  /** The share key of each path, computed once before any scan. */
+  keyOf: Map<string, string>;
+  /** How many paths hold each key. */
+  counts: Map<string, number>;
+}
+
 /**
  * Read a file's content through the run's content source and fold what it
  * found into the run's counters. Returns the matches, or undefined when the
@@ -617,10 +668,12 @@ async function scanOneFile(
   options: ScanOptions,
   maxSize: number,
   scanBudgetMs: number,
+  shared?: SharedScans,
 ): Promise<ScanResult | null | undefined> {
   const entry = content?.entryFor(path.resolve(file));
+  const run = async (): Promise<SharedScan> => {
   const hits: IgnoreDirectiveHits = { count: 0, lines: [] };
-  const placeholderSkips = options.placeholderSkips ? { count: 0, lines: [] as number[] } : undefined;
+  const placeholderSkips = options.placeholderSkips ? { count: 0, lines: [] as number[], rules: [] as string[], columns: [] as number[] } : undefined;
   const outcome = await scanFileContent(scanner, file, entry, entry ? content : undefined, {
     pathRoot,
     maxBytes: maxSize,
@@ -630,9 +683,47 @@ async function scanOneFile(
     classify: options.skipBinary !== false,
     budgetMs: scanBudgetMs,
     ...(options.scanClock ? { clock: options.scanClock } : {}),
+    ...(options.inlineDirectives !== undefined ? { inlineDirectives: options.inlineDirectives } : {}),
+    ...(options.blobOnly ? { blobOnly: true } : {}),
   });
+  return { file, outcome, hits, placeholderSkips };
+  };
+  let ran: SharedScan;
+  const shareKey = shared?.keyOf.get(file);
+  const prior = shareKey !== undefined ? shared?.scans.get(shareKey) : undefined;
+  if (prior !== undefined) {
+    // The same blob under a path with the same path-dependent inputs: its
+    // content was (or is being) scanned already, so its result is reused and
+    // reported under this path. A reuse takes no reference to the blob (the
+    // first path released them all, below), so the bytes are not held for it.
+    const first = await prior;
+    // Kept bytes are filed under the path and the copy's own source and stage
+    // (`<file> NUL head`), so re-file every entry the first path made.
+    const kept = new Map<string, Buffer>();
+    const prefix = `${first.file}\0`;
+    for (const [k, v] of first.outcome.kept) kept.set(k.startsWith(prefix) ? `${file}\0${k.slice(prefix.length)}` : k, v);
+    ran = {
+      ...first,
+      file,
+      outcome: { ...first.outcome, matches: first.outcome.matches.map(m => ({ ...m })), kept },
+    };
+  } else if (shareKey !== undefined && shared !== undefined) {
+    const p = run();
+    shared.scans.set(shareKey, p);
+    ran = await p;
+    // The paths that will reuse this result never read the blob: finish their
+    // references now, so the reader forgets the bytes as soon as every distinct
+    // path profile has been scanned, not when the last duplicate path is reached.
+    if (entry?.oid !== undefined) {
+      for (let i = 1; i < (shared.counts.get(shareKey) ?? 1); i++) content?.done(entry.repoTop, entry.oid);
+    }
+  } else {
+    ran = await run();
+  }
+  const { outcome, hits, placeholderSkips } = ran;
   if (outcome.skippedByType) {
     recordBinarySkip(outcome.skippedByType.family, options);
+    options.binarySkipped?.push({ file, family: outcome.skippedByType.family });
     return null;
   }
   if (outcome.failure?.kind === 'too_large') {
@@ -661,9 +752,16 @@ async function scanOneFile(
   recordInlineSuppression(hits, display, options);
   if (options.placeholderSkips && placeholderSkips && placeholderSkips.count > 0) {
     options.placeholderSkips.count += placeholderSkips.count;
-    for (const line of placeholderSkips.lines) {
-      options.placeholderSkips.locations.push({ file: display, line });
-    }
+    placeholderSkips.lines.forEach((line, i) => {
+      const rule = placeholderSkips.rules?.[i];
+      const column = placeholderSkips.columns?.[i];
+      options.placeholderSkips?.locations.push({
+        file: display,
+        line,
+        ...(rule !== undefined ? { rule } : {}),
+        ...(column !== undefined ? { column } : {}),
+      });
+    });
   }
   const report = options.content;
   if (report) {
@@ -1169,6 +1267,94 @@ export async function scanFilesAsync(
   return results;
 }
 
+/**
+ * Scan HEAD tree blobs and nothing else (`scan --no-repo-controls`). Every file
+ * is read by the object id the verified HEAD tree named, through
+ * `cat-file`; no entry asks for its working-tree copy and none is marked
+ * filtered, so no disk copy is opened and no `status` or `check-attr` runs.
+ * `files` are absolute paths that are keys of `blobs`.
+ */
+export async function scanHeadBlobsAsync(
+  files: string[],
+  blobs: Map<string, string>,
+  repoRoot: string,
+  scanner: SecretScanner,
+  options: ScanOptions = {},
+): Promise<ScanResult[]> {
+  const { maxSize = MAX_FILE_SIZE, progress = false, concurrency = 10, scanBudgetMs = DEFAULT_SCAN_BUDGET_MS } = options;
+  const entries = new Map<string, TrackedEntry>();
+  for (const f of files) {
+    const oid = blobs.get(f);
+    if (oid === undefined) {
+      // Never a fall back to the disk copy: a file the HEAD listing did not
+      // name has no place in this run.
+      throw new GitError(
+        `vault-guard: ${path.relative(process.cwd(), f)} has no HEAD blob in this run, and this mode reads ` +
+          'blobs only, never the working tree. Nothing was scanned.',
+        'git cat-file --batch',
+      );
+    }
+    entries.set(f, { repoTop: repoRoot, mode: '100644', oid, worktreeAlso: false, filtered: false });
+  }
+  const content = new GitContentSource('head', fileSetGitEnv(), entries, 10, true, options.verifyOnlyBudgetBytes, options.gitBinary);
+  // A blob named by many paths is scanned once per path profile, not once per path.
+  let shared: SharedScans | undefined;
+  if (options.shareBlobs !== false) {
+    shared = { scans: new Map(), keyOf: new Map(), counts: new Map() };
+    for (const f of files) {
+      const oid = blobs.get(f);
+      if (oid === undefined) continue;
+      const key = `${oid}\0${pathScanProfile(f, repoRoot, true)}`;
+      shared.keyOf.set(f, key);
+      shared.counts.set(key, (shared.counts.get(key) ?? 0) + 1);
+    }
+  }
+  const results: ScanResult[] = [];
+  const cwd = process.cwd();
+  const blobOnly: ScanOptions = { ...options, blobOnly: true };
+  try {
+    content.prepare(files);
+    const scanFile = async (file: string): Promise<void> => {
+      const display = path.relative(cwd, file);
+      // No exclude entry is offered: this mode reads no config to put one in.
+      const exclude = undefined;
+      try {
+        const r = await scanOneFile(scanner, file, display, exclude, repoRoot, content, blobOnly, maxSize, scanBudgetMs, shared);
+        if (r) results.push(r);
+      } catch (error) {
+        if (error instanceof ObjectMismatchError) {
+          // Name a path that holds the bad object, not the file whose read
+          // happened to be failed by it.
+          const paths = files.filter(f => blobs.get(f) === error.oid).map(f => path.relative(cwd, f)).sort();
+          throw new GitError(
+            `vault-guard: the object store does not hold what its ids claim: the blob for ${JSON.stringify(paths[0] ?? error.oid)}` +
+              `${paths.length > 1 ? ` (and ${paths.length - 1} more path${paths.length > 2 ? 's' : ''} with the same id)` : ''} ` +
+              `is not the content ${error.oid} names. Clone the repository fresh and assess the clone. Nothing was scanned.`,
+            error.command,
+            error,
+          );
+        }
+        if (error instanceof GitError) throw error;
+        options.unreadable?.push({ kind: 'read_error', file: display, reason: String(error) });
+        options.bus?.add({ code: 'file.read_error', severity: 'error', ctx: { file: display, detail: String(error) } });
+      }
+    };
+    for (let i = 0; i < files.length; i += concurrency) {
+      const batch = files.slice(i, i + concurrency);
+      await Promise.all(batch.map(scanFile));
+      if (progress && files.length > 10) {
+        const percent = Math.round(((i + batch.length) / files.length) * 100);
+        process.stderr.write(`\r${chalk.gray(`Scanning... ${percent}%`)}`);
+      }
+    }
+    if (progress && files.length > 10) process.stderr.write('\n');
+  } finally {
+    await content.closeAndWait();
+    if (options.content) options.content.headReadBytes += content.headReadBytes;
+  }
+  return results;
+}
+
 /** The binary rule with a synchronous head read, for the synchronous {@link scanFiles}. */
 function confirmedBinarySync(file: string): boolean {
   const cand = binaryCandidate(file);
@@ -1310,6 +1496,7 @@ export function displayScanResults(
   results: ScanResult[],
   blocking?: number,
   base: string = process.cwd(),
+  lexicalPaths = false,
 ): void {
   if (results.length === 0) {
     console.log(chalk.green.bold('✅ SUCCESS:'), chalk.white('No secrets found\n'));
@@ -1326,7 +1513,7 @@ export function displayScanResults(
   // the same pure function every formatter uses, on the same post-baseline
   // results. Each element below is printed only when it applies, so a run
   // with no demotion and no group prints exactly what 1.11.0 printed.
-  const formed = formGroups(results);
+  const formed = formGroups(results, lexicalPaths ? { lexicalPaths: true } : {});
   const counts = contentRunCounts(results, formed);
   const groupedClause =
     counts.match_groups > 0
@@ -1363,7 +1550,16 @@ export function displayScanResults(
         return;
       }
       const reason = match.demotion ? chalk.gray(`  (${demotionText(match.demotion)})`) : '';
-      console.log(findingLine(relativePath, match, bothCopies) + reason);
+      const directive = match.inlineDirectiveNotHonoured
+        ? chalk.yellow('  (inline ignore directive not honoured)')
+        : '';
+      const filter = match.contextFilterNotHonoured
+        ? chalk.yellow(`  (${match.contextFilterNotHonoured} filter not honoured)`)
+        : '';
+      const lowered = match.severityBeforePathRules
+        ? chalk.yellow(`  (lowered by path rules from ${match.severityBeforePathRules})`)
+        : '';
+      console.log(findingLine(relativePath, match, bothCopies) + reason + directive + filter + lowered);
     });
   });
 

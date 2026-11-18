@@ -26,6 +26,15 @@ export function splitPathParts(filePath: string): string[] {
 }
 
 /**
+ * The Python rule's path test (a triple-quoted string is not a generic
+ * assignment). Case-sensitive on purpose; the scanner and the path profile
+ * both call this, so they cannot disagree.
+ */
+export function isPythonPath(filePath: string): boolean {
+  return filePath.endsWith('.py');
+}
+
+/**
  * The path that test / documentation / locale context is judged on.
  *
  * Context words (`docs`, `tests`, `examples`, anything ending in `test`) must
@@ -41,9 +50,14 @@ export function splitPathParts(filePath: string): string[] {
  * its basename is used. Without a root the path is returned as given, which is
  * the behaviour library callers who pass root-relative paths already rely on.
  */
-export function contextPathFor(filePath: string, root?: string): string {
+export function contextPathFor(filePath: string, root?: string, lexical = false): string {
   if (root === undefined) return filePath;
-  const rel = path.relative(canonical(root), canonical(filePath));
+  // `lexical` makes no filesystem call: `--no-repo-controls` judges the HEAD
+  // tree, and the working tree (a `src` replaced by a link to `test/`) must
+  // not change which context a path is in.
+  const rel = lexical
+    ? path.relative(path.resolve(root), path.resolve(filePath))
+    : path.relative(canonical(root), canonical(filePath));
   if (rel === '' || climbsOut(rel) || path.isAbsolute(rel)) {
     return path.basename(filePath);
   }

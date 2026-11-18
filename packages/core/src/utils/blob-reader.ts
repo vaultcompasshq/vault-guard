@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'child_process';
+import { createHash, type Hash } from 'crypto';
 
 import { GitError } from '../errors';
 
@@ -16,6 +17,36 @@ import { GitError } from '../errors';
  * passes the inherited one on purpose, because a hook's `GIT_INDEX_FILE` or a
  * `GIT_DIR`-only repository is where its object ids came from.
  */
+
+/**
+ * An object whose bytes do not hash to the id it was asked for: the object
+ * store does not hold what its ids claim (a rewritten or damaged object file).
+ * Only a reader built with `verify` raises it.
+ */
+export class ObjectMismatchError extends GitError {
+  constructor(
+    public readonly oid: string,
+    public readonly type: string,
+  ) {
+    super(
+      `vault-guard: the object store does not hold what its ids claim: ${type} ${oid} does not hash to its own id.`,
+      'git cat-file --batch',
+    );
+    this.name = 'ObjectMismatchError';
+  }
+}
+
+/** The hash git names an object id with, by the id's length: 40 hex is sha1, 64 is sha256. */
+export function hashAlgorithmForOid(oid: string): 'sha1' | 'sha256' | null {
+  if (/^[0-9a-f]{40}$/.test(oid)) return 'sha1';
+  if (/^[0-9a-f]{64}$/.test(oid)) return 'sha256';
+  return null;
+}
+
+/** git's object id of `bytes` as an object of `type`: the hash of `"<type> <len>\0" + bytes`. */
+export function gitObjectId(alg: 'sha1' | 'sha256', type: string, bytes: Buffer): string {
+  return createHash(alg).update(`${type} ${bytes.length}\0`).update(bytes).digest('hex');
+}
 
 /** What `cat-file --batch-check` said about one object id. */
 export type BlobCheck =
@@ -47,12 +78,14 @@ export function batchCheckBlobs(
   repoTop: string,
   oids: Iterable<string>,
   env: NodeJS.ProcessEnv,
+  /** The git to run; a bare `git` unless the caller resolved an absolute path. */
+  git = 'git',
 ): Map<string, BlobCheck> {
   const unique = [...new Set(oids)];
   const out = new Map<string, BlobCheck>();
   if (unique.length === 0) return out;
   const argv = [...BATCH_ARGS, '--batch-check'];
-  const r = spawnSync('git', argv, {
+  const r = spawnSync(git, argv, {
     cwd: repoTop,
     env,
     input: unique.map(o => `${o}\n`).join(''),
@@ -149,6 +182,8 @@ export class BlobBatchReader {
   /** git processes started and not yet exited, for the leak tests. */
   liveChildren = 0;
   private closed = false;
+  /** The running hash of the object being read, when verifying. */
+  private hasher: Hash | null = null;
   /** One promise per git process started, settled once it has exited. */
   private readonly exits: Array<Promise<void>> = [];
   /** git processes not yet exited, so a stuck one can be killed. */
@@ -158,6 +193,10 @@ export class BlobBatchReader {
     private readonly repoTop: string,
     private readonly env: NodeJS.ProcessEnv,
     private readonly window = 10,
+    /** Hash every blob read against the id it was asked for; a mismatch is an {@link ObjectMismatchError}. */
+    private readonly verify = false,
+    /** The git to run; a bare `git` unless the caller resolved an absolute path. */
+    private readonly git = 'git',
   ) {}
 
   /** The bytes of one blob. Rejects with {@link GitError} on any failure. */
@@ -279,7 +318,7 @@ export class BlobBatchReader {
   private start(): ChildProcessWithoutNullStreams {
     if (this.proc) return this.proc;
     this.spawned++;
-    const proc = spawn('git', this.argv, {
+    const proc = spawn(this.git, this.argv, {
       cwd: this.repoTop,
       env: this.env,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -332,8 +371,21 @@ export class BlobBatchReader {
   }
 
   private fail(detail: string, cause?: unknown): void {
+    this.failWith(readFailure(this.repoTop, detail, `git ${this.argv.join(' ')}`, cause));
+  }
+
+  /** Hash check at the end of an object: false (and the reader failed) on a mismatch. */
+  private verified(oid: string): boolean {
+    const h = this.hasher;
+    this.hasher = null;
+    if (h === null || h.digest('hex') === oid) return true;
+    this.failWith(new ObjectMismatchError(oid, 'blob'));
+    return false;
+  }
+
+  private failWith(err: GitError): void {
     if (this.failed) return;
-    this.failed = readFailure(this.repoTop, detail, `git ${this.argv.join(' ')}`, cause);
+    this.failed = err;
     for (const p of [...this.inflight.splice(0), ...this.queue.splice(0)]) p.reject(this.failed);
     if (this.proc) {
       this.proc.kill();
@@ -366,6 +418,10 @@ export class BlobBatchReader {
       if (this.bodyConsumed < keep.length) {
         c.copy(keep, this.bodyConsumed, 0, Math.min(k, keep.length - this.bodyConsumed));
       }
+      if (this.hasher !== null) {
+        const n = Math.min(k, this.bodySize - this.bodyConsumed);
+        if (n > 0) this.hasher.update(c.subarray(0, n));
+      }
       if (this.bodyConsumed + k === total && c[k - 1] !== 0x0a) {
         this.fail('git cat-file --batch output lost its framing (no newline after an object)');
         return false;
@@ -379,6 +435,7 @@ export class BlobBatchReader {
     this.headReadBytes += this.bodySize;
     this.bodySize = -1;
     this.headKeep = null;
+    if (!this.verified((this.inflight[0] as Pending).oid)) return false;
     const done = this.inflight.shift() as Pending;
     done.resolve(keep);
     this.pump();
@@ -422,6 +479,15 @@ export class BlobBatchReader {
           return;
         }
         this.bodySize = size;
+        this.hasher = null;
+        if (this.verify) {
+          const alg = hashAlgorithmForOid(expected.oid);
+          if (alg === null) {
+            this.fail(`object id ${expected.oid} is neither a sha1 nor a sha256 id, so it cannot be verified`);
+            return;
+          }
+          this.hasher = createHash(alg).update(`blob ${size}\0`);
+        }
         if (expected.head !== undefined) {
           this.headKeep = Buffer.alloc(Math.min(size, expected.head));
           this.bodyConsumed = 0;
@@ -438,6 +504,8 @@ export class BlobBatchReader {
         return;
       }
       this.bodySize = -1;
+      if (this.hasher !== null) this.hasher.update(body.subarray(0, body.length - 1));
+      if (!this.verified((this.inflight[0] as Pending).oid)) return;
       const done = this.inflight.shift() as Pending;
       done.resolve(Buffer.from(body.subarray(0, body.length - 1)));
       this.pump();

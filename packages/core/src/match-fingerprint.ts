@@ -45,8 +45,11 @@ function canonical(p: string): string {
  * accepted key, which is exactly the "a copy into another file is a new key"
  * rule below, defeated by a working-tree change.
  */
-export function contentRelPath(fileAbs: string, root: string): string {
+export function contentRelPath(fileAbs: string, root: string, lexical = false): string {
   const abs = path.resolve(fileAbs);
+  // `lexical` (`--no-repo-controls`) makes no filesystem call: a directory on
+  // disk replaced by a link must not change the key of a path in the HEAD tree.
+  if (lexical) return relativeFingerprintKey(abs, path.resolve(root));
   const file = path.join(canonical(path.dirname(abs)), path.basename(abs));
   return relativeFingerprintKey(file, canonical(path.resolve(root)));
 }
@@ -64,9 +67,10 @@ export function contentFingerprintForMatch(
   root: string,
   fileAbs: string,
   m: SecretMatch,
+  lexical = false,
 ): string | undefined {
   if (m.valueDigest === undefined) return undefined;
-  return contentFingerprint(contentRelPath(fileAbs, root), m.type, m.valueDigest);
+  return contentFingerprint(contentRelPath(fileAbs, root, lexical), m.type, m.valueDigest);
 }
 
 /** The content key from its three parts. Exposed for the baseline writer and tests. */
@@ -83,7 +87,7 @@ export function contentFingerprint(relPath: string, rule: string, valueDigest: s
  * must therefore be anchored the same way, so a run from a subdirectory reads
  * them the same as a run from the root.
  */
-export function rootPositionalFingerprint(root: string, fileAbs: string, m: SecretMatch): string {
-  const payload = `${contentRelPath(fileAbs, root)}|${m.type}|${m.line}|${m.offset}|${m.matchLength}`;
+export function rootPositionalFingerprint(root: string, fileAbs: string, m: SecretMatch, lexical = false): string {
+  const payload = `${contentRelPath(fileAbs, root, lexical)}|${m.type}|${m.line}|${m.offset}|${m.matchLength}`;
   return createHash('sha256').update(payload, 'utf8').digest('hex');
 }

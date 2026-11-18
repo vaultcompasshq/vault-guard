@@ -1274,6 +1274,403 @@ link is refused`); `init.test.ts` (a dangling and an outside link per
 manager, for example `a dangling link at .husky/pre-commit is a linked_hook
 conflict and nothing is written through it`).
 
+## `--no-repo-controls` honours no control input the repository supplies
+
+`scan --no-repo-controls` runs on the built-in defaults. No
+`.vault-guard.json`, `.vault-guard.local.json` (at any level) or
+`.vault-guard.baseline.json` is read, `.gitignore` and `.gitattributes` decide
+nothing, and an inline ignore directive does not hide a finding: the finding
+is reported with `inline_directive_not_honoured`, and `inline_suppressed`
+stays 0. Every control file of those five names in the HEAD tree, at any
+depth, matched case-insensitively and of any entry kind but a directory, is
+listed in JSON `repoControls.present`, in SARIF
+`runs[0].properties.repoControls`, and as one `Present, not honoured:` text
+line each. A run without the flag carries no `repoControls` block.
+`--fail-on` on the command line still applies. Not covered: the built-in
+skips (root-level vendored names, lockfiles and generated artifacts by name)
+still apply, counted; control files in the git directory
+(`.git/info/exclude`, `.git/info/attributes`) are not listed, though nothing
+in this mode reads them.
+
+**Enforced by:** `commands/scan.ts` (the `headOnly` branches);
+`no-repo-controls.ts` (`REPO_CONTROL_BASENAMES`, `presentRepoControls`);
+`secret-scanner.ts` (`inlineDirectives: 'mark'`); CLI
+`no-repo-controls.test.ts` (`a config that ignores everything: the finding
+is reported and the config is listed`, `fail_on lowered to none: the finding
+still blocks and the config is listed`, `a local overlay, at the root and
+nested: the finding is reported and both overlays are listed`, `a baseline
+listing the finding: the finding is reported and the baseline is listed`,
+`an inline ignore directive: the finding is reported and marked as not
+honoured`, `a .gitignore naming a tracked file: listed as present, and the
+finding is still reported`, `a .gitattributes vendored mark: listed as
+present, and the finding is still reported`, `the text report prints one
+line per present control file`, `SARIF carries repoControls in the run
+properties and the mark on the result`, `a run without the flag carries no
+repoControls block, in JSON or SARIF`); core `local-git-config.test.ts`
+(`names every control file at any depth, case-insensitively, any entry kind
+but a directory`).
+
+## `--no-repo-controls` judges the HEAD tree from blobs only
+
+The file set is parsed from the HEAD commit's raw, hash-verified trees (see
+the object-store section below) and every byte scanned comes from `git
+cat-file`. The run's git calls are, in order, `config --local --list`,
+`rev-parse --show-toplevel`, `rev-parse --git-common-dir` and `--git-path
+objects`, `rev-parse --verify HEAD`, then `cat-file --batch` for the commit and
+for the trees a level at a time, `cat-file --batch-check` for the type of each
+file's object, and `cat-file --batch-check` and `--batch` for the blobs, and
+nothing else: never `ls-tree`, `status`, `ls-files`, `check-attr` or
+`hash-object`, so a repository-configured clean
+filter or fsmonitor hook has no command to ride on, and no working-tree copy
+is opened. A file edited on disk and not committed is judged by its HEAD
+blob, in both directions, and a file deleted on disk is still scanned. A
+target is a path in the HEAD tree, resolved lexically, never through the
+disk. HEAD must resolve to a commit (exit 2 otherwise), and the flag is a
+usage error, exit 2 before any git call, with `--trust-base` or `--staged`.
+A file the HEAD listing did not name is never read from disk: both
+`scanHeadBlobsAsync` and `scanFileContent` (`blobOnly`) throw a GitError
+instead, exit 2. The report names the full object id of the commit scanned
+(`Scanned commit:` in text, `scannedCommit` in JSON and SARIF run
+properties) and says untracked and uncommitted files are not judged. A
+gitlink is not descended into, and every one is listed as not scanned
+(`Not scanned, submodule:` in text, `notScanned.submodules` in JSON and SARIF)
+without changing the exit code. The run refuses, exit 2, when two HEAD
+entries resolve to the same path (raw names that are not valid UTF-8 and
+decode alike, or a name listed twice in a crafted tree), a path has an
+empty, `.` or `..` segment (on Windows a backslash also separates segments),
+or a path resolves outside the repository root (on Windows `D:x` or `\x`),
+rather than let one replace the other or drop it unreported; it does not key
+by raw bytes. A symlink entry's blob, the link's target text, is verified and
+scanned like any file and reported under the link's path; the link is never
+followed, and nothing is listed under `notScanned` for it. (A checkout without
+symlink support writes that text as a regular file holding whatever it says,
+a key included.)
+
+**Enforced by:** `no-repo-controls.ts` (`loadHeadOnlyTree`, `headEntryKey`;
+core `local-git-config.test.ts`, `posix: inside the root, or null for an
+empty, . or .. segment` and `win32: a backslash .. segment, another drive or
+a rooted name is null, never dropped later`);
+`utils/scan-utils.ts` (`scanHeadBlobsAsync`, every entry `worktreeAlso:
+false`, `filtered: false`); `file-utils.ts` (`getHeadTreeFilesToScan`, no
+`lstat`); CLI `no-repo-controls.test.ts` (`a file edited on disk and not
+committed: the HEAD content is judged, in both directions`, `runs only
+config, rev-parse and cat-file, with the config read first`,
+`filter driver, config check stubbed out: the clean filter never runs and
+the blob is judged`, `with --trust-base or --staged: a usage error, exit 2,
+before any git call`, `a repository with no commit: exit 2`, `a target
+outside the repository: exit 2`, `names the scanned commit in text, JSON and
+SARIF`, `lists every submodule as not scanned, in text, JSON and SARIF,
+without exiting 2`, `two names that are not valid UTF-8 and decode alike:
+exit 2, nothing scanned`, `one name listed twice in a crafted tree: exit 2,
+nothing scanned`, `scanHeadBlobsAsync rejects a file the HEAD listing did
+not name, with a key on disk`); core `local-git-config.test.ts` (`throws
+rather than read the disk copy of a file with no tracked entry`).
+
+## `--no-repo-controls` refuses a local git config a fresh clone would not write
+
+Before its first other git call the run reads `git config --local --list
+--name-only -z` and refuses, exit 2, naming the first key off the allowlist
+and saying to clone the repository fresh and assess the clone. The
+allowlist is the keys a fresh clone writes: `core.repositoryformatversion`,
+`core.filemode`, `core.bare`, `core.logallrefupdates`, `core.ignorecase`,
+`core.precomposeunicode`, `core.symlinks`, `extensions.objectformat`, and
+`remote.<name>.url|fetch|tagopt` and `branch.<name>.remote|merge|rebase`.
+`remote.<name>.promisor`, `remote.<name>.partialclonefilter` and
+`extensions.worktreeConfig` are off it on purpose. `--local` does not follow
+includes, so `include.path` and `includeIf.*` are themselves refused. A git
+failure reading the config is exit 2 too, never a pass. The check lives in
+one module with no vault-guard imports (`utils/local-git-config.ts`) so the
+sibling gate can carry a copy; nothing checks the copies against each other
+yet. Not covered: global and system config and `GIT_CONFIG_*` variables,
+which are the operator's own.
+
+The run also refuses, exit 2 with the same remedy, a repository whose git
+directory or object store may be somewhere a fresh plain clone's is not: `.git`
+at the root is not a directory (a `gitdir:` pointer file or a link);
+`.git/commondir` exists; `.git/objects/info/alternates` or `http-alternates`
+exists; `.git/objects` or anything under it is not a real directory or a
+regular file (a link to another store's `objects`, `objects/pack`,
+`objects/info` or a loose-object directory); or, asked with the stripped
+environment after the config check, `git rev-parse --git-common-dir` and
+`--git-path objects` do not resolve to `<root>/.git` and `<root>/.git/objects`.
+Any of these that cannot be examined also refuses. A path in the message is capped at 200 characters plus its length
+(`a lstat-walk refusal prints a capped path for a deep nest`). Refs (`refs/`,
+`packed-refs`, `HEAD`) are not checked: whatever a ref names must be a commit
+in this object store, and the report names the commit judged. A symlinked `HEAD`, `refs/` or `packed-refs` pointing at another
+repository therefore ends in a HEAD that does not resolve here, exit 2, which
+the test of that name checks. `git rev-parse --git-common-dir` and `--git-path
+objects` are a second check behind the link walk and the `commondir` test: no
+fixture reaches them alone.
+
+**Enforced by:** `utils/local-git-config.ts` (`isAllowedLocalGitConfigKey`,
+`checkLocalGitConfig`); `no-repo-controls.ts` (`loadHeadOnlyTree`, the check
+first); core `local-git-config.test.ts` (`is exactly the keys a fresh clone
+writes`, `refuses every other key, including the ones left off on purpose`,
+`checks a real repository: git init passes, an added key is named`, `fails
+closed outside a repository`); CLI `no-repo-controls.test.ts` (`filter
+driver, config check live: exit 2 naming the key, before any marker`,
+`core.fsmonitor in local config: exit 2 naming the key, and the hook never
+runs`, `%s in local config: exit 2 naming the key` over `include.path`,
+`core.worktree`, `remote.origin.promisor`,
+`remote.origin.partialclonefilter`, `extensions.worktreeConfig` and
+`user.name`, `a fresh clone of a repository with a remote passes the
+check`, `.git is a gitdir pointer file: exit 2, clone fresh`,
+`objects/info/alternates (a --shared clone): exit 2, clone fresh`,
+`objects/info/http-alternates: exit 2, clone fresh`, `a .git/commondir
+pointing at another repository: exit 2, the other tree is not judged`,
+`.git/objects a link to another repository's objects: exit 2, the other tree
+is not judged`, `.git/objects/pack a link to another store: exit 2`, `a loose
+object directory linked to another store: exit 2`, `a symlinked HEAD, refs/ or
+packed-refs naming another repository's commit: exit 2, the other tree is not
+judged`, `a plain git clone of a repository passes the object-store check`); `no-repo-controls.ts`
+(`assertOwnObjectStore`, `assertNoLinkIn`).
+
+## `--no-repo-controls` checks that objects hash to their ids
+
+An object store an attacker controls can hold a file under one id whose bytes
+are another's: a loose object overwritten with a clean blob, a tree rewritten
+to point a path at a clean blob, a commit naming a clean tree. `git fsck`
+reports it as a hash-path mismatch; a scan that only reads objects would
+report the commit as clean. So this mode hashes what it reads, with git's own
+hash chosen by id length (40 hex is sha1, 64 is sha256), as
+`"<type> <len>\0" + bytes`, and refuses, exit 2 with the clone-fresh remedy,
+on any mismatch:
+
+- the HEAD commit, and its first header line must be a `tree` line, which
+  names the root tree;
+- every tree reachable from that root, read as raw bytes through `cat-file
+  --batch`, one call per directory level, so only ids named by already
+  verified bytes are ever read or followed, and each new tree is parsed once,
+  in the round it arrives. The file list (mode, id, path) is parsed from these
+  verified raw trees. `ls-tree` is not run, so there is no second opinion of
+  the same store to disagree with or to trust. The cost is one call per level,
+  bounded by the depth limit;
+- every blob the scan reads, hashed as it streams from `cat-file --batch`,
+  including a blob read only for its head and then skipped as binary. A
+  blob skipped by name before any read (a lockfile, a log, a vendored
+  directory) is not hashed. An over-limit blob is hashed without being scanned
+  (below). The message names a path that holds the bad blob.
+
+Modes are classified as git does, from the octal value by the file-type bits:
+a directory (`40000`, `040000`, `0040000`) is a tree and is descended into; a
+regular file (`100644`, `100664`, `100600`, `0100644`, whatever the permission
+bits) is scanned; `120000` is a symlink, whose target text is scanned (above);
+`160000` is a gitlink, listed as not scanned. Any other mode, or text that is not octal, refuses the run, exit 2,
+naming the entry and its mode, so nothing is skipped because of its mode. The
+object a file or symlink mode names must be a blob (`cat-file --batch-check`),
+and an entry with a tree mode must be a tree, or the run refuses. (Git itself reads any other type bits, such as `170000`, as a gitlink;
+this mode refuses them instead of guessing, but a gitlink spelled `0160000` is
+a gitlink and is listed.)
+
+The walk is bounded, because a few small trees can name the same subtree many
+times (ten levels naming it ten times is ten billion paths) and one tree can be
+very wide. Each tree id is read and parsed once, and `parseTree` spends a row
+budget while it parses, so a single tree with more rows than the limit is
+refused after the limit's worth of rows, not after all of them are built. The
+run refuses, exit 2 with "too large to list" and the limits, past 2,000,000
+tree rows parsed (all trees together) or walked (a shared tree counts once per
+parent that names it), past 512 MiB of paths (the old `ls-tree` listing's
+limit), or at depth 1000; the single `cat-file --batch` read of the commit and trees is
+bounded by the same 512 MiB. A truncated scan is never produced. The path-bytes
+limit has no test of its own: the row limit is reached first on any fixture a
+test can build quickly.
+
+A size is not a hash: the size `cat-file --batch-check` reports is only what
+the store claims. A blob over the scan limit is therefore hashed, streamed and
+not scanned (a head read of zero bytes), and only then reported. If it
+verifies it is a real file over the limit: `too_large`, exit 2 as for any
+unscanned file, with no clone-fresh advice. If it does not, the object store
+does not hold what its ids claim, with the clone-fresh remedy.
+
+A file or symlink mode that names an object the store does not have is a
+refusal, never a skip, even for a name a built-in rule would not scan.
+
+A blob that several paths name is scanned once per path profile
+(`pathScanProfile`, built by calling the functions the scan itself calls:
+`binaryCandidate` for the binary-by-name decision, `inlineTestFinderId`,
+`isPythonPath`, and the test, documentation and locale judgements on the
+root-relative path; never by slicing the path text, which treated a file named
+`.png` like `x.png`) and the result is reported
+under every path, with each path's own counters, inline-directive and
+placeholder records. Those are the only path inputs the scan reads (listed by reading the scan path
+from `scanHeadBlobsAsync` to the scanner); a new path-dependent rule must be
+added to the profile, and a built-in name skip is decided per path before any
+sharing. A blob named by 700 paths
+that differ only by directory is read and scanned once, not 700 times.
+
+Built-in rules still skip, and the exit code is unchanged, but the repository
+chooses the names and the bytes, so each skip is listed: a vendored directory
+name as a direct child of the scan root (one row for the directory), a
+lockfile, log, source-map or minified-bundle name (one row each, with its own
+reason), and a binary file whose extension and first bytes agree (one row,
+reason `binary file (<family>)`: a key placed after a PNG header is not found,
+and the report says the file was not scanned). `notScanned.builtInSkips` in
+JSON and SARIF lists every row (`path`, `reason`) up to a safety ceiling of
+100,000, with the count beyond it in `builtInSkipsOmitted`. The text prints a
+`Not scanned, built-in skip:` line per row, shared out among the reasons so one
+noisy reason cannot crowd another out (200 rows in all), then says how many
+are not shown and that the JSON report lists all. When anything is under
+`notScanned` the text verdict reads "No secrets found in the files scanned; N
+paths were not scanned, listed above" (or "... M listed above and K not shown
+(the JSON report lists all)").
+
+The working tree cannot change the result. Every path judgement is lexical, so
+`path-parts.ts` (`contextPathFor`, `lexical`), `path-severity.ts`
+(`applyPathAwareSeverity`, `pathScanProfile`), the scanner's documentation
+suppression (`lexicalPaths`), and the content fingerprints and groups
+(`match-fingerprint.ts` `contentRelPath`, `scan-output.ts` `formGroups`,
+`baseline.ts`) make no filesystem call in this mode. The fingerprint option is
+set by the cli's `formatJson` and `formatSarif` whenever a `--no-repo-controls`
+report is passed, and by `displayScanResults` and `applyBaseline`; the
+baseline byte reader never falls back to the disk. The only filesystem reads
+in a run are the `lstat` and `readdir` checks under `.git`, and `realpath` of
+the repository root (which only locates the checkout). Audited reachable
+`fs` and child-process uses: `scan.ts` `canonicalPath` (the root, allowed);
+`scan.ts` named-link `lstat`/`stat` (only with `--trust-base`, not reachable);
+`scan.ts` baseline `readBytes` disk read (disabled here); `loadHeadOnlyTree`
+(`realpath` of the root, `git`); `assertOwnObjectStore` (`lstat`/`readdir`
+under `.git`, `git`); `readVerifiedHeadTree` and `GitContentSource`/
+`BlobBatchReader` (`git cat-file` only); `getHeadTreeFilesToScan` (path
+arithmetic only); the reporters and upgrade notice (no `fs`; the notice is not
+printed in this mode). A spy on every fs read function over a whole run
+(`no fs call touches a path outside .git`) and a run before and after
+replacing the whole working tree (`replacing the whole working tree with
+hostile content leaves the report byte-identical`) hold this.
+
+Which repository is judged is fixed before anything is read. git is resolved
+once, by `utils/git-binary.ts` (`resolveGitBinary`: PATH walked by this code,
+empty and relative entries skipped, `.exe` and `.com` only on Windows), and that
+absolute path is spawned by the config check, `rev-parse`, the `cat-file`
+readers and `readVerifiedHeadTree`; a resolved git inside the repository or the
+current directory is refused, because on Windows a bare `git` is looked up in the
+child's working directory first. The current directory must be the top level git
+reports (`loadHeadOnlyTree`), and a repository with a `.git` entry (any type) in any ancestor directory is
+refused (`assertNotNested`: an `lstat` per ancestor, an error other than
+ENOENT/ENOTDIR refusing as well). No program is run for this, because git run in
+an outer directory would read that repository's config, which this mode has not
+vetted; an unrelated outer work tree is refused too. An untracked `.git` planted
+in a subdirectory otherwise shadows the outer repository. `scannedRoot` carries the root judged. Other modes still spawn
+a bare `git`; this is not changed here.
+
+A filter keyed on the repository's own path or surrounding text does not drop a
+finding in this mode. The scanner (`inlineDirectives: 'mark'`) keeps a match the
+documentation-context rule (`doc-context`), the Python triple-quote rule
+(`python-triple-quoted`), the following-`(` rule (`call-follows`), the
+bare-identifier rule (`identifier-reference`), the PEM-header-without-body rule
+(`pem-no-body`) would drop, and sets `contextFilterNotHonoured`. The inputs the
+value-only filters read: the alphabet-run, entropy, placeholder
+(`isPlaceholderSecret`, counted), redacted-template, env-var-name,
+short-Docker-token, password-hash, sample-JWT and identifier-shape filters take
+the captured value (or the whole match for the JWT) and nothing else.
+
+The four URL rules and the Azure rule have no capture group, so the whole match,
+text the repository wrote around the secret, would be their "value". In this
+mode none of the substring, user-equals-password, host or alphabet-run filters is
+applied to them. A match is a counted placeholder decline (`isExactPlaceholderUrl`)
+only when ALL hold: its token (scheme to the next whitespace or quote) contains no
+`%`, no `?`, no `#` and exactly one `@` (no encoded character, query or fragment a
+driver reads differently, no guess about where the userinfo ends), and its
+password, taken whole, is exactly a known placeholder (`password`, `passwd`,
+`pass`, `pw`, `secret`, `changeme`, `change_me`, `example`, `test`, `dummy`,
+`placeholder`, `redacted`, `your_password`, `yourpassword`, `mypassword`, three
+or more `x`, any run of `*`) or entirely a template (`${VAR}`, `$VAR`, `<VAR>`,
+`{VAR}`, `{{VAR}}`, `$(cmd)`; `%VAR%` and `#{VAR}` cannot pass the first
+condition) whose inside is name-shaped (`isNameShaped`: at most 64 characters, a
+letter or underscore first, then letters, digits, `_`, `.`, `-` or single
+spaces, and with the separators removed one case of letters only plus at most
+three digits in all, so `{Kq8vZ3pXw9Lm2Tn}` and `<yourPassword>` are kept). For Azure the one `AccountKey=` value must be exactly such a form.
+The token ends at whitespace, a double quote, a backtick or a single quote that
+closes a literal, and at the end of the content when nothing does
+(`urlTokenEnd`, the one boundary the decline test and the shape check share). The
+Azure key names are compared in any case and a key spelled more than once, in any
+casing, is kept. Anything else is kept; a kept match the old substring logic would
+have declined says so (`url-context`). A URL with userinfo that no URL rule matched (a user
+holding `@` or `'`, the Azure single-server `user@server:password@host` form) is
+not allowed to read as clean: after the rules run, a scheme followed in its
+authority by `:`, at least one character and `@`, with no URL-rule match over it,
+is emitted as a finding for its scheme's rule, `url-context`. Where the userinfo
+ends is unclear, and the URL is kept (`urlUserinfoUnclear`), when the part before
+the first `/`, `?` or `#` holds an `@`, or when the only `@` is after one of them
+and the text between the first `:` and that character is not a port (digits); a
+credential-less `host:6379/0?x=a@b` is not kept, and a password of digits only
+before a `/` is the gap. Elsewhere all of
+this is unchanged (a marker anywhere in the URL still declines it,
+docs/RULES.md). Every placeholder
+decline in this mode is listed, by file, line and rule id and never the value,
+as `placeholderSkips` (one row per decline, keyed by file, line, column and rule, so two on one line are two rows and the count is the number of rows; `column` is 1-based in UTF-16 code units, as SARIF `startColumn` is) in JSON and the SARIF run properties (the notScanned
+ceiling, the rest counted), because the filter can drop a plausible real
+password; the text verdict says "N value(s) skipped as placeholders (listed in
+the JSON report)" and a run with no findings does not read as an unqualified
+pass. The PEM rule reads the
+text after the header (a body is a single base64 token of 40 or more characters,
+or a run of single-token base64 lines of one width, at any fold width; and where an END footer closes it, any base64-only single-token lines between the armor lines, of any widths, 64 or more characters joined with a lowercase letter, an uppercase letter and a digit, `+` or `/`). A severity lowered by a path rule or an
+in-file test block records `severityBeforePathRules`, and the text and the
+below-gate verdict count them.
+
+A blob over the scan limit is hashed without being scanned, but only up to
+`MAX_VERIFY_ONLY_BYTES` (2 GiB, counted by the size git reports) per run;
+past it the blob is reported as over the limit and not verified, exit 2. The
+reader forgets a blob's bytes as soon as every distinct path profile of it has
+been scanned: the paths that will reuse a result finish their references when
+the first scan ends, so a second name placed late in the tree does not hold
+the bytes.
+
+The check is against git's hash, so it is as strong as that hash: a sha1
+collision is out of scope. It does not make a tampered repository safe to
+open; it makes the report not claim a clean commit it did not read.
+
+**Enforced by:** `utils/verified-head-tree.ts` (`readVerifiedHeadTree`);
+`utils/blob-reader.ts` (`BlobBatchReader` with `verify`, `ObjectMismatchError`,
+`gitObjectId`); `utils/scan-utils.ts` (`scanHeadBlobsAsync`); CLI
+`no-repo-controls.test.ts` (`a loose blob rewritten to clean content: exit 2
+naming the path`, `a blob read and then skipped as binary is still checked`,
+`a tree object rewritten to point secret.txt at a clean blob: exit 2`, `a
+commit object rewritten to name a clean tree: exit 2`, `a repository with
+packed objects (git gc) still scans and reports the key`, `a sha256 repository
+scans, and its tampered blob is refused`, `a regular file with mode %s is
+scanned and its key reported`, `a tree written with mode %s is descended
+into`, `a symlink target holding a key is scanned and reported under the link
+path`, `an entry %s (mode %s) naming an object the store does not have: exit 2`, `a mode that is %s (%s): exit 2 naming the entry and its mode`, `a
+file mode whose object is a tree: exit 2, not skipped`, `a tree mode whose
+object is a blob: exit 2, not skipped`, `ten levels each naming one subtree ten
+times: exit 2 within seconds, too large to list`, `a tree nested deeper than
+the depth limit: exit 2, too large to list`, `a gitlink written with mode %s is
+listed as a submodule`, `a loose object replaced by a huge blob: exit 2, the object store does not
+hold what its ids claim`, `a real file over the scan limit: exit 2, kept as
+too_large, no clone-fresh advice`, `30 paths, one blob: read once, reported 30
+times`, `the same blob under a docs path and a source path is judged per path`,
+`%s and %s: the shared run reports each path as scanning it alone does`, `a
+blob under x.png and under .png: the key under the dotfile name is reported`,
+`a vendored directory, a minified file, a lockfile and a log holding keys: exit
+0, each listed`, `a planted .git in a subdirectory of an outer repository: exit 2, nothing
+judged, no git run in the parent`, `an ancestor whose .git is a file (a worktree
+pointer) also refuses`, `a clean clone placed outside any repository is judged`,
+`an outer work tree that does not track the inner repository is refused too, by
+design`, `from the root, a target naming that subdirectory still finds the
+key`, `run from a subdirectory of the repository: exit 2, run it from the root`,
+`a symlinked working directory is the root once resolved, and the report names
+the real root`, `a git found on PATH inside the repository being assessed: exit
+2`, `an appid comment in a website path: kept, marked doc-context, and the
+lowering is recorded`, `a marker only in %s does not clear a real password: kept, marked
+url-context`, `an Azure storage string with a marker in the account name: kept,
+marked url-context`, `a placeholder PASSWORD is still a counted decline, listed by
+file, line and rule, never the value`, `the context-filter count line names the
+repository path or surrounding text`, `a finding lowered by a website path carries its severity
+before the rules, in JSON, SARIF and text`, `the below-gate verdict counts the
+lowered findings, qualifies the pass and advises only --fail-on`, `JSON lists every skip; the text shows a capped share and says how many are
+not shown`, `250 lockfiles do not crowd out the one log that holds a key`, `a
+key after a binary header is listed as not scanned, and the verdict is
+qualified`, `over-limit blobs past the verification budget are reported as not
+verified, exit 2`, `kept bytes of a shared header-only blob are filed under
+every path`, `a blob named twice, the second name last in the tree, is not held
+for the second name`, `src/app.js with src on disk a link to %s/: still judged
+as src/app.js (high)`, `no fs call touches a path outside .git (the repository
+root itself excepted)`, `2,100,000
+rows in one tree: exit 2, too large to list, quickly`; core
+`verified-head-tree.test.ts` (`spends its row budget while parsing and stops
+there, before the rows after it`, `is equal for paths that scan alike and
+differs where path-dependent rules differ`).
+
 ## File-set git calls run with a clean git environment; `--staged` does not
 
 Every git call that builds the plain or pull-request file set or reads its

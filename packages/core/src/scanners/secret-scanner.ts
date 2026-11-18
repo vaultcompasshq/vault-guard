@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { createHash } from 'crypto';
-import { SecretMatch, type ContentDemotion } from '../types';
+import { SecretMatch, type ContentDemotion, type ContextFilterKind } from '../types';
 import {
   GROUP_MIN,
   RunIndex,
@@ -12,9 +12,9 @@ import {
 } from '../utils/data-shape';
 import { VaultGuardConfig } from '../config';
 import { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from '../utils/entropy';
-import { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, isShortDockerPatExample } from '../utils/placeholder';
+import { isPlaceholderSecret, isNonSecretConnectionString, connectionStringDeclines, isExactPlaceholderUrl, urlTokenEnd, urlUserinfoUnclear, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, isShortDockerPatExample } from '../utils/placeholder';
 import { applyPathAwareSeverity } from '../utils/path-severity';
-import { contextPathFor } from '../utils/path-parts';
+import { contextPathFor, isPythonPath } from '../utils/path-parts';
 import { decodeTextBuffer } from '../utils/text-decode';
 import { LOW_PRECISION_PATH_DOWNGRADE_IDS } from '../utils/path-downgrade-ids';
 import { findInlineTestRegions, isInsideInlineTestRegion } from '../utils/inline-test-context';
@@ -174,10 +174,10 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // The scheme is matched in any case (`i`; a URL scheme is case-insensitive, and every other part of these regexes is a
   // negated class or a digit run, which the flag does not change). The redis port is optional; without one the host
   // ends at the same delimiters as the postgres path, so the next JSON value or env entry is not read as part of it.
-  ['postgresql-url', { regex: /postgres(?:ql)?:\/\/[^:@\s/"'`]{1,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/[^\s"'`,;}\])<>|\\]{0,1024}/gi, severity: 'critical', connectionString: true, valueBearing: true }],
-  ['mysql-url',{ regex: /mysql:\/\/[^:@\s/"'`]{1,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/[^\s"'`,;}\])<>|\\]{0,1024}/gi,            severity: 'critical', connectionString: true, valueBearing: true }],
-  ['mongodb-url',    { regex: /mongodb(?:\+srv)?:\/\/[^:@\s/"'`]{1,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?/gi,            severity: 'critical', connectionString: true, valueBearing: true }],
-  ['redis-url',      { regex: /rediss?:\/\/[^:@\s/"'`]{1,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/"'`,;}\])<>|\\]{1,256}(?::\d{1,8})?/gi,      severity: 'critical', connectionString: true, valueBearing: true }],
+  ['postgresql-url', { regex: /postgres(?:ql)?:\/\/[^:@\s/"'`]{0,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/[^\s"'`,;}\])<>|\\]{0,1024}/gi, severity: 'critical', connectionString: true, valueBearing: true }],
+  ['mysql-url',{ regex: /mysql:\/\/[^:@\s/"'`]{0,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/[^\s"'`,;}\])<>|\\]{0,1024}/gi,            severity: 'critical', connectionString: true, valueBearing: true }],
+  ['mongodb-url',    { regex: /mongodb(?:\+srv)?:\/\/[^:@\s/"'`]{0,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?/gi,            severity: 'critical', connectionString: true, valueBearing: true }],
+  ['redis-url',      { regex: /rediss?:\/\/[^:@\s/"'`]{0,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/"'`,;}\])<>|\\]{1,256}(?::\d{1,8})?/gi,      severity: 'critical', connectionString: true, valueBearing: true }],
 
   // --- Source control tokens ---
   ['github-token',   { regex: /gh[pousor]_[a-zA-Z0-9]{36}/g,                                    severity: 'critical', valueBearing: true }],
@@ -353,7 +353,12 @@ const HUMAN_CHOSEN_VALUE_IDS = new Set([
 export interface PlaceholderSkipHits {
   count: number;
   lines: number[];
+  /** The rule id of each skip, parallel to {@link lines}. */
+  rules?: string[];
+  /** The 1-based column of each skip (UTF-16 code units, as SARIF counts), parallel to {@link lines}: two declines on one line stay two. */
+  columns?: number[];
 }
+
 
 export interface IgnoreDirectiveHits {
   /** Findings suppressed by an inline ignore directive (post-dedupe). */
@@ -584,7 +589,22 @@ export class SecretScanner {
    */
   scanContent(
     content: string,
-    opts?: { filePath?: string; ignoreHits?: IgnoreDirectiveHits; placeholderSkips?: PlaceholderSkipHits; pathRoot?: string },
+    opts?: {
+      filePath?: string;
+      ignoreHits?: IgnoreDirectiveHits;
+      placeholderSkips?: PlaceholderSkipHits;
+      pathRoot?: string;
+      /** Judge the path's context (test, docs, locale) without any filesystem call. */
+      lexicalPaths?: boolean;
+      /**
+       * `honour` (the default) drops a finding an inline ignore directive
+       * covers. `mark` keeps it, with `inlineDirectiveNotHonoured` set, for a
+       * run that honours no control input the repository supplies
+       * (`scan --no-repo-controls`). Nothing is counted into `ignoreHits` then,
+       * because nothing was hidden.
+       */
+      inlineDirectives?: 'honour' | 'mark';
+    },
   ): SecretMatch[] {
     const lineIndex = this.buildLineIndex(content);
     const ignoredLines = this.parseIgnoreDirectives(content, lineIndex);
@@ -597,7 +617,7 @@ export class SecretScanner {
     const suppressedByDirective: SecretMatch[] | null = opts?.ignoreHits ? [] : null;
     // Placeholder declines, deduped by match offset at the end so two rules
     // on one value count once. Recorded only when the caller asked.
-    const placeholderRaw: Array<{ line: number; offset: number }> | null = opts?.placeholderSkips ? [] : null;
+    const placeholderRaw: Array<{ line: number; offset: number; rule: string; column: number }> | null = opts?.placeholderSkips ? [] : null;
 
     // Fresh `RegExp` per invocation so concurrent or interleaved `scanContent`
     // calls (e.g. across `await` in a worker pool) never share `lastIndex`.
@@ -609,6 +629,10 @@ export class SecretScanner {
       });
     }
 
+    // Where each URL rule matched, so a URL it did not match can be told apart
+    // (see the shape check after the loop).
+    const urlCoverage: Array<[number, number]> = [];
+
     for (const [type, entry] of patternsForRun) {
       const { regex, severity, minEntropy, aggressivePlaceholder, connectionString, valueBearing } =
         entry;
@@ -618,36 +642,69 @@ export class SecretScanner {
       while ((match = regex.exec(content)) !== null) {
         const rawValue = match[1] ?? match[0];
         const fullMatch = match[0];
+        if (connectionString === true) urlCoverage.push([match.index, match.index + fullMatch.length]);
 
-        // Ahead of the entropy gate on purpose. Shannon entropy ignores
-        // character order, so a hand-typed alphabet run scores near the maximum
-        // for its length and sails through. This runs for vendor-anchored rules
-        // too. They have no entropy gate at all, and that is exactly where the
-        // alphabet-run fixtures produced criticals. Safe there because a real
-        // provider key is generated randomly and cannot be the alphabet.
-        //
-        // That safety argument does not hold for rules whose value a person
-        // types, where a run is a weak password rather than a fake one, so
-        // those rules are exempt. See HUMAN_CHOSEN_VALUE_IDS.
-        if (!HUMAN_CHOSEN_VALUE_IDS.has(type) && isSequentialRunPlaceholder(rawValue)) {
-          continue;
-        }
+        // In a run that honours nothing the repository supplies (`mark`), a filter
+        // keyed on the repository's own path or surrounding text keeps the match
+        // and names itself on it instead of dropping it.
+        const keepFiltered = opts?.inlineDirectives === 'mark';
+        let ctxFilter: ContextFilterKind | undefined;
+        // The URL rules and the Azure rule have no capture group: the whole match is
+        // text the repository wrote (user, host, database, query, account name)
+        // around the secret. Where that text is not trusted, none of the value
+        // filters (substring markers, user equals password, host rules, alphabet
+        // runs) is applied to them: a match is a counted placeholder decline only
+        // when its password is EXACTLY a known placeholder or template and nothing
+        // in its token can make a driver read something else (see
+        // `isExactPlaceholderUrl`). Everything else is kept, and one the old
+        // substring logic would have declined says so (`url-context`).
+        const urlRule = keepFiltered && (connectionString === true || type === 'azure-storage');
+        if (urlRule) {
+          const end = Math.max(match.index + fullMatch.length, urlTokenEnd(content, match.index));
+          if (isExactPlaceholderUrl(type, content.slice(match.index, end))) {
+            this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index, type);
+            continue;
+          }
+          const d = connectionString === true ? connectionStringDeclines(fullMatch) : { host: false, password: false };
+          if (
+            isPlaceholderSecret(rawValue, { aggressive: aggressivePlaceholder === true }) ||
+            isRedactedTemplateValue(rawValue) ||
+            d.host ||
+            d.password
+          ) {
+            ctxFilter = 'url-context';
+          }
+        } else {
+          // Ahead of the entropy gate on purpose. Shannon entropy ignores
+          // character order, so a hand-typed alphabet run scores near the maximum
+          // for its length and sails through. This runs for vendor-anchored rules
+          // too. They have no entropy gate at all, and that is exactly where the
+          // alphabet-run fixtures produced criticals. Safe there because a real
+          // provider key is generated randomly and cannot be the alphabet.
+          //
+          // That safety argument does not hold for rules whose value a person
+          // types, where a run is a weak password rather than a fake one, so
+          // those rules are exempt. See HUMAN_CHOSEN_VALUE_IDS.
+          if (!HUMAN_CHOSEN_VALUE_IDS.has(type) && isSequentialRunPlaceholder(rawValue)) {
+            continue;
+          }
 
-        const threshold = minEntropy ?? (minEntropy === 0 ? 0 : undefined);
-        if (threshold !== undefined && shannonEntropy(rawValue) < threshold) {
-          continue;
-        }
+          const threshold = minEntropy ?? (minEntropy === 0 ? 0 : undefined);
+          if (threshold !== undefined && shannonEntropy(rawValue) < threshold) {
+            continue;
+          }
 
-        // Suppress documentation samples / test fixtures (e.g. AWS's
-        // `AKIAIOSFODNN7EXAMPLE`, `password: 'testPass1234'`). The aggressive
-        // tier only applies to the low-precision generic patterns.
-        if (isPlaceholderSecret(rawValue, { aggressive: aggressivePlaceholder === true })) {
-          this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index);
-          continue;
-        }
+          // Suppress documentation samples / test fixtures (e.g. AWS's
+          // `AKIAIOSFODNN7EXAMPLE`, `password: 'testPass1234'`). The aggressive
+          // tier only applies to the low-precision generic patterns.
+          if (isPlaceholderSecret(rawValue, { aggressive: aggressivePlaceholder === true })) {
+            this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index, type);
+            continue;
+          }
 
-        if (isRedactedTemplateValue(rawValue)) {
-          continue;
+          if (isRedactedTemplateValue(rawValue)) {
+            continue;
+          }
         }
 
         if (GENERIC_ASSIGNMENT_IDS.has(type) && isEnvVarNameToken(rawValue)) {
@@ -660,19 +717,25 @@ export class SecretScanner {
           continue;
         }
 
+        // In a run that honours nothing the repository supplies (`mark`), a filter
+        // keyed on the repository's own path or surrounding text keeps the match
+        // and names itself on it instead of dropping it.
         if (
           GENERIC_ASSIGNMENT_IDS.has(type) &&
-          opts?.filePath?.endsWith('.py') &&
+          opts?.filePath !== undefined &&
+          isPythonPath(opts.filePath) &&
           isInsidePythonTripleQuoted(content, match.index)
         ) {
-          continue;
+          if (!keepFiltered) continue;
+          ctxFilter = 'python-triple-quoted';
         }
 
         // Suppress local/dev/example/placeholder connection strings -- the
         // dominant FP source on real repos (docker-compose, `.env.example`,
-        // test fixtures all carry `postgres://user:pass@localhost/db`).
-        if (connectionString === true && isNonSecretConnectionString(fullMatch)) {
-          this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index);
+        // test fixtures all carry `postgres://user:pass@localhost/db`). Not under
+        // `mark`: there the exact-placeholder rule above decides.
+        if (connectionString === true && !urlRule && isNonSecretConnectionString(fullMatch)) {
+          this.notePlaceholderSkip(placeholderRaw, lineIndex, match.index, type);
           continue;
         }
 
@@ -694,7 +757,9 @@ export class SecretScanner {
           type === 'ssh-private-key' &&
           isPemHeaderWithoutBody(content, match.index + fullMatch.length)
         ) {
-          continue;
+          // Decided by the text that follows the header, which the repository chose.
+          if (!keepFiltered) continue;
+          ctxFilter ??= 'pem-no-body';
         }
 
         // Suppress unquoted assignments whose "value" is actually a function
@@ -708,7 +773,8 @@ export class SecretScanner {
           GENERIC_ASSIGNMENT_IDS.has(type) &&
           content[match.index + fullMatch.length] === '('
         ) {
-          continue;
+          if (!keepFiltered) continue;
+          ctxFilter ??= 'call-follows';
         }
 
         // Suppress unquoted assignments whose "value" is a bare reference to
@@ -721,7 +787,8 @@ export class SecretScanner {
           const charBefore = valueStart > 0 ? fullMatch[valueStart - 1] : '';
           const quoted = charBefore === '"' || charBefore === "'";
           if (!quoted && isCodeIdentifierReference(rawValue)) {
-            continue;
+            if (!keepFiltered) continue;
+            ctxFilter ??= 'identifier-reference';
           }
         }
 
@@ -732,16 +799,18 @@ export class SecretScanner {
           opts?.filePath &&
           shouldSuppressDocContextMatch(
             type,
-            contextPathFor(opts.filePath, opts.pathRoot),
+            contextPathFor(opts.filePath, opts.pathRoot, opts.lexicalPaths),
             rawValue,
             fullMatch,
             lineContent,
           )
         ) {
-          continue;
+          if (!keepFiltered) continue;
+          ctxFilter = 'doc-context';
         }
 
-        if (ignoredLines.has(line)) {
+        const directiveCovers = ignoredLines.has(line);
+        if (directiveCovers && opts?.inlineDirectives !== 'mark') {
           // A genuine finding (it passed every filter above) hidden only by an
           // ignore directive. Record it for the caller's tally before dropping.
           if (suppressedByDirective) {
@@ -771,6 +840,52 @@ export class SecretScanner {
           ...(valueBearing
             ? { valueDigest: createHash('sha256').update(fullMatch, 'utf8').digest('hex') }
             : {}),
+          ...(directiveCovers ? { inlineDirectiveNotHonoured: true as const } : {}),
+          ...(ctxFilter !== undefined ? { contextFilterNotHonoured: ctxFilter } : {}),
+        });
+      }
+    }
+
+    // Fail closed on shape. A URL with userinfo that no URL rule matched (a user
+    // holding `@` or `'`, the Azure single-server `user@server:pw@host` form,
+    // anything else the rules' character classes reject) must not read as clean,
+    // so under `mark` it is kept as a finding for its scheme's rule, `url-context`.
+    if (opts?.inlineDirectives === 'mark') {
+      const shape = /\b(postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?):\/\//gi;
+      let sm: RegExpExecArray | null;
+      while ((sm = shape.exec(content)) !== null) {
+        // The same token boundary the exact-placeholder test uses.
+        const start = sm.index;
+        const end = urlTokenEnd(content, start);
+        if (!urlUserinfoUnclear(content.slice(start + sm[1].length + 3, end))) continue;
+        if (urlCoverage.some(([a, b]) => a < end && start < b)) continue;
+        const scheme = sm[1].toLowerCase();
+        const rule = scheme.startsWith('postgres')
+          ? 'postgresql-url'
+          : scheme === 'mysql'
+            ? 'mysql-url'
+            : scheme.startsWith('mongodb')
+              ? 'mongodb-url'
+              : 'redis-url';
+        const entry = patternsForRun.get(rule);
+        if (entry === undefined) continue;
+        const token = content.slice(start, end);
+        if (isExactPlaceholderUrl(rule, token)) {
+          this.notePlaceholderSkip(placeholderRaw, lineIndex, start, rule);
+          continue;
+        }
+        const line = this.lineFromIndex(lineIndex, start);
+        raw.push({
+          type: rule,
+          value: this.maskValue(token),
+          line,
+          column: start - (lineIndex[line - 1] ?? 0),
+          offset: start,
+          matchLength: token.length,
+          severity: entry.severity,
+          valueDigest: createHash('sha256').update(token, 'utf8').digest('hex'),
+          ...(ignoredLines.has(line) ? { inlineDirectiveNotHonoured: true as const } : {}),
+          contextFilterNotHonoured: 'url-context' as const,
         });
       }
     }
@@ -782,6 +897,8 @@ export class SecretScanner {
         seen.add(hit.offset);
         opts.placeholderSkips.count += 1;
         opts.placeholderSkips.lines.push(hit.line);
+        (opts.placeholderSkips.rules ??= []).push(hit.rule);
+        (opts.placeholderSkips.columns ??= []).push(hit.column);
       }
     }
 
@@ -803,8 +920,8 @@ export class SecretScanner {
     // the same reason, and returns what dedupe displaced from a winner it
     // demoted (design 2026-10-17 data files, section 4.4).
     const { kept, displaced } = this.deduplicateTracked(raw);
-    const tested = this.applyInlineTestSeverity(kept, content, opts?.filePath);
-    const demoted = this.applyContentDemotion(tested, displaced, content, opts?.filePath);
+    const tested = this.applyInlineTestSeverity(kept, content, opts?.filePath, opts?.inlineDirectives === 'mark');
+    const demoted = this.applyContentDemotion(tested, displaced, content, opts?.filePath, opts?.inlineDirectives === 'mark');
     return this.assignGroupSlots(demoted, content);
   }
 
@@ -827,6 +944,7 @@ export class SecretScanner {
     displaced: SecretMatch[][],
     content: string,
     filePath: string | undefined,
+    recordOriginal = false,
   ): SecretMatch[] {
     if (matches.length === 0) return matches;
     let index: RunIndex | undefined;
@@ -861,7 +979,7 @@ export class SecretScanner {
     if (restore.length === 0) return out;
 
     // Restored matches get the in-file test step they would have had if kept.
-    const restored = this.applyInlineTestSeverity(restore, content, filePath);
+    const restored = this.applyInlineTestSeverity(restore, content, filePath, recordOriginal);
     const overlapsKept = (r: SecretMatch): boolean =>
       notDemoted.some(k => r.offset < k.offset + k.matchLength && k.offset < r.offset + r.matchLength);
     const survivors = this.deduplicateMatches(restored).filter(r => !overlapsKept(r));
@@ -904,6 +1022,7 @@ export class SecretScanner {
     matches: SecretMatch[],
     content: string,
     filePath: string | undefined,
+    recordOriginal = false,
   ): SecretMatch[] {
     if (matches.length === 0 || !filePath) return matches;
     const regions = findInlineTestRegions(content, filePath);
@@ -915,7 +1034,11 @@ export class SecretScanner {
         LOW_PRECISION_PATH_DOWNGRADE_IDS.has(m.type) &&
         isInsideInlineTestRegion(regions, m.offset)
       ) {
-        return { ...m, severity: 'low' as const };
+        return {
+          ...m,
+          severity: 'low' as const,
+          ...(recordOriginal ? { severityBeforePathRules: m.severity } : {}),
+        };
       }
       return m;
     });
@@ -938,12 +1061,14 @@ export class SecretScanner {
    * Index position 0 = start of line 1.
    */
   private notePlaceholderSkip(
-    into: Array<{ line: number; offset: number }> | null,
+    into: Array<{ line: number; offset: number; rule: string; column: number }> | null,
     lineIndex: number[],
     index: number,
+    rule: string,
   ): void {
     if (into === null) return;
-    into.push({ line: this.lineFromIndex(lineIndex, index), offset: index });
+    const line = this.lineFromIndex(lineIndex, index);
+    into.push({ line, offset: index, rule, column: index - (lineIndex[line - 1] ?? 0) + 1 });
   }
 
   private buildLineIndex(content: string): number[] {

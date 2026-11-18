@@ -141,18 +141,25 @@ export function isPasswordHash(value: string): boolean {
  *
  * UI code and documentation carry the header on its own as a label or an
  * input placeholder (`const privateKeyBeginsWith = '-----BEGIN RSA PRIVATE
- * KEY-----'`). A header with no body leaks nothing. Real PEM files wrap their
- * base64 at 64 characters per line, so requiring a single long base64 run
- * right after the header separates the two cleanly, and still works when the
- * key is embedded in JSON with escaped newlines.
+ * KEY-----'`). A header with no body leaks nothing. A body is base64 and
+ * nothing else, however the author folded it: one long line, the usual 64 or
+ * 76 columns, or any narrower fold (`openssl` reads a key refolded at 16 or 32
+ * columns just the same). So a body is either a single base64 token of 40 or
+ * more characters, or a run of single-token base64 lines of one width (the last
+ * may be shorter) whose joined text is long and mixed enough not to be prose.
+ * Indentation, CRLF, comment leaders and the JSON `\n` escape are peeled off
+ * first.
  */
 export function isPemHeaderWithoutBody(content: string, headerEndOffset: number): boolean {
   // Judge the text between this header and the END marker that closes it (or
   // the next BEGIN, or the cap when neither exists). A fixed 400-character
   // window missed any key whose armor headers ran long.
   let region = content.slice(headerEndOffset, headerEndOffset + PEM_REGION_CAP);
-  const stop = region.search(/-----(?:END|BEGIN) /);
-  if (stop >= 0) region = region.slice(0, stop);
+  const stop = /-----(END|BEGIN) /.exec(region);
+  // A matching END footer makes the whole span between the two armor lines the
+  // body, at whatever widths the author folded it (see the end of this function).
+  const hasFooter = stop !== null && stop[1] === 'END';
+  if (stop !== null) region = region.slice(0, stop.index);
 
   // Newlines can hide as XML character references.
   region = region.replace(/&#(?:x0*[aAdD]|0*1[03]);/g, '\n');
@@ -163,20 +170,80 @@ export function isPemHeaderWithoutBody(content: string, headerEndOffset: number)
   // in JSON, YAML or a string literal.
   const lines = region.split(/\r?\n|\\r\\n|\\n|\\r/);
 
+  // Single-token base64 lines in a row: a candidate narrow-folded body.
+  let run: string[] = [];
+  const runIsBody = (): boolean => {
+    if (run.length < 2) return false;
+    // The fold width is the longest line but the last. Peeling a token's
+    // trailing `+` (list syntax, in `cleanPemToken`) can shorten a base64 line
+    // by a character or two, so a line within two of the width is the same width.
+    let width = 0;
+    for (let i = 0; i < run.length - 1; i++) width = Math.max(width, run[i].length);
+    if (width < 14) return false;
+    for (let i = 0; i < run.length - 1; i++) if (run[i].length < width - 2) return false;
+    if (run[run.length - 1].length > width) return false;
+    const joined = run.join('');
+    return joined.length >= 40 && /[a-z]/.test(joined) && /[A-Z]/.test(joined) && /[0-9+/]/.test(joined);
+  };
+
+  // Between a header and its footer: every non-blank line one base64 token.
+  const between: string[] = [];
+  let betweenOk = true;
+
+  // A truncated example: an ellipsis line (`...`, the Unicode ellipsis, `[...]`,
+  // `<snip>`) between the armor lines, with only a little base64 around it. It
+  // would otherwise read as a blank line. The cap is 48 base64 characters, counted
+  // BEFORE `cleanPemToken` peels a trailing `+` (list syntax, but also a base64
+  // character: about one line in 64 ends in one). The smallest real body is 64
+  // (Ed25519 PKCS8), so 48 leaves 16 characters of margin for that peeling and
+  // for line ends the author trimmed, and a documentation example (a few lines,
+  // truncated) stays under it. A full-length body with a stray ellipsis line is
+  // not declined, so the line cannot be used to hide a whole key.
+  if (hasFooter && lines.some(isEllipsisLine)) {
+    let base64Chars = 0;
+    for (const line of lines) {
+      if (isEllipsisLine(line)) continue;
+      for (const raw of line.split(/\s+/)) {
+        if (!/^[A-Za-z0-9+/]+={0,2}$/.test(cleanPemToken(raw))) continue;
+        base64Chars += raw.replace(/^[^A-Za-z0-9+/]+|[^A-Za-z0-9+/=]+$/g, '').length;
+      }
+    }
+    if (base64Chars < ELLIPSIS_BODY_CAP) return true;
+  }
+
+  // The last line with anything on it: only there may a padding-only line stand.
+  let lastLineWithTokens = -1;
+  lines.forEach((l, i) => {
+    if (l.split(/\s+/).some(r => cleanPemToken(r) !== '')) lastLineWithTokens = i;
+  });
+
+  let lineNo = -1;
   for (const line of lines) {
+    lineNo++;
     const tokens: string[] = [];
     for (const raw of line.split(/\s+/)) {
       const token = cleanPemToken(raw);
       if (token !== '') tokens.push(token);
     }
     if (tokens.length === 0) continue;
+    // A `=` or `==` on a line of its own is base64 padding folded onto a new line,
+    // and that is a body line only as the LAST one; it adds nothing to the length.
+    if (tokens.length === 1 && /^={1,2}$/.test(tokens[0])) {
+      if (lineNo !== lastLineWithTokens) betweenOk = false;
+    } else if (tokens.length === 1 && /^[A-Za-z0-9+/]+={0,2}$/.test(tokens[0])) between.push(tokens[0]);
+    // An RFC 1421 header of a legacy encrypted key (`Proc-Type: 4,ENCRYPTED`, `DEK-Info: ...`).
+    else if (!/^\s*[A-Za-z][A-Za-z0-9-]*:\s/.test(line)) betweenOk = false;
 
-    // A PEM body wraps base64 at 64 characters, so a body line is base64 and
-    // nothing else, after comment markers and string syntax are peeled off.
-    // Requiring EVERY token on the line to be base64 is what separates it from
-    // surrounding code and prose: `ssh-rsa AAAA... user@host` and
-    // `const x = someLongIdentifier;` each carry a token that is not.
-    if (!tokens.every(t => /^[A-Za-z0-9+/]+={0,2}$/.test(t))) continue;
+    // A body line is base64 and nothing else, after comment markers and string
+    // syntax are peeled off. Requiring EVERY token on the line to be base64 is
+    // what separates it from surrounding code and prose: `ssh-rsa AAAA...
+    // user@host` and `const x = someLongIdentifier;` each carry a token that is
+    // not.
+    if (!tokens.every(t => /^[A-Za-z0-9+/]+={0,2}$/.test(t))) {
+      if (runIsBody()) return false;
+      run = [];
+      continue;
+    }
 
     // Length and character mix separate a body from English: at least 40
     // characters, mixed case, and a digit or + or /. A 64-character random
@@ -194,9 +261,37 @@ export function isPemHeaderWithoutBody(content: string, headerEndOffset: number)
       }
     }
     if (bodyChars > 0 && bodyChars / allChars >= 0.85) return false;
+
+    if (tokens.length === 1) {
+      run.push(tokens[0]);
+    } else {
+      if (runIsBody()) return false;
+      run = [];
+    }
   }
 
+  if (runIsBody()) return false;
+
+  // With a footer the body is whatever lies between the armor lines: parsers
+  // (OpenSSL 3 among them) accept lines of any width, so an author who folds a
+  // key unevenly must not make it read as a label. Every non-blank line has to
+  // be one base64 token (a sentence is several), and the joined text has to be
+  // long enough to be key material and mixed the way base64 is, which English
+  // words are not (no digit, no `+` or `/`).
+  if (hasFooter && betweenOk) {
+    const joined = between.join('');
+    if (joined.length >= 64 && /[a-z]/.test(joined) && /[A-Z]/.test(joined) && /[0-9+/]/.test(joined)) return false;
+  }
   return true;
+}
+
+/** Base64 characters around an ellipsis line below which the span is a truncated example. */
+const ELLIPSIS_BODY_CAP = 48;
+
+/** A line that only marks something left out: `...`, the Unicode ellipsis, `[...]`, `<snip>`. */
+function isEllipsisLine(line: string): boolean {
+  const t = line.replace(/^[\s#>;*/"'`,[(<-]+|[\s"'`,;\])>]+$/g, '');
+  return /^(?:\.{3,}|\u2026+|snip)$/i.test(t);
 }
 
 /** How far past a PEM header the body check looks when no END marker bounds it. */
@@ -445,29 +540,50 @@ export function isSampleJwt(token: string): boolean {
 }
 
 export function isNonSecretConnectionString(url: string): boolean {
-  const m = /^[a-z][a-z0-9+.-]*:\/\/([^:@/\s]+):([^@/\s]+)@([^:/?\s]+)/i.exec(url);
-  if (!m) return false;
+  const d = connectionStringDeclines(url);
+  return d.host || d.password;
+}
+
+/**
+ * Why {@link isNonSecretConnectionString} declines a connection string, kept
+ * apart: the HOST is text the repository chose (`db`, `localhost`, `x.local`),
+ * while a placeholder PASSWORD is the credential itself.
+ */
+export function connectionStringDeclines(url: string): { host: boolean; password: boolean } {
+  const m = /^[a-z][a-z0-9+.-]*:\/\/([^:@/\s]*):([^@/\s]+)@([^:/?\s]+)/i.exec(url);
+  if (!m) return { host: false, password: false };
 
   const user = m[1];
   const pass = m[2];
   const host = m[3].toLowerCase();
 
   // 1. Non-routable / local / docker-service / reserved-TLD host.
-  if (LOCAL_HOSTS.has(host)) return true;
-  if (LOCAL_TLD_SUFFIXES.some(suffix => host.endsWith(suffix))) return true;
-  // Bare single-token host with no dot (and not a raw IPv4) is a docker-compose
-  // service name (`mysql`, `db`, `postgres`) -- local to a compose network.
-  if (!host.includes('.') && !host.includes(':') && !/^\d+$/.test(host)) return true;
+  const hostDeclines =
+    LOCAL_HOSTS.has(host) ||
+    LOCAL_TLD_SUFFIXES.some(suffix => host.endsWith(suffix)) ||
+    // Bare single-token host with no dot (and not a raw IPv4) is a docker-compose
+    // service name (`mysql`, `db`, `postgres`) -- local to a compose network.
+    (!host.includes('.') && !host.includes(':') && !/^\d+$/.test(host));
 
   // 2. Placeholder / default password.
-  const p = pass.toLowerCase();
-  if (PLACEHOLDER_PASSWORDS.has(p)) return true;
-  if (user.toLowerCase() === p) return true;            // root:root, prisma:prisma
-  if (/^[A-Z][A-Z0-9_]*$/.test(pass)) return true;      // USER:PASSWORD, DBPASS
-  if (pass.startsWith('$') || pass.startsWith('<') || pass.startsWith('{')) return true; // ${DB_PASS}, <pw>
-  if (isPlaceholderSecret(pass, { aggressive: true })) return true;
+  return { host: hostDeclines, password: passwordLooksPlaceholder(user, pass) };
+}
 
-  return false;
+/** Whether a connection string's password is a placeholder or a default (`root:root`, `USER:PASSWORD`, `${DB_PASS}`). */
+export function passwordLooksPlaceholder(user: string, pass: string): boolean {
+  const p = pass.toLowerCase();
+  return (
+    PLACEHOLDER_PASSWORDS.has(p) ||
+    user.toLowerCase() === p || // root:root, prisma:prisma
+    /^[A-Z][A-Z0-9_]*$/.test(pass) || // USER:PASSWORD, DBPASS
+    pass.startsWith('$') ||
+    pass.startsWith('<') ||
+    pass.startsWith('{') || // ${DB_PASS}, <pw>
+    /^\*+$/.test(pass) || // masked by Celery and Kombu: redis://:**@host
+    /^%[A-Za-z_][A-Za-z0-9_]*%$/.test(pass) || // %REDIS_PW% (Windows environment variable)
+    /^["'`][+.&][\w.$[\]()]+[+.&]["'`]$/.test(pass) || // '+pw+' (a string concatenation, no spaces)
+    isPlaceholderSecret(pass, { aggressive: true })
+  );
 }
 
 /**
@@ -494,4 +610,133 @@ export function isPlaceholderSecret(
   }
 
   return false;
+}
+
+/** The passwords a `--no-repo-controls` run accepts as placeholders, whole and case-insensitive. */
+const EXACT_PLACEHOLDER_WORDS = new Set([
+  'password',
+  'passwd',
+  'pass',
+  'pw',
+  'secret',
+  'changeme',
+  'change_me',
+  'example',
+  'test',
+  'dummy',
+  'placeholder',
+  'redacted',
+  'your_password',
+  'yourpassword',
+  'mypassword',
+]);
+
+/**
+ * Whether the inside of a template form reads as a NAME (`DB_PASSWORD`,
+ * `db.password`, `your-password`, `password 1`) and not as a secret wrapped in
+ * brackets: at most 64 characters; a letter or underscore first; then letters,
+ * digits, `_`, `.`, `-` or single spaces; and, with the separators removed, one
+ * case of letters only (so no camelCase, no mixed-case random text) plus at
+ * most three digits in all (so no digit run of four or more).
+ */
+export function isNameShaped(inside: string): boolean {
+  if (inside.length === 0 || inside.length > 64) return false;
+  if (!/^[A-Za-z_][A-Za-z0-9_.\- ]*$/.test(inside) || / {2}/.test(inside)) return false;
+  const core = inside.replace(/[_.\- ]/g, '');
+  const digits = core.replace(/[^0-9]/g, '').length;
+  const letters = core.replace(/[0-9]/g, '');
+  const oneCase = letters === letters.toLowerCase() || letters === letters.toUpperCase();
+  return digits <= 3 && oneCase;
+}
+
+/** The inside of a `${X}`, `$X`, `<X>`, `{X}`, `{{X}}` or `$(X)` template, or undefined. */
+function templateInside(pass: string): string | undefined {
+  return (
+    /^\$\{([^{}]*)\}$/.exec(pass)?.[1] ??
+    /^\$([A-Za-z_][A-Za-z0-9_]*)$/.exec(pass)?.[1] ??
+    /^<([^<>]*)>$/.exec(pass)?.[1] ??
+    /^\{\{ ?([^{}]*?) ?\}\}$/.exec(pass)?.[1] ??
+    /^\{([^{}]*)\}$/.exec(pass)?.[1] ??
+    /^\$\(([^()]*)\)$/.exec(pass)?.[1]
+  );
+}
+
+/** A password that is exactly a placeholder word, a run of x or *, or entirely a name-shaped template. */
+export function isExactPlaceholderPassword(pass: string): boolean {
+  if (EXACT_PLACEHOLDER_WORDS.has(pass.toLowerCase())) return true;
+  if (/^x{3,}$/i.test(pass) || /^\*+$/.test(pass)) return true;
+  const inside = templateInside(pass);
+  return inside !== undefined && isNameShaped(inside);
+}
+
+/**
+ * Where the token that starts at `start` ends: at whitespace, a double quote, a
+ * backtick, or a single quote that closes a literal (followed by `,` `;` `)` `]`
+ * `}` `>`, whitespace or the end). A single quote inside userinfo (`o'neil`)
+ * does not end it. With no terminator the token runs to the end of the content.
+ * The one boundary the exact-placeholder test and the shape check share.
+ */
+export function urlTokenEnd(content: string, start: number): number {
+  for (let i = start; i < content.length; i++) {
+    const c = content[i];
+    if (/\s/.test(c) || c === '"' || c === '`') return i;
+    if (c === "'") {
+      const next = content[i + 1];
+      if (next === undefined || /[\s,;)\]}>]/.test(next)) return i;
+    }
+  }
+  return content.length;
+}
+
+/**
+ * Whether a URL token that no rule matched, or matched only in part, has
+ * userinfo whose end is unclear or whose password the rules did not read, so it
+ * has to be kept: after `scheme://` there is a `:` and, at least one character
+ * later, an `@`. If the part before the first `/`, `?` or `#` holds no `@`, the
+ * only `@` is after a `/`, `?` or `#`: that is a password containing `/` or a
+ * credential-less URL with an `@` in its path or query, and they cannot be told
+ * apart except by the port: a non-numeric text between the first `:` and that
+ * `/`, `?` or `#` (`user:pa/ss@host`) is kept, a numeric one (`host:6379/0?x=a@b`)
+ * is a port and is not. A password of digits only before a `/` is the gap.
+ */
+export function urlUserinfoUnclear(afterScheme: string): boolean {
+  const colon = afterScheme.indexOf(':');
+  if (colon < 0) return false;
+  const at = afterScheme.indexOf('@', colon + 1);
+  if (at < 0 || at === colon + 1) return false;
+  const cut = afterScheme.search(/[/?#]/);
+  const authority = cut < 0 ? afterScheme : afterScheme.slice(0, cut);
+  if (authority.includes('@')) return true;
+  const portOrPassword = afterScheme.slice(colon + 1, cut < 0 ? afterScheme.length : cut);
+  return !/^\d*$/.test(portOrPassword);
+}
+
+/**
+ * Whether a whole URL token (from the scheme to the next whitespace or quote) is
+ * a counted placeholder in a run that does not trust the repository's text. All
+ * of: the token has no `%` (an encoded character the driver decodes), no `?` and
+ * no `#` (a query or fragment a driver reads a password from) and exactly one
+ * `@` (so the end of the userinfo is not a guess); and the password, taken
+ * whole, is exactly a placeholder word or template. No substring marker, no
+ * "user equals password", no host rule: all of those are text the repository
+ * chooses. For the Azure rule: the one `AccountKey=` value is exactly a
+ * placeholder form. Anything else is kept.
+ */
+export function isExactPlaceholderUrl(type: string, token: string): boolean {
+  if (type === 'azure-storage') {
+    // `;`-separated `name=value` pairs, names compared in any case: the key
+    // appearing more than once in any casing cannot be told apart, so it is kept.
+    const keys: string[] = [];
+    for (const pair of token.split(';')) {
+      const eq = pair.indexOf('=');
+      if (eq > 0 && pair.slice(0, eq).trim().toLowerCase() === 'accountkey') keys.push(pair.slice(eq + 1));
+    }
+    // Also kept: `accountkey=` spelled anywhere else in the token, as text inside another value.
+    const spelled = (token.match(/accountkey=/gi) ?? []).length;
+    return keys.length === 1 && spelled === 1 && isExactPlaceholderPassword(keys[0]);
+  }
+  if (/[%?#]/.test(token)) return false;
+  if (token.split('@').length !== 2) return false;
+  const m = /^[a-z][a-z0-9+.-]*:\/\/[^:@/]*:([^@]*)@/i.exec(token);
+  return m !== null && isExactPlaceholderPassword(m[1]);
 }

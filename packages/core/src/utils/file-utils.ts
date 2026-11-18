@@ -603,6 +603,8 @@ export interface PullRequestSkips {
    * was is now visible.
    */
   typeFilteredFiles: number;
+  /** The absolute paths of those files, for a mode that lists what it did not scan. */
+  typeFilteredPaths?: string[];
   /**
    * Files dropped by the config's `ignore` list, which in this mode is the BASE
    * ref's. A declared skip, counted so a reader sees how much the written
@@ -758,6 +760,64 @@ export function getPullRequestFilesToScan(
   skipped.unreadable = unreadable;
   skipped.nestedVendored = nestedVendored;
   skipped.diskNotRegular = diskNotRegular;
+  return out;
+}
+
+/**
+ * The file set of `scan --no-repo-controls`: the HEAD tree's regular files
+ * under `scope` (a directory, or one file), filtered by the built-in rules
+ * only, and never by anything on disk.
+ *
+ * The same built-in filtering as {@link getPullRequestFilesToScan}: a
+ * vendored directory name is skipped only as a direct child of the scan root,
+ * and lockfiles, logs, source maps and generated artifacts are skipped by
+ * name; both are counted. What it leaves out on purpose: no config `ignore`
+ * list (there is no config), no `.gitignore`, and no `lstat` of the working
+ * tree, because a file deleted or replaced on disk is still in HEAD and its
+ * blob is what this mode judges. `scopeIsFile` is decided by the caller from
+ * the HEAD listing, not from the disk.
+ */
+export function getHeadTreeFilesToScan(
+  scope: string,
+  scopeIsFile: boolean,
+  headTreeFiles: Iterable<string>,
+  skipped: PullRequestSkips = { dirCount: 0, dirNames: [], typeFilteredFiles: 0 },
+): string[] {
+  const target = path.resolve(scope);
+  const skippedNames = new Set<string>();
+  const nestedVendored: string[] = [];
+  let typeFiltered = 0;
+  const typeFilteredPaths: string[] = [];
+  const out: string[] = [];
+  for (const file of headTreeFiles) {
+    const abs = path.resolve(file);
+    let underNestedVendored = false;
+    if (scopeIsFile) {
+      if (abs !== target) continue;
+    } else {
+      const rel = path.relative(target, abs);
+      if (rel === '' || climbsOut(rel) || path.isAbsolute(rel)) continue;
+      const segments = rel.split(path.sep);
+      if (segments.length > 1 && shouldIgnoreDirectory(segments[0])) {
+        skippedNames.add(segments[0]);
+        continue;
+      }
+      underNestedVendored = segments.slice(1, -1).some(shouldIgnoreDirectory);
+    }
+    if (shouldIgnoreFile(abs)) {
+      typeFiltered++;
+      typeFilteredPaths.push(abs);
+      continue;
+    }
+    if (underNestedVendored) nestedVendored.push(abs);
+    out.push(abs);
+  }
+  skipped.dirNames = [...skippedNames].sort();
+  skipped.dirCount = skipped.dirNames.length;
+  skipped.typeFilteredFiles = typeFiltered;
+  skipped.typeFilteredPaths = typeFilteredPaths;
+  skipped.configIgnoredFiles = 0;
+  skipped.nestedVendored = nestedVendored;
   return out;
 }
 
@@ -1140,6 +1200,23 @@ function isGeneratedArtifact(basename: string): boolean {
     basename === '.pnp.cjs' ||
     basename === '.pnp.loader.mjs'
   );
+}
+
+/**
+ * Why {@link shouldIgnoreFile} skips a name, as the label a report gives: one
+ * label per rule, so a report can group the skips and one noisy rule cannot
+ * hide another.
+ */
+export function builtInSkipReason(filePath: string): string {
+  const ext = path.extname(filePath);
+  const basename = path.basename(filePath);
+  let what = 'built-in name rule';
+  if (ext === '.lock' || basename === 'package-lock.json' || basename === 'pnpm-lock.yaml' || basename === 'yarn.lock') {
+    what = 'lockfile';
+  } else if (ext === '.log') what = 'log file';
+  else if (ext === '.map') what = 'source map';
+  else if (isGeneratedArtifact(basename)) what = 'minified or bundled file';
+  return `${what}, skipped by a built-in name rule`;
 }
 
 function shouldIgnoreFile(

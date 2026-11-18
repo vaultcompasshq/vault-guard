@@ -11,6 +11,7 @@ import {
 } from './match-fingerprint';
 import { GROUP_LISTED, GROUP_MIN } from './utils/data-shape';
 import { climbsOut } from './utils/dot-dot';
+import type { HeadOnlyReport, RepoControlsReport } from './no-repo-controls';
 
 /** One file's scan outcome -- shared by CLI, MCP, and SARIF/JSON formatters. */
 export interface FileScanResult {
@@ -215,7 +216,10 @@ function slotKey(m: SecretMatch): string | undefined {
  * `contentRoot` is the root the content fingerprint is keyed on, so a group
  * id never reads the displayed path.
  */
-export function formGroups(results: FileScanResult[], opts: { contentRoot?: string } = {}): FormedGroups {
+export function formGroups(
+  results: FileScanResult[],
+  opts: { contentRoot?: string; lexicalPaths?: boolean } = {},
+): FormedGroups {
   const root = opts.contentRoot ?? process.cwd();
   const byFile: MatchGroup[][] = [];
   const memberOf: Array<Array<MatchGroup | undefined>> = [];
@@ -234,7 +238,7 @@ export function formGroups(results: FileScanResult[], opts: { contentRoot?: stri
     let rel: string | undefined;
     for (const idx of buckets.values()) {
       if (idx.length < GROUP_MIN) continue;
-      rel ??= contentRelPath(r.file, root);
+      rel ??= contentRelPath(r.file, root, opts.lexicalPaths === true);
       const ms = idx.map(i => r.matches[i]).sort((a, b) => a.line - b.line || a.column - b.column);
       const m0 = ms[0];
       const slot = m0.groupSlot;
@@ -252,7 +256,7 @@ export function formGroups(results: FileScanResult[], opts: { contentRoot?: stri
           // value digest, its root-relative positional fingerprint otherwise.
           m.valueDigest !== undefined
             ? contentFingerprint(rel as string, m.type, m.valueDigest)
-            : rootPositionalFingerprint(root, r.file, m),
+            : rootPositionalFingerprint(root, r.file, m, opts.lexicalPaths === true),
         )
         .sort();
       const digests = new Set<string>();
@@ -371,6 +375,14 @@ export interface JsonOutput {
   run?: JsonRunMetadata;
   /** Present only on a pull-request run. See {@link TrustBaseReport}. */
   trustBase?: TrustBaseReport;
+  /** Present only on a `--no-repo-controls` run. See {@link RepoControlsReport}. */
+  repoControls?: RepoControlsReport;
+  /** Present only on a `--no-repo-controls` run: the HEAD commit judged. */
+  scannedCommit?: string;
+  scannedRoot?: string;
+  placeholderSkips?: HeadOnlyReport['placeholderSkips'];
+  /** Present only on a `--no-repo-controls` run: paths listed but not scanned. */
+  notScanned?: HeadOnlyReport['notScanned'];
   results: Array<{
     file: string;
     matches: Array<{
@@ -397,6 +409,12 @@ export interface JsonOutput {
       demotion?: ContentDemotion;
       /** Present when the match is a member of a group in `groups`. */
       group_id?: string;
+      /** `--no-repo-controls` only: an inline ignore directive covers this match and was not honoured. */
+      inline_directive_not_honoured?: true;
+      /** Which repository-chosen filter would have dropped this match (`--no-repo-controls` keeps it). */
+      context_filter_not_honoured?: string;
+      /** The severity before a path or in-file test rule lowered it (`--no-repo-controls`). */
+      severity_before_path_rules?: string;
     }>;
     /** Present only when the file has a group. Presentation: every member is also in `matches`. */
     groups?: MatchGroup[];
@@ -437,6 +455,8 @@ export interface FormatOptions {
    * inside git, the scan anchor outside it. Defaults to {@link cwd}.
    */
   contentRoot?: string;
+  /** Key every path lexically, with no filesystem call (`--no-repo-controls`). */
+  lexicalPaths?: boolean;
   /** Non-fatal diagnostics to include in structured output. */
   diagnostics?: Diagnostic[];
   /** Scan timing / coverage stats for JSON and SARIF `runs[].properties`. */
@@ -448,6 +468,19 @@ export interface FormatOptions {
    * has no artifact location and does not belong in `results`.
    */
   trustBase?: TrustBaseReport;
+  /**
+   * A `--no-repo-controls` run's statement that it honoured no control file,
+   * and which ones the HEAD tree holds. Emitted as a top-level `repoControls`
+   * block in JSON and as `runs[0].properties.repoControls` in SARIF, beside
+   * the run-level `vault_guard_run` properties.
+   */
+  repoControls?: RepoControlsReport;
+  /**
+   * A `--no-repo-controls` run's commit and the paths it did not scan
+   * (submodules). JSON `scannedCommit` and `notScanned` at the top level,
+   * SARIF `runs[0].properties` of the same names.
+   */
+  headOnly?: HeadOnlyReport;
 }
 
 /**
@@ -621,12 +654,15 @@ function contentKey(
   m: SecretMatch,
 ): string | undefined {
   const root = opts.contentRoot ?? fpCwd ?? process.cwd();
-  return contentFingerprintForMatch(root, file, m);
+  return contentFingerprintForMatch(root, file, m, opts.lexicalPaths === true);
 }
 
 /** The groups for a formatter call, keyed on the same root as the content fingerprint. */
 function groupsFor(results: FileScanResult[], opts: FormatOptions, fpCwd: string | null): FormedGroups {
-  return formGroups(results, { contentRoot: opts.contentRoot ?? fpCwd ?? process.cwd() });
+  return formGroups(results, {
+    contentRoot: opts.contentRoot ?? fpCwd ?? process.cwd(),
+    ...(opts.lexicalPaths ? { lexicalPaths: true } : {}),
+  });
 }
 
 /** `opts.run` with the four content counts of section 8.2, always present. */
@@ -647,6 +683,8 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
     },
     ...(run ? { run } : {}),
     ...(opts.trustBase ? { trustBase: opts.trustBase } : {}),
+    ...(opts.repoControls ? { repoControls: opts.repoControls } : {}),
+    ...(opts.headOnly ? { scannedCommit: opts.headOnly.scannedCommit, scannedRoot: opts.headOnly.scannedRoot, placeholderSkips: opts.headOnly.placeholderSkips, notScanned: opts.headOnly.notScanned } : {}),
     results: results.map(({ file, matches }, fi) => ({
       file: normalizeFilePath(file, opts.cwd, opts.scanRoot),
       matches: matches.map((m, mi) => {
@@ -664,6 +702,9 @@ export function formatJson(results: FileScanResult[], opts: FormatOptions = {}):
           ...(m.source !== undefined ? { source: m.source } : {}),
           ...(m.demotion !== undefined ? { demotion: m.demotion } : {}),
           ...(group !== undefined ? { group_id: group.group_id } : {}),
+          ...(m.inlineDirectiveNotHonoured ? { inline_directive_not_honoured: true as const } : {}),
+          ...(m.contextFilterNotHonoured !== undefined ? { context_filter_not_honoured: m.contextFilterNotHonoured } : {}),
+          ...(m.severityBeforePathRules !== undefined ? { severity_before_path_rules: m.severityBeforePathRules } : {}),
         };
       }),
       ...(groups.byFile[fi].length > 0 ? { groups: groups.byFile[fi] } : {}),
@@ -712,6 +753,9 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
         ? { 'vault-guard/demoted_from': m.demotion.from, 'vault-guard/demotion_reason': m.demotion.reason }
         : {}),
       ...(group !== undefined ? { 'vault-guard/group': group.group_id, 'vault-guard/group_size': group.members } : {}),
+      ...(m.inlineDirectiveNotHonoured ? { 'vault-guard/inline_directive_not_honoured': true } : {}),
+      ...(m.contextFilterNotHonoured !== undefined ? { 'vault-guard/context_filter_not_honoured': m.contextFilterNotHonoured } : {}),
+      ...(m.severityBeforePathRules !== undefined ? { 'vault-guard/severity_before_path_rules': m.severityBeforePathRules } : {}),
     };
     return Object.keys(p).length > 0 ? p : undefined;
   };
@@ -772,7 +816,7 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
         }))
       : undefined;
 
-  const runProps =
+  const vaultGuardRunProps =
     opts.run !== undefined
       ? {
           vault_guard_run: {
@@ -854,6 +898,16 @@ export function formatSarif(results: FileScanResult[], opts: FormatOptions = {})
             match_groups: run?.match_groups,
             grouped_matches: run?.grouped_matches,
           },
+        }
+      : undefined;
+  const runProps =
+    vaultGuardRunProps !== undefined || opts.repoControls !== undefined || opts.headOnly !== undefined
+      ? {
+          ...(vaultGuardRunProps ?? {}),
+          ...(opts.repoControls ? { repoControls: opts.repoControls } : {}),
+          ...(opts.headOnly
+            ? { scannedCommit: opts.headOnly.scannedCommit, scannedRoot: opts.headOnly.scannedRoot, placeholderSkips: opts.headOnly.placeholderSkips, notScanned: opts.headOnly.notScanned }
+            : {}),
         }
       : undefined;
 

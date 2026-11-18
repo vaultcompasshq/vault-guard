@@ -40,8 +40,10 @@ export {
 } from './utils/scan-clock';
 export * from './utils/git-env';
 export { climbsOut } from './utils/dot-dot';
+export * from './utils/local-git-config';
+export * from './no-repo-controls';
 export * from './utils/read-no-follow';
-export { BlobBatchReader, batchCheckBlobs, type BlobCheck } from './utils/blob-reader';
+export { BlobBatchReader, ObjectMismatchError, batchCheckBlobs, type BlobCheck } from './utils/blob-reader';
 export { decodeTextBuffer, decodeDiskCopy, mappedWorktreeEncodings, type DecodedDiskCopy } from './utils/text-decode';
 export * from './config';
 export * from './config-validate';
@@ -52,6 +54,7 @@ export {
   assertTrustBaseResolvable,
   listHeadTreeFiles,
   listHeadTreeBlobs,
+  listHeadTreeEntries,
   HEAD_TREE_LISTING_MAX_BYTES,
   readFileAtRef,
   isRegularFileMode,
@@ -63,6 +66,7 @@ export {
   ATTRIBUTES_PROPOSAL_LINE,
   ATTRIBUTES_NOTE_LINE,
   type ControlFile,
+  type HeadTreeEntry,
   type ControlShapeChange,
   type TrustedControls,
 } from './trust-base';
@@ -76,7 +80,7 @@ export {
 export * from './scan-output';
 export * from './diagnostics';
 export { shannonEntropy, DEFAULT_ENTROPY_THRESHOLD } from './utils/entropy';
-export { isPlaceholderSecret, isNonSecretConnectionString, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, SEQUENTIAL_RUN_COVERAGE_THRESHOLD } from './utils/placeholder';
+export { isPlaceholderSecret, isNonSecretConnectionString, connectionStringDeclines, isSampleJwt, isRedactedTemplateValue, isEnvVarNameToken, isCodeIdentifierReference, isPasswordHash, isPemHeaderWithoutBody, isSequentialRunPlaceholder, SEQUENTIAL_RUN_COVERAGE_THRESHOLD } from './utils/placeholder';
 export {
   getGitStagedFilePaths,
   getGitStagedEntries,
@@ -103,7 +107,7 @@ export {
   MAX_SCAN_FILE_BYTES,
   FileTooLargeError,
 } from './utils/scan-file';
-export { applyPathAwareSeverity, isTestFilePath, isLocalePath } from './utils/path-severity';
+export { applyPathAwareSeverity, isTestFilePath, isLocalePath, pathScanProfile } from './utils/path-severity';
 export { findInlineTestRegions, isInsideInlineTestRegion } from './utils/inline-test-context';
 export type { InlineTestRegion, InlineTestRegionFinder } from './utils/inline-test-context';
 export {

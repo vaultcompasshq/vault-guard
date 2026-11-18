@@ -259,6 +259,8 @@ export interface BaselineMatchContext {
    * finding came from, and nothing is re-read after the scan.
    */
   readBytes?: (file: string, source?: MatchSource, stage?: 2 | 3) => Buffer;
+  /** Key paths lexically, with no filesystem call (`--no-repo-controls`). */
+  lexicalPaths?: boolean;
 }
 
 /**
@@ -326,8 +328,8 @@ export function applyBaseline(
     for (const m of r.matches) {
       const valueBearing = ctx.isValueBearing(m.type);
       const key = valueBearing
-        ? contentFingerprintForMatch(ctx.contentRoot, r.file, m)
-        : rootPositionalFingerprint(ctx.contentRoot, r.file, m);
+        ? contentFingerprintForMatch(ctx.contentRoot, r.file, m, ctx.lexicalPaths === true)
+        : rootPositionalFingerprint(ctx.contentRoot, r.file, m, ctx.lexicalPaths === true);
       const candidates = key === undefined ? undefined : byKey.get(key);
       const slot = candidates?.find(
         c =>

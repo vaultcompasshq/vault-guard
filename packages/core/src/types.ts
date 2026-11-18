@@ -41,7 +41,38 @@ export interface SecretMatch {
    * nothing that decides a severity or the exit does.
    */
   groupSlot?: GroupSlot;
+  /**
+   * Set on a match an inline `vault-guard: ignore-line` / `ignore-next-line`
+   * directive covers, kept because the run honours no control input the
+   * repository supplies (`scan --no-repo-controls`). Never set otherwise: on
+   * every other run such a match is dropped and counted as suppressed.
+   */
+  inlineDirectiveNotHonoured?: true;
+  /**
+   * Set on a match a repository-chosen context filter would have dropped,
+   * kept because the run honours no evidence the repository supplies
+   * (`scan --no-repo-controls`): a documentation path or an `appid` comment,
+   * a Python triple-quoted string, a following `(`, a bare identifier value.
+   * The value names the filter. Never set otherwise.
+   */
+  contextFilterNotHonoured?: ContextFilterKind;
+  /**
+   * The severity before a path rule (a test, documentation or locale
+   * directory) or an in-file test block lowered it, in a run that keeps
+   * those lowerings visible (`scan --no-repo-controls`). Absent when nothing
+   * was lowered.
+   */
+  severityBeforePathRules?: 'critical' | 'high' | 'medium' | 'low';
 }
+
+/** Which repository-chosen filter a kept match would have been dropped by. See {@link SecretMatch.contextFilterNotHonoured}. */
+export type ContextFilterKind =
+  | 'doc-context'
+  | 'python-triple-quoted'
+  | 'call-follows'
+  | 'identifier-reference'
+  | 'pem-no-body'
+  | 'url-context';
 
 /** Why a match was demoted. See {@link SecretMatch.demotion}. */
 export type DemotionReason = 'data-uri-binary-payload' | 'base64-binary-run';
