@@ -579,6 +579,9 @@ export function passwordLooksPlaceholder(user: string, pass: string): boolean {
     pass.startsWith('$') ||
     pass.startsWith('<') ||
     pass.startsWith('{') || // ${DB_PASS}, <pw>
+    /^\*+$/.test(pass) || // masked by Celery and Kombu: redis://:**@host
+    /^%[A-Za-z_][A-Za-z0-9_]*%$/.test(pass) || // %REDIS_PW% (Windows environment variable)
+    /^["'`][+.&][\w.$[\]()]+[+.&]["'`]$/.test(pass) || // '+pw+' (a string concatenation, no spaces)
     isPlaceholderSecret(pass, { aggressive: true })
   );
 }
