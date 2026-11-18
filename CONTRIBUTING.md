@@ -163,3 +163,16 @@ Do not start these without a dedicated plan signed off by the repo owner:
 vault-guard actually did when run against real code, including runs that
 caught nothing. Open a PR to append a row after you run it against real
 code, your own or someone else's.
+
+## Audit exceptions
+
+CI runs `pnpm audit --audit-level high`. An advisory is ignored only through
+`pnpm.auditConfig.ignoreGhsas` in the root `package.json`, one id at a time,
+and each entry is recorded here with its date, its reason and when it goes.
+
+- `GHSA-fc5q-39xc-vjpf` (picomatch, slow pattern matching), added 2026-11-17.
+  The advisory covers every released version and names no patched one.
+  picomatch reaches this repository only through development tooling (jest,
+  eslint, changesets); no published package depends on it, and the patterns
+  it is given are written in this repository. Remove the entry as soon as a
+  patched picomatch is published and the lockfile can move to it.

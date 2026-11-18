@@ -69,6 +69,11 @@
       "body-parser": "^2.4.0",
       "launch-editor": "^2.14.2",
       "zod": "^4.6.6"
+    },
+    "auditConfig": {
+      "ignoreGhsas": [
+        "GHSA-fc5q-39xc-vjpf"
+      ]
     }
   },
   "engines": {
