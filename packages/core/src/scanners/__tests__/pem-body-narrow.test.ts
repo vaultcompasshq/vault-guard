@@ -1,20 +1,12 @@
 import { SecretScanner } from '../secret-scanner';
 import { isPemHeaderWithoutBody } from '../../utils/placeholder';
+import { randomBody } from './pem-test-bodies';
 
 const HEADER = '-----BEGIN RSA PRIVATE KEY-----';
 const FOOTER = '-----END RSA PRIVATE KEY-----';
-const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 /** A deterministic 1200-character base64 body (a 2048-bit RSA key is about this long). */
-function body(): string {
-  let x = 12345;
-  let out = '';
-  for (let i = 0; i < 1200; i++) {
-    x = (x * 1103515245 + 12345) & 0x7fffffff;
-    out += B64[x % 64];
-  }
-  return out;
-}
+const body = (): string => randomBody(1200, 1);
 
 const fold = (s: string, n: number): string[] => s.match(new RegExp(`.{1,${n}}`, 'g')) ?? [];
 const pem = (lines: string[], eol = '\n'): string => [HEADER, ...lines, FOOTER].join(eol) + eol;

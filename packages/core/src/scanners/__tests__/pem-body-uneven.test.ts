@@ -1,19 +1,11 @@
 import { SecretScanner } from '../secret-scanner';
 import { isPemHeaderWithoutBody } from '../../utils/placeholder';
+import { randomBody } from './pem-test-bodies';
 
 const HEADER = '-----BEGIN RSA PRIVATE KEY-----';
 const FOOTER = '-----END RSA PRIVATE KEY-----';
-const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
-function body(n = 1200): string {
-  let x = 4242;
-  let out = '';
-  for (let i = 0; i < n; i++) {
-    x = (x * 1103515245 + 12345) & 0x7fffffff;
-    out += B64[x % 64];
-  }
-  return out;
-}
+const body = (n = 1200): string => randomBody(n, 2);
 
 /** Fold with a pseudo-random width in [lo, hi] for every line. */
 function foldUneven(s: string, lo: number, hi: number): string[] {
