@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Security: a private key whose base64 body is folded narrower than 40 columns, or at uneven widths, was dropped as a "header without a body" and never reported (`openssl` reads such a key just the same). Where the key has its END footer, the body is now whatever lies between the two armor lines: base64-only single-token lines of any widths, 64 or more characters in all with the mixed-character test; without a footer, a run of single-token lines of one width also counts. A `=` or `==` folded onto a line of its own is accepted as the last body line. An ellipsis line (`...`, `[...]`, `<snip>`) between the armor lines marks a truncated example that is not reported when fewer than 48 base64 characters surround it; a full-length body with a stray ellipsis line is still reported. A header followed by nothing, prose or a few short words is still a label and is still declined.
+- Security: a connection string with an empty user, `redis://:password@host` (the usual Redis form) or `postgres://:password@host/db`, matched none of the four URL rules, so its password was never reported. An empty user is now allowed. A placeholder password (`changeme`, `${VAR}`, `<password>`), a masked one (`**`), a `%VAR%` reference and a no-space string concatenation are declined; an empty password is still not a credential.
+
 ### Changed
 
 - The CI conductor action pin and the @vaultcompass/conductor devDependency move to 0.19.1, and the vault-guard devDependency moves to 1.13.5 where the repository carries one. conductor 0.19.1 installs vault-guard 1.13.5 by default.
