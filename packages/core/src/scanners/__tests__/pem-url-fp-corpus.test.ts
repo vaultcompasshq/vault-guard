@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from 'crypto';
 import { SecretScanner } from '../secret-scanner';
-import { cleanPemToken, declinedBy1134, isPemHeaderWithoutBody } from '../../utils/placeholder';
+import { cleanPemToken, declinedBy1134, isPemHeaderWithoutBody, isPlaceholderSecret } from '../../utils/placeholder';
 import { randomBody } from './pem-test-bodies';
 
 const scanner = new SecretScanner({});
@@ -56,6 +56,11 @@ const DOC_PEM: Array<[string, string]> = [
   ['an OpenSSH preamble and nothing else', ['-----BEGIN OPENSSH PRIVATE KEY-----', ...fold('b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQyNTUxOQAAACD', 16), '-----END OPENSSH PRIVATE KEY-----'].join('\n') + '\n'],
   ['a "// comment:" line is not an RFC 1421 header', [HDR, '// comment: see the docs', ...fold(randomBody(160, 59), 16)].join('\n') + '\n'],
   ['every-second-letter alphabets', wrap(['MIIEvQIBADANBgkqhkiG9w0BAQEFAASC', 'acegikmoqsuwyACEGIKMOQSUWY13579', 'bdfhjlnprtvxzBDFHJLNPRTVXZ24680'])],
+  ['EXAMPLE in the first line', wrap([`${randomBody(20, 71)}EXAMPLEKEY${randomBody(8, 72)}`, randomBody(32, 73), randomBody(32, 74)])],
+  ['FAKE in the first line', wrap([`${randomBody(20, 71)}FAKE${randomBody(8, 72)}`, randomBody(32, 73), randomBody(32, 74)])],
+  ['FAKEKEY in the middle of a token', wrap([randomBody(32, 75), `${randomBody(12, 76)}FAKEKEY${randomBody(13, 77)}`, randomBody(32, 78)])],
+  ['the base64 of an English sentence, folded at 24', wrap(fold(Buffer.from('This text is only a placeholder describing where a private key goes, written for the README of the project and nothing else at all.').toString('base64'), 24))],
+  ['camelCase dummies', wrap(['MIIEvQIBADANBgkqhkiG9w0BAQEFAASC', 'UsedOnlyInUnitTests2UsedOnlyIn'])],
 ];
 
 const R = 'Kq8vZ3pXw9Lm2Tn';
@@ -76,6 +81,8 @@ const DOC_URLS: Array<[string, string]> = [
   ['bullets', 'REDIS_URL=redis://:\u2022\u2022\u2022\u2022@cache.acme.io:6379'],
   ['black circles', 'REDIS_URL=redis://:\u25CF\u25CF\u25CF\u25CF@cache.acme.io:6379'],
   ['Ruby interpolation', "REDIS_URL=redis://:#{ENV['X']}@cache.acme.io:6379"],
+  ['a user with an os.environ concatenation', "url = 'redis://app:'+os.environ['PW']+'@cache.acme-prod.net'"],
+  ['a user with a process.env concatenation', "url = 'redis://app:'+process.env.PW+'@cache.acme-prod.net'"],
   ['a concatenation with a quoted key', "url = 'redis://:'+os.environ['PW']+'@cache.acme-prod.net'"],
   ['a concatenation with spaces', "url = 'redis://:' + os.environ['PW'] + '@cache.acme-prod.net'"],
 ];
@@ -83,6 +90,12 @@ const REAL_URLS: Array<[string, string]> = [
   ['an empty user with a real password', `REDIS_URL=redis://:${R}@cache.acme.io:6379`],
   ['a numeric password that is not the default port', 'REDIS_URL=redis://:48151623@cache.acme.io:6379'],
   ['a Postgres URL', `DB=postgres://app:${R}@db.acme.io/main`],
+  ['a user with a masked password', 'REDIS_URL=redis://admin:****@cache.acme-prod.net:6379'],
+  ['a user with a %VAR%-shaped password', 'DB=postgres://admin:%Pr0dPass%@db.acme-prod.net/app'],
+  ['a user with a password in & quotes', "REDIS_URL=redis://app:'&Tr0ub4dor&'@cache.acme-prod.net:6379"],
+  ['a user with a password in + quotes', "M=mongodb://svc:'+K9x_7Qz+'@host.acme-prod.net:27017"],
+  ['a second URL in the query of an empty-user URL (postgres)', 'postgres://:${PW}@db.acme.io/app?x=postgres://admin:Sup3rS3cret9@db2.acme.io/app'],
+  ['a second URL in the path of an empty-user URL (mysql)', 'mysql://:-@db.acme.io/mysql://root:Zx81LmQp@db2.acme.io/app'],
   ['a user with the password none (1.13.4 reported it)', 'DB=postgres://app:none@db.acme-prod.net/app'],
   ['a user with the password null', 'DB=postgres://app:null@db.acme-prod.net/app'],
   ['a user with the password -', 'DB=postgres://app:-@db.acme-prod.net/app'],
@@ -386,5 +399,44 @@ describe('narrow folds cost about what 1.13.4 cost', () => {
     for (const t of texts) isPemHeaderWithoutBody(t, HDR.length);
     // About 0.1 ms each unloaded (1.13.4: about 0.07 ms); the bound is for a loaded CI machine.
     expect(Date.now() - t0).toBeLessThan(3000);
+  });
+});
+
+describe('isLowVariety counts code points, as a Set of the string does', () => {
+  it('two emoji repeated are a placeholder; three distinct are not', () => {
+    expect(isPlaceholderSecret('\u{1F600}\u{1F601}\u{1F600}\u{1F601}\u{1F600}\u{1F601}')).toBe(true);
+    expect(isPlaceholderSecret('\u{1F600}\u{1F601}\u{1F602}\u{1F600}\u{1F601}\u{1F602}')).toBe(false);
+    expect(isPlaceholderSecret('\u{1F600}'.repeat(8))).toBe(true);
+  });
+});
+
+describe('the second path stays cheap where 1.13.4 declined at once', () => {
+  const code = 'const value = computeSomething(first, second) + other.property.access(third); // trailing comment\n';
+  function cpuMs(fn: () => void): number {
+    const t0 = process.cpuUsage();
+    fn();
+    const u = process.cpuUsage(t0);
+    return (u.user + u.system) / 1000;
+  }
+  function ratio(text: string): number {
+    const offsets: number[] = [];
+    for (let at = text.indexOf(HDR); at >= 0; at = text.indexOf(HDR, at + HDR.length)) offsets.push(at + HDR.length);
+    let old = Infinity;
+    let now = Infinity;
+    for (let r = 0; r < 5; r++) {
+      old = Math.min(old, cpuMs(() => offsets.forEach(o => declinedBy1134(text, o))));
+      now = Math.min(now, cpuMs(() => offsets.forEach(o => isPemHeaderWithoutBody(text, o))));
+    }
+    return now / old;
+  }
+  const mk = (unit: string, size: number): string => unit.repeat(Math.ceil(size / unit.length));
+  it('header labels followed by code: within 1.5x of the 1.13.4 function alone', () => {
+    expect(ratio(mk(`x = '${HDR}';\n${code.repeat(6)}`, 2e6))).toBeLessThan(1.5);
+  });
+  it('a long run of spaces after a header: within 2x', () => {
+    expect(ratio(mk(`${HDR}\n${' '.repeat(8000)}x\n`, 2e6))).toBeLessThan(2);
+  });
+  it('a long run of ". . ." after a header: within 1.5x', () => {
+    expect(ratio(mk(`${HDR}\n${'. '.repeat(3000)}\n`, 2e6))).toBeLessThan(1.5);
   });
 });

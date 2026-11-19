@@ -157,6 +157,9 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // per-start work and makes all four linear; no real DSN comes close to these
   // limits.
   //
+  // The path capture of the postgres and mysql rules also stops before a scheme separator (`scheme://`), so a
+  // first URL that a placeholder check declines (an empty user and a masked password) cannot swallow a second
+  // URL written in its query or path, which the scan then reads on its own.
   // The path capture of the postgres and mysql rules ends at the first character
   // that cannot be part of the URL in the shapes found in code and config (a
   // quote, backtick, comma, semicolon, closing brace, bracket or paren, a less-
@@ -174,8 +177,8 @@ const BUILTIN_PATTERNS: ReadonlyMap<string, PatternEntry> = new Map([
   // The scheme is matched in any case (`i`; a URL scheme is case-insensitive, and every other part of these regexes is a
   // negated class or a digit run, which the flag does not change). The redis port is optional; without one the host
   // ends at the same delimiters as the postgres path, so the next JSON value or env entry is not read as part of it.
-  ['postgresql-url', { regex: /postgres(?:ql)?:\/\/[^:@\s/"'`]{0,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/[^\s"'`,;}\])<>|\\]{0,1024}/gi, severity: 'critical', connectionString: true, valueBearing: true }],
-  ['mysql-url',{ regex: /mysql:\/\/[^:@\s/"'`]{0,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/[^\s"'`,;}\])<>|\\]{0,1024}/gi,            severity: 'critical', connectionString: true, valueBearing: true }],
+  ['postgresql-url', { regex: /postgres(?:ql)?:\/\/[^:@\s/"'`]{0,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/(?:(?![a-z][a-z0-9+.-]{0,15}:\/\/)[^\s"'`,;}\])<>|\\]){0,1024}/gi, severity: 'critical', connectionString: true, valueBearing: true }],
+  ['mysql-url',{ regex: /mysql:\/\/[^:@\s/"'`]{0,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?\/(?:(?![a-z][a-z0-9+.-]{0,15}:\/\/)[^\s"'`,;}\])<>|\\]){0,1024}/gi,            severity: 'critical', connectionString: true, valueBearing: true }],
   ['mongodb-url',    { regex: /mongodb(?:\+srv)?:\/\/[^:@\s/"'`]{0,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/]{1,256}(?::\d{1,8})?/gi,            severity: 'critical', connectionString: true, valueBearing: true }],
   ['redis-url',      { regex: /rediss?:\/\/[^:@\s/"'`]{0,256}:(?!\/\/)(?:(?!:\/\/)[^@\s"`]){1,256}@[^:\s/"'`,;}\])<>|\\]{1,256}(?::\d{1,8})?/gi,      severity: 'critical', connectionString: true, valueBearing: true }],
 

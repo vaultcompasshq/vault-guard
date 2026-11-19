@@ -160,6 +160,11 @@ export function isPasswordHash(value: string): boolean {
  *    as key material (see {@link looksLikeKeyMaterial}). The first line is left
  *    out because documentation puts a realistic `MIIE...` prefix there and
  *    filler after it;
+ *  - no placeholder marker (`example`, `redacted`, `fake`, `sample` ...) in the
+ *    first or last 128 characters of the body, the first line and the middle of
+ *    a token included, and the body does not base64-decode to mostly printable
+ *    ASCII (85% of its first 144 bytes: an encoded sentence; random bytes are 37%
+ *    and the highest of about 9,000 real keys (Ed25519, X25519, EC, RSA) was 67%);
  *  - a `=` or `==` counts only as the last line and adds no length, and a last
  *    line of only `+` or `/` characters is the end of the body, not syntax;
  *  - with an END footer the run is the span between the armor lines at any
@@ -201,8 +206,11 @@ const NARROW_FIRST_LINE = /^\s*[A-Za-z0-9+/]{14,39}\s/;
  * The 1.13.4 decision, verbatim from origin/main (only its name differs; its
  * helper `cleanPemToken` differs by one linear expression, proved equal by a
  * property test). True when no line of the region is a base64 token of 40 or
- * more characters. The exported function runs this first, so a key 1.13.4
- * reported is reported by construction.
+ * more characters. The exported function declines only when this AND the second
+ * path decline, so the result is the same whichever runs first (when the first
+ * line after the header is a narrow fold the second path runs first, to save
+ * the 1.13.4 scan when it finds the body): a key 1.13.4 reported is reported by
+ * construction.
  */
 /** @internal exported for the superset property test only; not part of the package API. */
 export function declinedBy1134(content: string, headerEndOffset: number): boolean {
@@ -258,7 +266,17 @@ export function declinedBy1134(content: string, headerEndOffset: number): boolea
   return true;
 }
 
+/** Escaped or markup newlines inside a region: when none is present the two replaces below are skipped. */
+const PEM_NEWLINE_HIDING = /&#|<br|\\u000/i;
+const ALL_SPACE = /^\s*$/;
+
+/** How many characters after the header must hold something other than whitespace for the second path to read on. */
+const PEM_GATE = 400;
+
 function declinedByNewPath(content: string, headerEndOffset: number): boolean {
+  // Gate: nothing but whitespace for the next 400 characters cannot start a body, and
+  // is not read further (a header followed by a long run of spaces).
+  if (ALL_SPACE.test(content.slice(headerEndOffset, headerEndOffset + PEM_GATE))) return true;
   // Judge the text between this header and the END marker that closes it (or
   // the next BEGIN, or the cap when neither exists). A fixed 400-character
   // window missed any key whose armor headers ran long.
@@ -267,42 +285,58 @@ function declinedByNewPath(content: string, headerEndOffset: number): boolean {
   const hasFooter = stop !== null && stop[1] === 'END';
   if (stop !== null) region = region.slice(0, stop.index);
 
-  // Newlines can hide as XML character references.
-  region = region.replace(/&#(?:x0*[aAdD]|0*1[03]);/g, '\n');
-  // Or as markup and escapes: `<br>`, `<br/>` and the JSON `\u000a` / `\u000d`.
-  region = region.replace(/<br\s*\/?>|\\u000[aAdD]/gi, '\n');
+  if (PEM_NEWLINE_HIDING.test(region)) {
+    // Newlines can hide as XML character references.
+    region = region.replace(/&#(?:x0*[aAdD]|0*1[03]);/g, '\n');
+    // Or as markup and escapes: `<br>`, `<br/>` and the JSON `\u000a` / `\u000d`.
+    region = region.replace(/<br\s*\/?>|\\u000[aAdD]/gi, '\n');
+  }
 
   // Split on real newlines and on the escaped `\n` used when a key is embedded
   // in JSON, YAML or a string literal.
   const lines = region.split(/\r?\n|\\r\\n|\\n|\\r/);
-  const infos = lines.map(classifyPemLine);
 
-  // A last line of only `+` and `/` characters is the end of a body that a fold left
-  // alone on a line (an Ed25519 body is 64 characters; at 21 or 9 columns one remains),
-  // not list syntax: keep it as base64.
-  for (let k = lines.length - 1; k >= 1; k--) {
-    if (lines[k].trim() === '') continue;
-    const plus = LONE_PLUS.exec(lines[k]);
-    if (plus !== null && infos[k - 1].kind === 'b64') infos[k] = { tokens: [plus[1]], kind: 'b64' };
-    break;
-  }
+  // Lines are classified on demand, so a header that is a label (code or prose
+  // follows it) costs a line or two, not the whole region.
+  const cache: Array<PemLine | undefined> = [];
+  let lastIdx = lines.length - 1;
+  while (lastIdx >= 1 && ALL_SPACE.test(lines[lastIdx])) lastIdx--;
+  const info = (i: number): PemLine => {
+    let l = cache[i];
+    if (l === undefined) {
+      l = classifyPemLine(lines[i]);
+      // A last line of only `+` and `/` characters is the end of a body that a fold left
+      // alone on a line (an Ed25519 body is 64 characters; at 21 or 9 columns one remains),
+      // not list syntax: keep it as base64.
+      if (i === lastIdx && i >= 1 && (l.kind === 'blank' || l.kind === 'b64') && info(i - 1).kind === 'b64') {
+        const plus = LONE_PLUS.exec(lines[i]);
+        if (plus !== null) l = { tokens: [plus[1]], kind: 'b64' };
+      }
+      cache[i] = l;
+    }
+    return l;
+  };
 
   const isB64 = (i: PemLine): boolean => i.kind === 'b64';
 
   if (!hasFooter) {
     // The header must end its line, apart from the punctuation the peeling
     // understands (a closing quote, a comma, a concatenation operator).
-    if (infos[0] !== undefined && infos[0].tokens.length > 0) return true;
+    if (info(0).tokens.length > 0) return true;
     let i = 1;
-    while (i < infos.length && (infos[i].kind === 'blank' || infos[i].kind === 'empty' || infos[i].kind === 'rfc')) i++;
+    while (i < lines.length) {
+      const k = info(i).kind;
+      if (k !== 'blank' && k !== 'empty' && k !== 'rfc') break;
+      i++;
+    }
     // The run that starts on the first line with content. A line of only syntax (the
     // `\n" +` of a string concatenation) is skipped; an empty line, or any line that
     // is not base64, ends it, so two blocks are never joined across a gap. An
     // omission line splits it into pieces.
     let piece: PemLine[] = [];
     const pieces: PemLine[][] = [piece];
-    for (; i < infos.length; i++) {
-      const l = infos[i];
+    for (; i < lines.length; i++) {
+      const l = info(i);
       if (l.kind === 'b64' || l.kind === 'multi' || l.kind === 'pad') piece.push(l);
       else if (l.kind === 'ellipsis') {
         if (l.tokens.length === 1) piece.push({ tokens: l.tokens, kind: 'b64' });
@@ -316,17 +350,19 @@ function declinedByNewPath(content: string, headerEndOffset: number): boolean {
     });
   }
 
-  // With a footer: the whole span between the armor lines.
-  // A line that is neither base64 nor an RFC 1421 header, a several-token line,
-  // or a padding line that is not the last, vetoes the span as a body.
-  const lastContent = infos.reduce((n, l, i) => (l.tokens.length > 0 ? i : n), -1);
-  const vetoed = infos.some((l, i) => l.kind === 'other' || l.kind === 'multi' || (l.kind === 'pad' && i !== lastContent));
-  if (vetoed) return true;
-  // Split at ellipsis lines (blank lines are tolerated inside a piece).
+  // With a footer: the whole span between the armor lines, read until the first
+  // veto. A line that is neither base64 nor an RFC 1421 header, a several-token
+  // line, or content after a padding line, vetoes the span as a body.
   let piece: string[] = [];
   const pieces: string[][] = [piece];
-  for (const l of infos) {
-    if (l.kind === 'ellipsis') {
+  let padSeen = false;
+  for (let i = 0; i < lines.length; i++) {
+    const l = info(i);
+    if (l.kind === 'other' || l.kind === 'multi') return true;
+    if (padSeen && l.tokens.length > 0) return true;
+    if (l.kind === 'pad') padSeen = true;
+    else if (l.kind === 'ellipsis') {
+      // Split at ellipsis lines (blank lines are tolerated inside a piece).
       if (l.tokens.length === 1) piece.push(l.tokens[0]);
       pieces.push((piece = []));
     } else if (l.kind === 'b64') piece.push(l.tokens[0]);
@@ -374,6 +410,10 @@ const PEM_PURE_BASE64 = /^[A-Za-z0-9+/]{10,}={0,2}$/;
 function classifyPemLine(line: string): PemLine {
   // The common case, a line of nothing but base64: no peeling to do.
   if (line.length >= 10 && PEM_PURE_BASE64.test(line)) return { tokens: [line], kind: 'b64' };
+  if (ALL_SPACE.test(line)) return { tokens: [], kind: 'empty' };
+  // Every test below ignores surrounding whitespace; trimming once (natively) keeps a long
+  // run of spaces from being walked a character at a time by each of them.
+  line = line.trim();
   if (isEllipsisLine(line)) return { tokens: [], kind: 'ellipsis' };
   const tokens: string[] = [];
   for (const raw of line.split(/\s+/)) {
@@ -389,7 +429,12 @@ function classifyPemLine(line: string): PemLine {
     // Likewise a base64 line that begins with `//` (a comment leader peeled off).
     const slashes = /^\/{2,}/.exec(raw);
     if (t !== '' && slashes !== null && PEM_BASE64.test(`${slashes[0]}${t}`)) t = `${slashes[0]}${t}`;
-    if (t !== '') tokens.push(t);
+    if (t !== '') {
+      tokens.push(t);
+      // The first token that is not base64 settles the line as prose or code; the
+      // rest of it need not be peeled.
+      if (!PEM_BASE64.test(t)) break;
+    }
   }
   if (RFC1421_LINE.test(line)) return { tokens, kind: 'rfc' };
   if (tokens.length === 0) return { tokens, kind: line.trim() === '' ? 'empty' : 'blank' };
@@ -429,6 +474,10 @@ function isBodySpan(tokens: string[], min = PEM_BODY_MIN): boolean {
   if (joined.length < min) return false;
   if (!/[a-z]/.test(joined) || !/[A-Z]/.test(joined) || !/[0-9+/]/.test(joined)) return false;
   const head = joined.length > PEM_SAMPLE ? joined.slice(0, PEM_SAMPLE) : joined;
+  // A marker anywhere in the head or tail, the first line and the middle of a token
+  // included (`...FAKEKEY...`), and a body that decodes to text, are documentation.
+  const ends = joined.length > 2 * PEM_SAMPLE ? head + joined.slice(-PEM_SAMPLE) : joined;
+  if (isPlaceholderSecret(ends) || PEM_FAKE_MARKERS.test(ends) || decodesToText(joined)) return false;
   if (isSequentialRunPlaceholder(head) || isStrideRunPlaceholder(head)) return false;
   // An unencrypted OpenSSH key opens with the base64 of `openssh-key-v1` and carries
   // its public key and zero padding inside, so its 6-grams repeat more than a DER
@@ -500,6 +549,33 @@ function isMixedCase(l: string): boolean {
   return lower && upper && other;
 }
 
+/** Markers short enough to be tested only in a body that reached the second path (`fake` is also aggressive-tier in `isPlaceholderSecret`). */
+const PEM_FAKE_MARKERS = /fake|sample/i;
+
+/**
+ * True when most of the start of a base64 body decodes to printable ASCII: a body
+ * that is the base64 of an English sentence or a config line is not a key. Random
+ * bytes are printable about 37% of the time; a key's ASN.1 framing is not text.
+ */
+function decodesToText(b64: string): boolean {
+  const n = Math.min(b64.length, 192) & ~3;
+  if (n < 32) return false;
+  let printable = 0;
+  let total = 0;
+  for (let i = 0; i < n; i += 4) {
+    const a = B64_INDEX[b64.charCodeAt(i) & 127];
+    const b = B64_INDEX[b64.charCodeAt(i + 1) & 127];
+    const c = B64_INDEX[b64.charCodeAt(i + 2) & 127];
+    const d = B64_INDEX[b64.charCodeAt(i + 3) & 127];
+    const bytes = [(a << 2) | (b >> 4), ((b & 15) << 4) | (c >> 2), ((c & 3) << 6) | d];
+    for (const x of bytes) {
+      total++;
+      if ((x >= 0x20 && x <= 0x7e) || x === 0x09 || x === 0x0a || x === 0x0d) printable++;
+    }
+  }
+  return printable / total >= 0.85;
+}
+
 /** How many characters of a body the shape tests (alphabet, repeated phrase, words) read. */
 const PEM_SAMPLE = 128;
 
@@ -518,10 +594,11 @@ function wordCoverage(s: string): number {
  * filler or prose. Documentation shows a realistic first line (`MIIEvQIBADAN...`)
  * and then `xxxx...`, `AAAA...`, `REDACTEDREDACTED...`, a repeated phrase,
  * camelCase words, or the alphabet. The test, with the numbers that set it
- * (Ed25519 and X25519 PKCS8 bodies folded at widths 8 to 39 and unevenly between
- * 20 and 39: 208,000 measured, none declined; RSA 2048 and EC P-256 at widths 8
- * to 76):
- *  - no placeholder marker (head and tail of a long body), not one or two
+ * (Ed25519, X25519, EC P-256 and RSA 2048 PKCS8 bodies folded at widths 8 to 39
+ * and, for the 25519 keys, unevenly between 20 and 39, with a footer: 280,800
+ * measured, none declined; without a footer widths under 14 are declined by
+ * design). The shape tests below read the first 128 characters of the rest:
+ *  - no placeholder marker (the first and last 128 characters of the rest), not one or two
  *    characters repeated, and not a sequential run or an every-second-character
  *    run (the alphabet);
  *  - at least `varietyBar` of the 6-grams of its first 128 characters are
@@ -682,14 +759,15 @@ export function isCodeIdentifierReference(value: string): boolean {
  */
 function isLowVariety(value: string): boolean {
   if (value.length < 8) return false;
-  // At most two distinct characters, found without building a Set of the whole value.
-  const first = value[0];
+  // At most two distinct code points (as `new Set(value).size <= 2` counted them: an
+  // emoji is one), found without building a Set of the whole value.
+  let first: string | undefined;
   let second: string | undefined;
-  for (let i = 1; i < value.length; i++) {
-    const c = value[i];
-    if (c === first || c === second) continue;
-    if (second !== undefined) return false;
-    second = c;
+  for (const c of value) {
+    if (first === undefined) first = c;
+    else if (c === first || c === second) continue;
+    else if (second === undefined) second = c;
+    else return false;
   }
   return true;
 }
@@ -878,11 +956,12 @@ export function isNonSecretConnectionString(url: string): boolean {
   if (user.toLowerCase() === p) return true;            // root:root, prisma:prisma
   if (/^[A-Z][A-Z0-9_]*$/.test(pass)) return true;      // USER:PASSWORD, DBPASS
   if (pass.startsWith('$') || pass.startsWith('<') || pass.startsWith('{')) return true; // ${DB_PASS}, <pw>
-  if (/^\*+$/.test(pass)) return true;                  // masked by Celery and Kombu: redis://:**@host
   // The forms below were not declined in 1.13.4. They are placeholders in the
   // `redis://:pw@host` shape (an empty user), where a masked or templated password
   // is the norm; with a user the 1.13.4 verdict stands (`app:none@host` is reported).
   if (user === '') {
+    if (/^\*+$/.test(pass)) return true;                  // masked by Celery and Kombu: redis://:**@host
+    if (/^%[A-Za-z_][A-Za-z0-9_]*%$/.test(pass)) return true; // %REDIS_PW% (Windows environment variable)
     if (/^(?:%2[aA])+$/.test(pass)) return true;          // the mask `***`, percent-encoded
     if (/^x{3,}$/i.test(pass) || /^\.+$/.test(pass)) return true; // xxxx and ....
     if (/^%\([A-Za-z_][A-Za-z0-9_]*\)s$/.test(pass)) return true; // Python %(name)s
@@ -896,8 +975,14 @@ export function isNonSecretConnectionString(url: string): boolean {
     // Redis password is possible).
     if ((WELL_KNOWN_PORTS[scheme] ?? []).includes(pass)) return true;
   }
-  if (/^%[A-Za-z_][A-Za-z0-9_]*%$/.test(pass)) return true; // %REDIS_PW% (Windows environment variable)
-  if (/^["'`]\s*[+.&]\s*[\w.$[\]()'"`]+\s*[+.&]\s*["'`]$/.test(pass)) return true; // '+pw+', '+os.environ['PW']+' (a string concatenation)
+  // A string concatenation (`'+os.environ['PW']+'`). With a user, only one whose inside
+  // is an expression or a name is declined; `'&Tr0ub4dor&'` is a password in quotes.
+  const concat = /^["'`]\s*[+.&]\s*([\w.$[\]()'"`]+)\s*[+.&]\s*["'`]$/.exec(pass);
+  if (concat !== null) {
+    const inside = concat[1];
+    if (user === '') return true;
+    if (/os\.environ|process\.env|[[(]/.test(inside) || /^[A-Z][A-Z0-9_]*$/.test(inside) || /^[a-z][a-z0-9_]*$/.test(inside)) return true;
+  }
   if (isPlaceholderSecret(pass, { aggressive: true })) return true;
 
   return false;
